@@ -60,7 +60,7 @@ public final class SmartCardTransport: YubikeyTransport {
             // the app launched must still be discovered. `TKSmartCardSlot.state`
             // observation is not available on every OS version, hence polling.
             for name in orderedCandidates(from: slotManager.slotNames) {
-                guard let slot = slotManager.getSlot(withName: name) else { continue }
+                guard let slot = await slotManager.getSlot(withName: name) else { continue }
                 guard let smartCard = await slot.makeSmartCard() else { continue }
                 do {
                     try await smartCard.beginSession()

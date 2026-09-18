@@ -36,7 +36,11 @@ public final class NFCTagTransport: NSObject, YubikeyTransport {
         }
         try await withCheckedThrowingContinuation { continuation in
             self.openContinuation = continuation
-            let session = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: nil)
+            guard let session = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: nil) else {
+                self.openContinuation = nil
+                continuation.resume(throwing: CardError.transportUnavailable("could not create an NFC reader session"))
+                return
+            }
             session.alertMessage = self.alertMessage
             self.session = session
             session.begin()
@@ -52,8 +56,9 @@ public final class NFCTagTransport: NSObject, YubikeyTransport {
                     continuation.resume(throwing: CardError.transportUnavailable(error.localizedDescription))
                     return
                 }
+                // `data` is non-optional in the current CoreNFC signature.
                 continuation.resume(returning: ResponseAPDU(
-                    data: [UInt8](data ?? Data()),
+                    data: [UInt8](data),
                     status: StatusWord(sw1: sw1, sw2: sw2)
                 ))
             }

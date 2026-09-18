@@ -44,6 +44,8 @@ final class MockSignerCard: SignerCard {
     private(set) var appliedPolicy = false
     private(set) var resetCount = 0
     private(set) var pinChangeCount = 0
+    /// The Admin PIN last provisioned, used to model per-session VERIFY state.
+    private(set) var lastSetAdminPIN: [UInt8] = Array("12345678".utf8)
 
     init(
         inventory: CardInventory = MockSignerCard.factoryFreshCard,
@@ -93,6 +95,7 @@ final class MockSignerCard: SignerCard {
         calls.append(.setPINs)
         if failurePoint == .setPINs { throw CardError.conditionsNotSatisfied }
         pinChangeCount += 1
+        lastSetAdminPIN = adminPIN
     }
 
     func applyPolicy(adminPIN: [UInt8]) async throws {
@@ -104,8 +107,17 @@ final class MockSignerCard: SignerCard {
         inventoryResult.pwStatusBytes = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
     }
 
-    func importSignatureKey(privateKey: SensitiveBytes, fingerprint: [UInt8], creationTime: Date) async throws {
+    func importSignatureKey(
+        privateKey: SensitiveBytes,
+        fingerprint: [UInt8],
+        creationTime: Date,
+        adminPIN: [UInt8]
+    ) async throws {
         calls.append(.importSignatureKey(fingerprint: fingerprint.hexString))
+        // Mirrors a real card: a new session must re-verify the Admin PIN.
+        guard adminPIN == lastSetAdminPIN else {
+            throw CardError.conditionsNotSatisfied
+        }
         if failurePoint == .keyImport { throw CardError.keyImportRejected }
         if storedPrivateKey != nil { throw CardError.signatureSlotOccupied }
         let raw = privateKey.materializedCopy()

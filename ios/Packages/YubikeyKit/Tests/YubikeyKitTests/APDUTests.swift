@@ -268,7 +268,8 @@ final class APDUTests: XCTestCase {
         try await card.importSignatureKey(
             privateKey: privateKey,
             fingerprint: [UInt8](repeating: 0xAB, count: 20),
-            creationTime: Date(timeIntervalSince1970: 1_700_000_000)
+            creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            adminPIN: Array("87654321".utf8)
         )
 
         let readBack = try await card.readSignaturePublicKey()
@@ -284,7 +285,8 @@ final class APDUTests: XCTestCase {
             try await card.importSignatureKey(
                 privateKey: privateKey,
                 fingerprint: [UInt8](repeating: 0xAB, count: 20),
-                creationTime: Date()
+                creationTime: Date(),
+                adminPIN: Array("87654321".utf8)
             )
         } verify: { error in
             XCTAssertEqual(error as? CardError, .keyImportRejected)
@@ -322,7 +324,12 @@ final class APDUTests: XCTestCase {
             try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
             try await card.applyPolicy(adminPIN: Array("87654321".utf8))
             let key = try ScriptedEntropySource(repeating: 0x33, count: 32).randomBytes(count: 32)
-            try await card.importSignatureKey(privateKey: key, fingerprint: [UInt8](repeating: 1, count: 20), creationTime: Date(timeIntervalSince1970: 0))
+            try await card.importSignatureKey(
+                privateKey: key,
+                fingerprint: [UInt8](repeating: 1, count: 20),
+                creationTime: Date(timeIntervalSince1970: 0),
+                adminPIN: Array("87654321".utf8)
+            )
             _ = try await card.readSignaturePublicKey()
             _ = try await card.signatureCounter()
             return (transport as? MockYubikeyTransport)?.receivedAPDUs ?? []

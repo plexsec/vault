@@ -82,15 +82,21 @@ public protocol SignerCard: AnyObject {
     /// Applies the mandatory policy: UIF = Fixed on the signature slot and
     /// PW1 status 0x00 (PIN required for every signature).
     ///
-    /// The Admin PIN is required because these are protected data objects.
+    /// The Admin PIN is required because these are protected data objects, and
+    /// implementations must re-verify PW3 in this session before writing.
     func applyPolicy(adminPIN: [UInt8]) async throws
 
     /// `PUT DATA 3F FF` with the Extended Header List for CRT B6, then the
     /// algorithm attributes, fingerprint and creation time.
+    ///
+    /// The Admin PIN is passed in rather than assumed to still be verified: a
+    /// ceremony spans many short-lived NFC sessions, and VERIFY state does not
+    /// survive a session boundary. Implementations must re-verify PW3 themselves.
     func importSignatureKey(
         privateKey: SensitiveBytes,
         fingerprint: [UInt8],
-        creationTime: Date
+        creationTime: Date,
+        adminPIN: [UInt8]
     ) async throws
 
     /// `GENERATE ASYMMETRIC KEY PAIR` (P1 = 0x81) — reads the public key back

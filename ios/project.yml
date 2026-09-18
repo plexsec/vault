@@ -1,0 +1,102 @@
+name: PlexVault
+options:
+  bundleIdPrefix: com.plexsec
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+    # Deterministic-ish build inputs for the reproducible-build story.
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+packages:
+  VaultKit:
+    path: Packages/VaultKit
+  YubikeyKit:
+    path: Packages/YubikeyKit
+
+targets:
+  PlexVault:
+    type: application
+    platform: iOS
+    sources:
+      - path: PlexVault
+      # The simulated card is the same implementation the package tests use, but
+      # compiled into the app target rather than linked as a package product, so
+      # that Release can exclude it from compilation altogether (below). Linking
+      # it as a product left its symbols in the shipped binary.
+      - path: Packages/YubikeyKit/Sources/YubikeyKitMock/MockYubikeyTransport.swift
+    dependencies:
+      - package: VaultKit
+        product: VaultKit
+      - package: YubikeyKit
+        product: YubikeyKit
+      - package: YubikeyKit
+        product: YubikeyKitNFC
+      - package: YubikeyKit
+        product: YubikeyKitCCID
+    info:
+      path: PlexVault/Info.plist
+      properties:
+        CFBundleDisplayName: PlexVault
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        ITSAppUsesNonExemptEncryption: false
+        UIRequiresFullScreen: true
+        UIApplicationSupportsIndirectInputEvents: true
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # CoreNFC needs a usage string AND the OpenPGP AID declared, otherwise iOS
+        # will not surface the YubiKey to the reader session at all.
+        NFCReaderUsageDescription: >-
+          PlexVault talks to your YubiKey over NFC to provision it. No data leaves
+          this device.
+        com.apple.developer.nfc.readersession.iso7816.select-identifiers:
+          - D27600012401
+    entitlements:
+      path: PlexVault/PlexVault.entitlements
+      properties:
+        com.apple.developer.nfc.readersession.formats:
+          - TAG
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.plexsec.vault
+        PRODUCT_NAME: PlexVault
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        # Release builds must not contain the DEBUG-only simulated card.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_COMPILATION_MODE: wholemodule
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+          DEAD_CODE_STRIPPING: YES
+          # The simulated YubiKey must not exist in a release build at all.
+          EXCLUDED_SOURCE_FILE_NAMES: "MockYubikeyTransport.swift"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+
+schemes:
+  PlexVault:
+    build:
+      targets:
+        PlexVault: all
+    run:
+      config: Debug
+    archive:
+      config: Release

@@ -522,12 +522,16 @@ public final class ProvisioningCeremony {
     public func importKey(creationTime: Date? = nil) async throws {
         try requireCurrent(.keyImport)
         guard let privateKey, let summary = derivedKey else { throw CeremonyError.keyNotDerived }
+        guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
         let fingerprint = Array(try Hex.decode(summary.fingerprintHex))
+        var pin = adminPIN.materializedCopy()
+        defer { VaultKit.wipe(&pin) }
         try await withMutatingStep(.keyImport) {
             try await card.importSignatureKey(
                 privateKey: privateKey,
                 fingerprint: fingerprint,
-                creationTime: creationTime ?? clock()
+                creationTime: creationTime ?? clock(),
+                adminPIN: pin
             )
         }
         advance(to: .readBackCheck)

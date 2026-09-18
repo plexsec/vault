@@ -226,7 +226,16 @@ public final class OpenPGPCard: SignerCard {
         )
     }
 
-    public func importSignatureKey(privateKey: SensitiveBytes, fingerprint: [UInt8], creationTime: Date) async throws {
+    public func importSignatureKey(
+        privateKey: SensitiveBytes,
+        fingerprint: [UInt8],
+        creationTime: Date,
+        adminPIN: [UInt8]
+    ) async throws {
+        // Re-verify in THIS session: the ceremony spans several short-lived NFC
+        // sessions, and VERIFY state does not survive a session boundary.
+        try await verify(pin: adminPIN, reference: .admin, operation: .verifyAdminPIN)
+
         var raw = privateKey.materializedCopy()
         defer { wipe(&raw) }
 
