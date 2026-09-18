@@ -1,0 +1,11 @@
+// Explicit module map for the vendored libsecp256k1 (see ../VENDORED.txt).
+//
+// Only the core library headers are exposed. The experimental modules
+// (ecdh/recovery/extrakeys/schnorrsig/musig/ellswift/silentpayments) are NOT
+// compiled into this target, so their headers are deliberately not declared
+// here: exposing them would advertise symbols that do not exist at link time.
+module Csecp256k1 {
+    header "secp256k1.h"
+    header "secp256k1_preallocated.h"
+    export *
+}

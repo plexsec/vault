@@ -1,0 +1,8 @@
+VERSION=v0.8.0
+SOURCE=https://github.com/bitcoin-core/secp256k1
+TARBALL=https://api.github.com/repos/bitcoin-core/secp256k1/tarball/v0.8.0
+UPSTREAM_SHA256=9380dd972effcbedb8bc915ea77090d811a5fb4ec5588159b529361bb99b1dc6
+VENDORED_FILES=include/*.h (9), src/*.h (54 non-test), src/{secp256k1,precomputed_ecmult,precomputed_ecmult_gen}.c
+CONFIG_HEADER=none (v0.8.0 needs no libsecp256k1-config.h; HAVE_CONFIG_H is never defined)
+MODULES=all disabled (no ENABLE_MODULE_* defined)
+ASM=disabled (USE_ASM_X86_64 / arm asm not enabled; src/asm not vendored)

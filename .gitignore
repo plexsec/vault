@@ -1,0 +1,19 @@
+# Build products
+.build/
+build/
+DerivedData/
+*.xcuserdatad/
+xcuserdata/
+# Python
+__pycache__/
+*.pyc
+.venv/
+tools/derive/.venv/
+# Signing material must never be committed
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+*.key
+# macOS
+.DS_Store

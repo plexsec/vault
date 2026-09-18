@@ -1,0 +1,63 @@
+{
+ "source": "BIP-173 https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki",
+ "note": "Only the checksum/HRP-level cases are included; witness-version-aware examples are out of scope for a pure bech32 codec.",
+ "valid_checksum_strings": [
+  "A12UEL5L",
+  "a12uel5l",
+  "an83characterlonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1tt5tgs",
+  "abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw",
+  "11qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqc8247j",
+  "split1checkupstagehandshakeupstreamerranterredcaperred2y9e3w",
+  "?1ezyfcl"
+ ],
+ "invalid_checksum_strings": [
+  {
+   "string": " 1nwldj5",
+   "reason": "HRP character out of range"
+  },
+  {
+   "string": "\u007f1axkwrx",
+   "reason": "HRP character out of range"
+  },
+  {
+   "string": "\u00801eym55h",
+   "reason": "HRP character out of range"
+  },
+  {
+   "string": "an84characterslonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1569pvx",
+   "reason": "overall max length exceeded"
+  },
+  {
+   "string": "pzry9x0s0muk",
+   "reason": "No separator character"
+  },
+  {
+   "string": "1pzry9x0s0muk",
+   "reason": "Empty HRP"
+  },
+  {
+   "string": "x1b4n0q5v",
+   "reason": "Invalid data character"
+  },
+  {
+   "string": "li1dgmt3",
+   "reason": "Too short checksum"
+  },
+  {
+   "string": "de1lg7wt",
+   "reason": "+ 0xFF: Invalid character in checksum"
+  },
+  {
+   "string": "A1G7SGD8",
+   "reason": "checksum calculated with uppercase form of HRP"
+  },
+  {
+   "string": "10a06t8",
+   "reason": "empty HRP"
+  },
+  {
+   "string": "1qzzfhee",
+   "reason": "empty HRP"
+  }
+ ]
+}
