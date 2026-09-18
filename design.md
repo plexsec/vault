@@ -7,7 +7,7 @@
 This scheme combines three individually limited but complementary devices into an air-gapped signing system:
 
 - A **YubiKey 5 series** device (OpenPGP applet) holds the secp256k1 private key. The key is non-exportable, every signature requires a PIN and a physical touch, and the device maintains a hardware signature counter;
-- An **offline iPhone** runs the signing app, providing a camera, a screen, and NFC/Lightning connectivity. It acts as the YubiKey's "display and input terminal" and holds no secrets itself;
+- An **offline iPhone** runs the signing app, providing a screen, and NFC/USB-C connectivity. It acts as the YubiKey's "display and input terminal" and holds no secrets itself;
 - An **online Desktop wallet** constructs transactions, broadcasts them, and independently verifies the signatures returned by the iPhone.
 
 Compared with conventional hardware wallets, this scheme splits the "secure element" and the "trusted display" across two independent devices and adds cross-checking via cryptographic verification of signatures on the Desktop: **even if the iPhone app is tampered with, it cannot cause the Desktop to broadcast a transaction that differs from the one the Desktop itself constructed.** Private-key backup uses a BIP39 mnemonic; the YubiKey itself is merely a replaceable signer.
@@ -43,6 +43,8 @@ The starting point of this scheme is: the YubiKey offers a mature, mass-produced
 - No Bitcoin Taproot (BIP340 Schnorr) support; the OpenPGP applet only provides ECDSA.
 - No reliance on trust in the iPhone hardware (Secure Enclave) itself; in this scheme the iPhone is treated as a "potentially tampered display terminal."
 - Duress scenarios are not addressed.
+- No Lightning / MFi accessory transport: the 5Ci path is dropped, so transports are NFC and USB-C CCID only (see §7.2).
+- No in-app signing in v1: the app performs the provisioning ceremony of §4.2 and stops there.
 
 ---
 
@@ -51,7 +53,7 @@ The starting point of this scheme is: the YubiKey offers a mature, mass-produced
 ### 4.1 Components and Trust Boundaries
 
 ```
-┌────────────────────┐   QR (UR)   ┌────────────────────┐  NFC / Lightning  ┌──────────────┐
+┌────────────────────┐   QR (UR)   ┌────────────────────┐ NFC / USB-C CCID ┌──────────────┐
 │  Desktop wallet    │ ──────────▶ │  Offline iPhone    │ ────────────────▶ │  YubiKey 5   │
 │  (online)          │             │  Signing app       │   ISO 7816 APDU   │  OpenPGP     │
 │  - build tx A      │ ◀────────── │  - parse/show A    │ ◀──────────────── │  - key sk    │
@@ -75,17 +77,19 @@ The trust relationship among the three is: **the user trusts what they read on t
 Prerequisites: a **brand-new or factory-reset** iPhone, no SIM, airplane mode; a YubiKey 5 (firmware ≥ 5.2.3, supporting secp256k1).
 
 1. **Install the app.** Two options: (a) install from the App Store, then immediately disconnect and remain permanently offline; (b) sideload from audited source code via Xcode (reproducible build, hash verified). Option (b) is the recommended path.
+
+   The reference build uses a **free personal team**. A free-team provisioning profile expires after 7 days, so the app must be re-signed and re-installed from Xcode weekly to keep launching — which means tethering the "offline" iPhone to a computer once a week (see §10). A paid developer account gives 1-year profiles. Re-installing over the same bundle identifier preserves the app's data container, and since the app persists no secrets at all, an accidental deletion costs only a re-pairing, not funds.
 2. **Reset the YubiKey OpenPGP applet** (`ykman openpgp reset`; may be done on the Desktop, since the YubiKey holds no secrets yet).
 3. **Configure YubiKey policies** (done on the iPhone via the app, or in advance on the Desktop):
    - Signature key touch policy `UIF (0xD6) = 0x02` (Fixed: touch permanently required, cannot be disabled later);
    - `PW1 status (0xC4[0]) = 0x00`: PIN must be re-verified for every signature;
    - Set a User PIN (≥ 6 digits) and an Admin PIN (≥ 8 digits), different from each other.
-4. **Generate entropy.** The app uses iOS `SecRandomCopyBytes` by default; users are **strongly advised** to additionally roll dice (≥ 99 rolls of a six-sided die, or 50 rolls mixed with system entropy). The app displays the first 8 hex digits of the SHA-256 of the entropy for later independent verification.
+4. **Generate entropy.** The app uses iOS `SecRandomCopyBytes` as the **sole authoritative** entropy source. Dice are optional and **non-authoritative**: if the user rolls, the app records and displays the rolls as a ceremony witness, but they do not feed the mnemonic, so a dice sequence cannot be used to reproduce it afterwards (see the amendment in §9.5). The app displays the first 8 hex digits of the SHA-256 of the entropy — the *entropy commitment* — for later independent verification.
 5. **Generate the mnemonic** (BIP39, 24 words), display it on screen, and have the user transcribe it onto a steel plate. The app requires the user to back-fill 3 randomly chosen words to confirm correct transcription.
 6. **Derive and import the key.** The app derives along the path (EVM default `m/44'/60'/0'/0/0`, BTC default `m/84'/0'/0'/0/0`) to obtain private key `d`; imports `d` into the signature slot via `PUT DATA 0x4D` (Extended Header List, CRT `0xB6`); writes algorithm attributes `0xC1 = ECDSA secp256k1 (1.3.132.0.10)`, fingerprint `0xC7`, and creation time `0xCE`. After import, the app immediately wipes the mnemonic and `d` from memory.
-7. **6b. Independent cross-verification (mandatory).** On **a separate, independent offline tool** (a different app on a second offline device, a Coldcard, a SeedSigner, etc.), enter the same mnemonic and derive the address at the same path; compare it character by character against the address the app computes from the public key read back from the YubiKey (`GET DATA 0x6E` → public-key DO). **If they differ, the entire procedure is void; restart from step 2.** If dice were used in step 4, also verify at this point that the "dice sequence → mnemonic" mapping matches.
+7. **6b. Independent cross-verification (mandatory).** On **a separate, independent offline tool** — a different implementation, on a different device; this repository ships `tools/derive` (Python, with its own secp256k1, bech32 and Base58Check, so it shares no code with the app) for exactly this purpose — enter the same mnemonic and derive the address at the same path; compare it character by character against the address the app computes from the public key read back from the YubiKey (`GENERATE ASYMMETRIC KEY PAIR`, `P1=0x81` → `7F49` → `86`). **If they differ, the entire procedure is void; restart from step 2.** Because dice are non-authoritative (§4.2 step 4), there is no dice→mnemonic mapping to check here.
 8. **Export the public key.** The app encodes the public key as a UR (`crypto-hdkey` or `crypto-account`, see §6.4) and displays it as a QR code; the Desktop scans it and imports it as a hardware-signer account. The Desktop records the public key `P`, the address, and `expected_counter = 0`.
-9. **Initial signature-counter baseline.** Insert the YubiKey into the Desktop and read `0x93` from `GET DATA 0x7A`; confirm it is 0.
+9. **Initial signature-counter baseline.** Read `0x93` from `GET DATA 0x7A` and confirm it is 0. This is an on-device action over NFC or USB-C: it requires no PIN and exposes no secrets, and no Desktop tether is required.
 10. **Small-value test transaction.** The Desktop constructs a small transfer and runs the full §5 flow. Only after signature verification passes and the transaction confirms on-chain may large amounts be transferred in.
 
 ### 4.3 Key Model
@@ -153,7 +157,7 @@ Using an EVM transaction as the example (PSBT differences are described in §6.3
 
 1. **One transaction = one `PSO:CDS`.** At the specification level, the app is forbidden from retrying a signature for the same request. If the YubiKey returns any error (wrong PIN, touch timeout, NFC disconnect), the entire flow terminates and restarts from the Desktop (which generates a new `requestId`).
 2. **Hard rule for users: any single transaction permits exactly one touch.** If the app says "Signing failed, please touch again," the user should treat the app as compromised and stop. This rule must be repeated on the app's first launch, on the Desktop wallet's pairing page, and in the printed quick-start guide.
-3. **The Desktop is the authoritative reader of the signature counter.** The Desktop connects directly to the YubiKey and reads `0x93` via `GET DATA 0x7A` (no PIN required). The count shown on the iPhone is for reference only.
+3. **The counter is read by a party other than the one that displayed the transaction.** The Desktop, or the iPhone itself over NFC/USB-C, reads `0x93` via `GET DATA 0x7A` (no PIN required). What matters is that the comparison against `expected_counter` is made by something other than the signing screen; a count displayed by the signing app alone is not evidence.
 4. **Counter audit frequency**: at least once at the end of every signing session; for large holdings, once per transaction is recommended. `actual_counter > expected_counter` means the YubiKey produced a signature the Desktop does not know about; migrate assets immediately.
 5. **The iPhone app only displays parsed content and never performs "smart" rewriting.** Undecodable `data` must be shown as raw hex and explicitly labeled "Unable to parse — proceed with caution."
 6. **Address binding.** The app refuses to sign any request whose `address` field does not match the locally paired address, preventing the Desktop from mistakenly sending another account's transaction.
@@ -193,7 +197,7 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 
 | Direction | UR type | Content |
 |---|---|---|
-| iPhone → Desktop (pairing) | `crypto-hdkey` / `crypto-account` | Public key, derivation path, source fingerprint |
+| iPhone → Desktop (pairing) | `crypto-hdkey` (v1 also offers the current `hdkey` naming) | Public key, derivation path, source fingerprint |
 | Desktop → iPhone (EVM) | `eth-sign-request` | requestId (UUID), signData, dataType, chainId, derivationPath, address |
 | iPhone → Desktop (EVM) | `eth-signature` | requestId, signature (65 bytes) |
 | Desktop → iPhone (BTC) | `crypto-psbt` | PSBT bytes |
@@ -201,6 +205,7 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 
 - Data exceeding a single frame uses UR animated QR (fountain-code fragments); the iPhone side supports out-of-order reception.
 - **The Desktop must alarm on unknown UR fields rather than silently dropping them** (to prevent the iPhone from exfiltrating data via extra fields; see §9). The custom Desktop enforces this strictly; third-party wallet behavior is listed in §7.1.
+- **The pairing export omits the chain code by default.** One YubiKey signature slot holds exactly one key (§4.3), so advertising a chain code would invite a wallet to derive child addresses that this card *cannot sign for*. Exporting a chain code is possible but requires an explicit acknowledgement in the app and is recorded in the provisioning report. For the same reason v1 does not emit `crypto-account` / `account-descriptor`: an account-level descriptor describes derivable children.
 
 ### 6.5 YubiKey APDU Mapping
 
@@ -215,7 +220,9 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 | Import private key | `00 DB 3F FF Lc 4D ...` | PUT DATA Extended Header List; requires Admin PIN |
 | Set UIF | `00 DA 00 D6 02 02 20` | Signature slot touch policy Fixed |
 
-On iOS, use CoreNFC `NFCISO7816Tag`, declaring `D27600012401` under `com.apple.developer.nfc.readersession.iso7816.select-identifiers` in Info.plist. A YubiKey 5Ci over Lightning uses the accessory channel of Yubico's official iOS SDK; the APDUs are identical.
+On iOS, NFC uses CoreNFC `NFCISO7816Tag`, declaring `D27600012401` under `com.apple.developer.nfc.readersession.iso7816.select-identifiers` in Info.plist. The wired path is USB-C CCID through CryptoTokenKit (`TKSmartCard`), which presents the YubiKey as a smart-card slot. The APDUs are identical on both transports.
+
+The CCID transport intentionally uses the low-level `TKSmartCard.transmit(_:)` rather than the high-level `send(ins:p1:p2:data:le:)`: the high-level call throws for any status word other than `0x9000`, which would discard the status-word semantics this scheme depends on (`63Cx` retries remaining, `6983` blocked, `6A88` no key present, `6Cxx` wrong Le).
 
 ---
 
@@ -234,9 +241,10 @@ Specification requirement: **any Desktop client claiming compatibility with this
 
 ### 7.2 Hardware
 
-- YubiKey: 5 NFC, 5C NFC, 5Ci (firmware ≥ 5.2.3). The 5Ci uses Lightning; touch confirmation is most reliable over a wired connection. Over NFC, touch behavior must be verified per firmware version. The Security Key series does not support OpenPGP and cannot be used.
-- iPhone: any model supporting CoreNFC tag read/write (iPhone 7 and later, iOS 13+). A dedicated device with the SIM removed and permanent airplane mode is recommended.
-- Desktop: requires a USB port to read the YubiKey counter (macOS / Linux / Windows via PC/SC).
+- YubiKey: 5 NFC, 5C NFC (firmware ≥ 5.2.3). Two transports are supported: **NFC** (CoreNFC ISO 7816) and **USB-C CCID** (CryptoTokenKit). Touch behaviour over NFC must be verified per firmware version; the wired path is more reliable for touch confirmation.
+- **Lightning / 5Ci is no longer supported.** The 5Ci required a vendor MFi accessory SDK that YubiKit 4.x dropped, which made it the project's only external SDK dependency and an availability risk. USB-C CCID replaces it using only Apple frameworks, so a YubiKey 5C NFC is the recommended wired key.
+- iPhone: NFC requires any model supporting CoreNFC tag read/write (iPhone 7 and later). The **USB-C transport requires an iPhone 15 or later**, or a USB-C iPad. A dedicated device with the SIM removed and permanent airplane mode is recommended.
+- Desktop: no longer required for provisioning. For the signing flow it still needs a USB port to read the counter (macOS / Linux / Windows via PC/SC).
 
 ---
 
@@ -320,7 +328,8 @@ Asset theft
 │   ├── Extract sk from YubiKey ── out of scope (secure element / side channel)
 │   ├── Mnemonic leaked during generation (§4.2)
 │   │   ├── App displays a mnemonic it did not actually write ── independent-tool cross-verification (§4.2 6b)
-│   │   ├── Backdoored RNG ── user dice entropy + dice→mnemonic cross-check
+│   │   ├── Backdoored RNG ── NOT mitigated in v1: the system CSPRNG is
+│   │   │   authoritative and dice do not feed the mnemonic (see §9.5)
 │   │   ├── Steganography in exported pubkey QR ── fixed format + Desktop field alarm; no cameras at generation
 │   │   └── Improper transcription / storage ── operational controls (§8.1)
 │   └── iPhone not wiped after generation ── in-app memory wipe; dedicated offline device
@@ -348,7 +357,8 @@ Ratings are residual risk after the listed mitigations.
 | Malicious Desktop builds a transaction the user does not intend | Compromise of the online Desktop | iPhone full-screen human-readable display; ABI decoding; address + chainId binding | User misreads. **Medium** |
 | Pairing-phase public-key / address substitution | Compromise of the Desktop during §4.2 step 8 | Character-by-character address comparison on both devices; small-value test transaction | **Low** |
 | iPhone app tampered (signing phase) | Compromise of the iPhone app | Desktop independent verification (§5.1 18.5); one-touch-per-tx rule; Desktop counter audit | Needs an extra touch **and** a second exit channel, and is detectable afterward. **Low** |
-| iPhone app tampered (generation phase) | Compromise of the iPhone app | Offline fresh device; user dice entropy; independent mnemonic→address→YubiKey cross-verification | Highest single point of app trust; bounded by reproducible builds + verification ritual. **Medium** |
+| iPhone app tampered (generation phase) | Compromise of the iPhone app | Offline fresh device; independent mnemonic→address→YubiKey cross-verification | Highest single point of app trust; bounded by reproducible builds + verification ritual. **Medium** |
+| Backdoored or faulty entropy source (system CSPRNG) | Compromise of the iPhone OS or of its RNG | **None in v1.** `SecRandomCopyBytes` is authoritative and dice are non-authoritative (§4.2 step 4 as amended). An app that emitted a mnemonic of its own choosing would be caught only by the independent cross-check, which compares addresses, not entropy provenance | **Medium** — raised from Low by the v1 entropy policy. A future version can reduce it again by making dice authoritative, which would require the dice→entropy function to be specified and published |
 | Counterfeit YubiKey | Supply-chain substitution | Official channels; Yubico attestation; generation-phase cross-verification fails to reproduce the address | **Low** |
 | Weak YubiKey internal RNG (nonce `k`) | — | `sk` is generated on the iPhone, not the YubiKey; no property of `k` is relied upon beyond secrecy | Leaked `k` ⇒ leaked `sk` (inherent ECDSA); depends on Yubico's secure element. **Low** |
 | QR channel observed by a camera | Physical observation | Channel content is public (unsigned tx + signature) | **Low** |
@@ -362,17 +372,28 @@ Ratings are residual risk after the listed mitigations.
 1. **Only one signing key per YubiKey**, with no in-hardware BIP32 derivation. Bitcoin users face privacy loss from address reuse; multiple accounts require multiple YubiKeys or re-import.
 2. **No Taproot / Schnorr support**, due to OpenPGP applet limitations.
 3. **Multi-input PSBTs require multiple touches**, in tension with the "one touch per transaction" rule; mitigated by stating N up front, but this widens the social-engineering surface.
-4. **NFC session time limit** (about 60 seconds) creates friction with the touch wait; Lightning (5Ci) offers a better experience but is model-limited.
+4. **NFC session time limit** (about 60 seconds). The USB-C CCID transport avoids this entirely and is preferred wherever an iPhone 15+ is available; over NFC, each step of a ceremony needs its own tap because the session cannot span the minutes a ceremony takes.
 5. **App distribution conflicts with the offline requirement**: App Store installation requires connectivity; sideloading requires a computer. Both are one-time compromises to "permanently offline," classified as generation-phase-level trust events.
 6. **The trusted display during the generation phase depends on the app itself; during the signing phase, the Desktop's independent verification provides a backstop.** Generation-phase trust is contained by independent-tool cross-verification and reproducible builds, but cannot be eliminated entirely.
 7. **Dependence on Yubico's closed-source firmware.** The OpenPGP applet's behavior can be black-box verified via APDUs, but the internal implementation is not auditable.
-8. **Counter auditing requires the YubiKey to touch the online Desktop.** Although reading the counter requires no PIN and exposes no secrets, this step runs counter to the intuition of a "cold" device and must be explicitly explained as safe in the documentation.
+8. **Counter auditing requires the YubiKey to touch an online device.** Although reading the counter requires no PIN and exposes no secrets, this step runs counter to the intuition of a "cold" device and must be explicitly explained as safe in the documentation. During provisioning the read happens on the offline iPhone itself (§4.2 step 9).
+
+9. **v1 is provisioning-only.** The app resets a card, generates or restores a mnemonic, derives one key, imports it, verifies it by read-back, cross-checks the address and exports the public key. It does **not** sign. The signing flow (§5), the `eth-sign-request`/`eth-signature` exchange, the counter-delta audit and therefore the small-value test transaction of §4.2 step 10 are v2 work. Everything in §5 should be read as design intent for v2, not as shipped behaviour.
+
+10. **Dice entropy is non-authoritative in v1** (§4.2 step 4). A backdoored or faulty system CSPRNG is therefore not mitigated by user dice, which is why §9.5 records that residual risk as Medium rather than Low. Reproducible builds and the independent address cross-check bound the risk but cannot remove it.
+
+11. **One key per YubiKey limits desktop-wallet interoperability.** Wallets that expect an account-level extended public key *with a chain code* in order to enumerate accounts cannot be served without advertising child addresses this YubiKey cannot sign for. v1 therefore exports a single address-level key with no chain code by default (§6.4), and MetaMask's QR hardware flow — which keys off the Keystone UR family — may require manual confirmation rather than automatic account discovery. A custom Desktop client is the clean fix and is v2 work.
+
+12. **Free-personal-team sideloading expires every 7 days** (§4.2 step 1), so the offline iPhone must be tethered to a computer weekly. The app stores no secrets, so this costs a re-pairing at worst, but it does periodically put the device in contact with an online machine and should be understood as part of the trust story.
 
 ---
 
 ## 11. Roadmap
 
-- **v0.4**: Publish reference implementation source (iOS app + Electron/Tauri Desktop); reproducible-build pipeline.
+- **v0.1 (implemented)**: iOS **provisioning app only** — §4.2 steps 2–9 over NFC and one wired transport (USB-C CCID), with `tools/derive` as the independent cross-check oracle, a scripted card for device-free testing, a mechanical release audit, and BIP39/BIP32/BC-UR conformance tests against published vectors. No signing.
+- **v0.2**: Signing flow (§5) — `PSO:CDS`, `eth-sign-request`/`eth-signature` URs, counter-delta auditing, and the small-value test transaction of §4.2 step 10.
+- **v0.3**: Bitcoin PSBT signing (§6.3) and the custom Desktop client with the §5.1 step 18.5 verification and unknown-UR-field alarm.
+- **v0.4**: Publish the reference implementation source (iOS app + Electron/Tauri Desktop); reproducible-build pipeline.
 - **v0.5**: Third-party security audit (focus: §4.2 generation flow, §5.1 step 18.5, UR parser).
 - **v0.6**: Multi-YubiKey Bitcoin P2WSH multisig workflow; Desktop-side multisig coordination.
 - **Future exploration**: add Taproot when the YubiKey or other smart-card applets support BIP340 Schnorr; evaluate the PIV applet as an alternative.
@@ -395,12 +416,13 @@ Ratings are residual risk after the listed mitigations.
 - [ ] iPhone factory-reset, no SIM, airplane mode
 - [ ] App hash matches the published reproducible-build hash (sideload method)
 - [ ] YubiKey reset; UIF=Fixed; PW1 status=0x00; PINs set
-- [ ] Dice rolls ≥ 99; first 8 hex digits of entropy hash shown by app recorded: `________`
+- [ ] Entropy commitment (first 8 hex digits of SHA-256 of the entropy) shown by the app, recorded: `________`
+- [ ] (Optional, non-authoritative) dice rolls ≥ 99 recorded as a ceremony witness: `________`
+- [ ] The independent tool agrees with the address read back from the YubiKey ✔ (§4.2 step 6b)
 - [ ] Mnemonic transcribed twice; back-fill check passed
 - [ ] Address derived by independent tool: `________________`
 - [ ] Address read back from YubiKey: `________________`
 - [ ] Both match ✔
-- [ ] Mnemonic derived from dice sequence by independent tool matches the app ✔
 - [ ] Address shown on Desktop after pairing matches iPhone ✔
 - [ ] Desktop reads YubiKey counter = 0 ✔
 - [ ] Small-value test transaction: Desktop verification passed, confirmed on-chain ✔

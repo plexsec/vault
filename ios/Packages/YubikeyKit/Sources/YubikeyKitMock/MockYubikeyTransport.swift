@@ -48,6 +48,10 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     /// Every APDU received, for trace assertions.
     public private(set) var receivedAPDUs: [String] = []
+    /// When set, `GENERATE ASYMMETRIC KEY PAIR` returns this key instead of the
+    /// one corresponding to the imported scalar — i.e. a counterfeit or tampered
+    /// card that does not hold the key it claims to.
+    public var storedPublicKeyOverride: [UInt8]?
     public var injectedFailure: InjectedFailure = .none
     private var didInjectOnce = false
     private var pendingChainedData: [UInt8]?
@@ -298,7 +302,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private func readPublicKey(_ command: CommandAPDU) throws -> ResponseAPDU {
         if let error = try requireSelected() { return error }
         guard let signatureKey else { return status(0x6A, 0x88) }
-        let publicKey = try Secp256k1.publicKey(fromPrivateKey: signatureKey)
+        let publicKey = try storedPublicKeyOverride ?? Secp256k1.publicKey(fromPrivateKey: signatureKey)
         let point = TLV(tag: OpenPGPDataObject.ecdsaPublicPoint, value: publicKey).encoded
         let template = TLV(tag: OpenPGPDataObject.publicKeyTemplate, value: point).encoded
         return ResponseAPDU(data: template, status: .success)

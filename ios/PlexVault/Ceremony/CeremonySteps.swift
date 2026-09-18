@@ -78,7 +78,7 @@ struct ResetStepView: View {
                 isNumeric: true
             )
 
-            Text("Factory default Admin PIN: 12345678. Reset restores it, so the next step sets your own.")
+            Text("A factory-reset key uses 12345678. If this YubiKey was provisioned before, enter the Admin PIN you set then — and note that three wrong attempts permanently block this card for provisioning.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

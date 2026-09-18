@@ -17,3 +17,6 @@ tools/derive/.venv/
 *.key
 # macOS
 .DS_Store
+# Xcode/XcodeGen build output
+ios/build/
+*.xcresult
