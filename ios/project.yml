@@ -91,12 +91,32 @@ targets:
           EXCLUDED_SOURCE_FILE_NAMES: "MockYubikeyTransport.swift"
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
 
+  # UI tests drive the real app in a simulator, so the setup screen and the
+  # ceremony's step gating are covered by automation rather than by hand.
+  PlexVaultUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: PlexVaultUITests
+    dependencies:
+      - target: PlexVault
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.plexsec.vault.uitests
+        TEST_TARGET_NAME: PlexVault
+        CODE_SIGN_STYLE: Automatic
+
 schemes:
   PlexVault:
     build:
       targets:
         PlexVault: all
+        PlexVaultUITests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - PlexVaultUITests
     archive:
       config: Release

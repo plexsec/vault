@@ -13,6 +13,7 @@
 		32C6D8D273D2584A10695987 /* SecretEntryField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 961B2568A7E9DB1563B80115 /* SecretEntryField.swift */; };
 		36A93EAE33708CE1B102D692 /* PlexVaultApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */; };
 		3B33481E22E7BD547502F6EA /* YubikeyKitNFC in Frameworks */ = {isa = PBXBuildFile; productRef = A9241AD16D138382E96C9A4F /* YubikeyKitNFC */; };
+		68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7029409A50A278443DA04717 /* SetupFlowUITests.swift */; };
 		76A9922172A9452E09512B36 /* YubikeyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4FFA45CC3FEACDAFA238223C /* YubikeyKit */; };
 		7C51E72B2FB24B55FCE108C1 /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = 96FB3B402292C2FB1A645A38 /* VaultKit */; };
 		7EF6CA9F2329A2F1F0F4B779 /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56C3AD3CE58AE21CA21E813 /* ReportView.swift */; };
@@ -24,6 +25,16 @@
 		EBBAD967C4AB3EF33F4D5E43 /* YubikeyKitCCID in Frameworks */ = {isa = PBXBuildFile; productRef = 5148AB7BCC6FBDC80A2B9896 /* YubikeyKitCCID */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		EF2A7AB263C247B3C63AD2FA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 86BD21158729BD1B17573212 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2FEC9C37DFAC162F495F7C93;
+			remoteInfo = PlexVault;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		0309A73C9494EC5D851C7CA2 /* PlexVault.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PlexVault.entitlements; sourceTree = "<group>"; };
 		0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatedCardTransport.swift; sourceTree = "<group>"; };
@@ -32,9 +43,11 @@
 		4C86391DCA17B1F914EB9256 /* CeremonyViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyViewModel.swift; sourceTree = "<group>"; };
 		637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlexVaultApp.swift; sourceTree = "<group>"; };
 		6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		7029409A50A278443DA04717 /* SetupFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupFlowUITests.swift; sourceTree = "<group>"; };
 		88C79A02C45351291BF93ED0 /* VaultKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VaultKit; path = Packages/VaultKit; sourceTree = SOURCE_ROOT; };
 		961B2568A7E9DB1563B80115 /* SecretEntryField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretEntryField.swift; sourceTree = "<group>"; };
 		A34A89CB25F1889E8419B947 /* PlexVault.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PlexVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B633C23222CA0AAE9EFE3EF7 /* PlexVaultUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PlexVaultUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C317FC416A1CCC483A5ACEB2 /* YubikeyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = YubikeyKit; path = Packages/YubikeyKit; sourceTree = SOURCE_ROOT; };
 		C56C3AD3CE58AE21CA21E813 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		C6B653D5F78724154C95A233 /* CeremonySteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonySteps.swift; sourceTree = "<group>"; };
@@ -70,6 +83,7 @@
 			isa = PBXGroup;
 			children = (
 				A34A89CB25F1889E8419B947 /* PlexVault.app */,
+				B633C23222CA0AAE9EFE3EF7 /* PlexVaultUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,6 +96,14 @@
 				C317FC416A1CCC483A5ACEB2 /* YubikeyKit */,
 			);
 			path = Packages;
+			sourceTree = "<group>";
+		};
+		562D40D650E836605B51664A /* PlexVaultUITests */ = {
+			isa = PBXGroup;
+			children = (
+				7029409A50A278443DA04717 /* SetupFlowUITests.swift */,
+			);
+			path = PlexVaultUITests;
 			sourceTree = "<group>";
 		};
 		590F5589AB8C4445370B217C /* Ceremony */ = {
@@ -100,6 +122,7 @@
 			children = (
 				3C0F700D1521078E4D7E7A68 /* Packages */,
 				E1101678A0D0092AA60C283F /* PlexVault */,
+				562D40D650E836605B51664A /* PlexVaultUITests */,
 				2374F7607E4614ACF21FF7E3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -185,6 +208,24 @@
 			productReference = A34A89CB25F1889E8419B947 /* PlexVault.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AE1CED551B747F301C6A14A5 /* PlexVaultUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0DD51C2CC323182E099C8AF7 /* Build configuration list for PBXNativeTarget "PlexVaultUITests" */;
+			buildPhases = (
+				D54527DDB107F4217F5B447F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1C142EDA7FB0960963C3BE57 /* PBXTargetDependency */,
+			);
+			name = PlexVaultUITests;
+			packageProductDependencies = (
+			);
+			productName = PlexVaultUITests;
+			productReference = B633C23222CA0AAE9EFE3EF7 /* PlexVaultUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -197,6 +238,10 @@
 					2FEC9C37DFAC162F495F7C93 = {
 						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
+					};
+					AE1CED551B747F301C6A14A5 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = 2FEC9C37DFAC162F495F7C93;
 					};
 				};
 			};
@@ -219,6 +264,7 @@
 			projectRoot = "";
 			targets = (
 				2FEC9C37DFAC162F495F7C93 /* PlexVault */,
+				AE1CED551B747F301C6A14A5 /* PlexVaultUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -242,9 +288,59 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D54527DDB107F4217F5B447F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		1C142EDA7FB0960963C3BE57 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2FEC9C37DFAC162F495F7C93 /* PlexVault */;
+			targetProxy = EF2A7AB263C247B3C63AD2FA /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		15CA676823F14F5AA840023A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.plexsec.vault.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PlexVault;
+			};
+			name = Debug;
+		};
+		189AD44B560434C7313CC240 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.plexsec.vault.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PlexVault;
+			};
+			name = Release;
+		};
 		44FA5A08A4F7F0D09DD3561E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -433,6 +529,15 @@
 			buildConfigurations = (
 				78C52E020C36F32957B36D5F /* Debug */,
 				760DED3CDB63122619327197 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		0DD51C2CC323182E099C8AF7 /* Build configuration list for PBXNativeTarget "PlexVaultUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				15CA676823F14F5AA840023A /* Debug */,
+				189AD44B560434C7313CC240 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

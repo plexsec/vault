@@ -275,7 +275,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     }
 }
 
-public enum CeremonyMode: String, Codable, Sendable {
+public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
     /// Fresh generation (design.md §4.2).
     case freshGeneration
     /// Recovery/restore of an existing mnemonic (design.md §8.2, §8.3 drill).

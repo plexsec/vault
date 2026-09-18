@@ -3,58 +3,83 @@ import VaultKit
 import YubikeyKit
 
 /// Step 1 — choose transport and mode, confirm device posture, review the rules.
+///
+/// Two deliberate UI decisions, both learned from driving the real screen:
+///
+/// * Selection is made with explicit, tappable rows rather than a `Picker`. An
+///   `.inline` picker outside a `Form`/`List` renders as a **wheel** on iOS 26 —
+///   a 216pt spinning control whose selected value is already the default, so
+///   tapping it appears to do nothing. Rows are unambiguous and, unlike a wheel,
+///   are real buttons for VoiceOver and for UI tests.
+/// * The primary action sits in a pinned bottom bar, so it is visible without
+///   scrolling, and it states *why* it is disabled instead of silently ignoring
+///   taps.
 struct SetupView: View {
     @Bindable var viewModel: CeremonyViewModel
     @State private var rulesAcknowledged = false
+    @State private var showExplanation = false
+    @State private var showBuildIdentity = false
+
+    private var canBegin: Bool { rulesAcknowledged }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
 
+                // Explanatory and reference material is collapsed by default: the
+                // controls a user must operate come first, so the screen does not
+                // require scrolling past prose to reach the primary action.
                 section("What this does") {
-                    Text("""
-                    This app provisions a YubiKey as an air-gapped signer. It creates a \
-                    24-word BIP39 mnemonic, derives one signing key from it, imports that \
-                    key into the YubiKey's OpenPGP applet, verifies the import by reading \
-                    the public key back, and exports the public key for your desktop \
-                    wallet. It never signs anything, and it never needs a network.
-                    """)
-                    .font(.callout)
+                    DisclosureGroup("How this works", isExpanded: $showExplanation) {
+                        Text("""
+                        This app provisions a YubiKey as an air-gapped signer. It creates a \
+                        24-word BIP39 mnemonic, derives one signing key from it, imports that \
+                        key into the YubiKey's OpenPGP applet, verifies the import by reading \
+                        the public key back, and exports the public key for your desktop \
+                        wallet. It never signs anything, and it never needs a network.
+                        """)
+                        .font(.callout)
+                        .padding(.top, 6)
+                    }
+                    .font(.callout.weight(.medium))
                 }
 
                 section("Transport") {
                     ForEach(CeremonyViewModel.TransportChoice.allCases) { choice in
-                        TransportRow(
-                            choice: choice,
-                            isSelected: viewModel.transportChoice == choice,
-                            select: { viewModel.transportChoice = choice }
-                        )
+                        ChoiceRow(
+                            title: choice.title,
+                            detail: choice.detail,
+                            isSelected: viewModel.transportChoice == choice
+                        ) {
+                            viewModel.transportChoice = choice
+                        }
                     }
                 }
 
                 section("Mode") {
-                    Picker("Mode", selection: $viewModel.mode) {
-                        Text("Generate a new wallet").tag(CeremonyMode.freshGeneration)
-                        Text("Restore from a mnemonic").tag(CeremonyMode.restoreFromMnemonic)
-                    }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                    if viewModel.mode == .restoreFromMnemonic {
-                        Text("Restore re-imports an existing mnemonic into a fresh YubiKey. The words are typed into this app, so use a device you trust.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    ForEach(CeremonyMode.allCases, id: \.self) { mode in
+                        ChoiceRow(
+                            title: Self.title(for: mode),
+                            detail: Self.detail(for: mode),
+                            isSelected: viewModel.mode == mode
+                        ) {
+                            viewModel.mode = mode
+                        }
                     }
                 }
 
                 section("Chain") {
-                    Picker("Chain", selection: $viewModel.chain) {
-                        ForEach(SigningChain.allCases, id: \.self) { chain in
-                            Text(chain.displayName).tag(chain)
+                    ForEach(SigningChain.allCases, id: \.self) { chain in
+                        ChoiceRow(
+                            title: chain.displayName,
+                            detail: "Path \(chain.defaultPath.description)",
+                            isSelected: viewModel.chain == chain
+                        ) {
+                            viewModel.chain = chain
                         }
                     }
-                    .pickerStyle(.segmented)
-                    Text("One YubiKey signature slot holds exactly one key, so a ceremony provisions one address. Path: \(viewModel.chain.defaultPath.description)")
+                    Text("One YubiKey signature slot holds exactly one key, so a ceremony provisions one address.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -75,27 +100,59 @@ struct SetupView: View {
                 }
 
                 section("Build identity") {
-                    KeyValueRows(rows: [
-                        ("Version", BuildInfo.version),
-                        ("Binary SHA-256", BuildInfo.binarySHA256 ?? "unavailable"),
-                    ])
-                    Text("Compare this hash against the published reproducible-build hash before writing down any words.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    DisclosureGroup(isExpanded: $showBuildIdentity) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            KeyValueRows(rows: [
+                                ("Version", BuildInfo.version),
+                                ("Binary SHA-256", BuildInfo.binarySHA256 ?? "unavailable"),
+                            ])
+                            Text("Compare this hash against the published reproducible-build hash before writing down any words.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Build identity").font(.callout.weight(.medium))
+                            Text(BuildInfo.shortHash)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-
-                Button {
-                    viewModel.start()
-                } label: {
-                    Text("Begin ceremony").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!rulesAcknowledged)
-                .padding(.top, 8)
             }
             .padding()
+            .padding(.bottom, 8)
         }
+        .safeAreaInset(edge: .bottom) { primaryActionBar }
+    }
+
+    /// Always-visible primary action with an explicit reason when it is disabled.
+    private var primaryActionBar: some View {
+        VStack(spacing: 6) {
+            Button {
+                viewModel.start()
+            } label: {
+                Text("Begin ceremony")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(!canBegin)
+            .accessibilityIdentifier("begin-ceremony")
+
+            if !canBegin {
+                Text("Tick \"No cameras or other people can see this screen\" to continue.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .background(.bar)
     }
 
     private var header: some View {
@@ -114,6 +171,22 @@ struct SetupView: View {
         }
     }
 
+    private static func title(for mode: CeremonyMode) -> String {
+        switch mode {
+        case .freshGeneration: return "Generate a new wallet"
+        case .restoreFromMnemonic: return "Restore from a mnemonic"
+        }
+    }
+
+    private static func detail(for mode: CeremonyMode) -> String {
+        switch mode {
+        case .freshGeneration:
+            return "Creates new entropy and a new 24-word mnemonic."
+        case .restoreFromMnemonic:
+            return "Re-imports an existing mnemonic into a fresh YubiKey. The words are typed into this app, so only do this on a device you trust."
+        }
+    }
+
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title.uppercased())
@@ -124,8 +197,15 @@ struct SetupView: View {
     }
 }
 
-private struct TransportRow: View {
-    let choice: CeremonyViewModel.TransportChoice
+/// A selectable row.
+///
+/// Exposed to accessibility (and to UI tests) as a button labelled with just its
+/// title, plus the `selected` trait — rather than a button whose label is the
+/// title concatenated with its description, which reads badly in VoiceOver and
+/// makes the element impossible to address by name.
+struct ChoiceRow: View {
+    let title: String
+    let detail: String?
     let isSelected: Bool
     let select: () -> Void
 
@@ -135,8 +215,10 @@ private struct TransportRow: View {
                 Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(choice.title).font(.callout.weight(.medium))
-                    Text(choice.detail).font(.caption).foregroundStyle(.secondary)
+                    Text(title).font(.callout.weight(.medium))
+                    if let detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -144,7 +226,15 @@ private struct TransportRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Label override + selected trait, applied directly to the button.
+        // Wrapping the button in `.accessibilityElement(children: .ignore)`
+        // instead replaces the element entirely, so it stops being a button and
+        // can no longer be addressed as one.
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityIdentifier("choice-\(title)")
     }
 }

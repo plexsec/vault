@@ -40,7 +40,8 @@ tools/verify.sh
 
 # individual pieces
 cd ios/Packages/VaultKit  && swift test      # 81 tests: crypto, BIP39/BIP32, addresses, BC-UR, ceremony
-cd ios/Packages/YubikeyKit && swift test     # 22 tests: APDU codec, OpenPGP card, transports
+cd ios/Packages/YubikeyKit && swift test     # 27 tests: APDU codec, OpenPGP card, transports, end-to-end
+cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 4 UI tests
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest
 
@@ -66,6 +67,10 @@ ceremony be exercised with no hardware present.
    straddle every block boundary — this is what caught a Keccak padding bug.
 4. **A release audit that is itself tested.** `tools/audit-release.sh` fails on a
    DEBUG bundle, because an audit that cannot fail is not an audit.
+5. **UI automation for the screens a user can get stuck on.**
+   `ios/PlexVaultUITests` drives the real app in a simulator and found a genuine
+   defect: an `.inline` picker rendering as a wheel, so tapping "Generate a new
+   wallet" did nothing.
 
 ## Known gaps
 

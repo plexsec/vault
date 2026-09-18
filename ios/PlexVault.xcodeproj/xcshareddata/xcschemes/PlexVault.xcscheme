@@ -21,6 +21,20 @@
                ReferencedContainer = "container:PlexVault.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AE1CED551B747F301C6A14A5"
+               BuildableName = "PlexVaultUITests.xctest"
+               BlueprintName = "PlexVaultUITests"
+               ReferencedContainer = "container:PlexVault.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -39,7 +53,20 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AE1CED551B747F301C6A14A5"
+               BuildableName = "PlexVaultUITests.xctest"
+               BlueprintName = "PlexVaultUITests"
+               ReferencedContainer = "container:PlexVault.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

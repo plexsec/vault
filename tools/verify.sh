@@ -51,6 +51,34 @@ step "YubikeyKit tests (APDU codec, OpenPGP card, transports)"
 (cd "$REPO_ROOT/ios/Packages/YubikeyKit" && swift test) || fail "YubikeyKit tests"
 
 if [[ "$QUICK" == "0" ]]; then
+  step "App UI tests (setup screen and ceremony entry)"
+  # Finds an iOS 26 simulator; skips with a warning rather than failing when none
+  # is installed, since these tests need a simulator runtime.
+  SIM_ID="$(xcrun simctl list devices available --json 2>/dev/null | python3 -c '
+import json, sys
+data = json.load(sys.stdin).get("devices", {})
+for runtime in sorted(data):
+    if "iOS-26" not in runtime:
+        continue
+    for device in data[runtime]:
+        if device.get("isAvailable") and device.get("name", "").startswith("iPhone"):
+            print(device["udid"])
+            raise SystemExit
+' 2>/dev/null || true)"
+  if [[ -n "$SIM_ID" ]]; then
+    if ! (cd "$REPO_ROOT/ios" && xcodebuild test \
+        -project PlexVault.xcodeproj -scheme PlexVault \
+        -sdk iphonesimulator -destination "platform=iOS Simulator,id=$SIM_ID" \
+        CODE_SIGNING_ALLOWED=NO) > /tmp/plexvault-uitests.log 2>&1; then
+      echo "see /tmp/plexvault-uitests.log"
+      fail "UI tests"
+    fi
+    echo "  ok: setup screen and ceremony entry behave as expected"
+  else
+    echo "  skipped: no iOS 26 iPhone simulator installed"
+  fi
+
+
   step "App builds (Release, unsigned)"
   (cd "$REPO_ROOT/ios" && xcodebuild \
       -project PlexVault.xcodeproj -scheme PlexVault \

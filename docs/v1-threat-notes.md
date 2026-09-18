@@ -119,6 +119,30 @@ deleted install is re-doing the pairing.
 | Protocol assumption wrong (import template, `0xC4`, `0xCE`) | Fails visibly: rejection status words or a read-back mismatch; all four documented in `m0-hardware-verification.md` | **Low** |
 | Loss of availability | Mnemonic recovery verified by the restore path; two steel plates | **Low** (operational) |
 
+## UI defects found and fixed by automation
+
+The setup screen originally used `Picker(.inline)` for the mode choice. On
+iOS 26 that renders as a **wheel** — a 216pt control whose selected value is
+already the default — so tapping "Generate a new wallet" did nothing and the
+screen appeared broken. Beyond the picker itself:
+
+* the primary action sat at the bottom of a very long scroll view and was
+  disabled without saying why, so a tap near the top of the screen appeared to do
+  nothing;
+* the transport rows exposed accessibility labels of `"NFC, Hold the iPhone
+  against the YubiKey…"` (title concatenated with description), which read badly
+  in VoiceOver and could not be addressed by name.
+
+Fixes: selection is now made with explicit tappable rows carrying a `selected`
+trait and a title-only accessibility label; the primary action is pinned in a
+bottom bar and states the reason when disabled; explanatory and reference
+sections are collapsed so the controls fit on the first screen.
+
+`ios/PlexVaultUITests` now drives the real app in a simulator and locks all of
+this in, including an assertion that the mode rows are visible and unobscured on
+launch. Running the audit's sibling check by hand would not have caught any of
+it: the defect was only visible by tapping the actual screen.
+
 ## What would raise confidence most, in order
 
 1. A third-party audit focused on the generation flow, the import template and the
