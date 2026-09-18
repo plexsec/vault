@@ -156,6 +156,9 @@ public final class ProvisioningCeremony {
     private var mnemonicConfirmed = false
     private var cardHeldExistingKey = false
     private var mutatingStepInFlight: CeremonyStep?
+    /// Held only between the PIN step and the policy step so that PUT DATA of the
+    /// protected policy objects can authenticate. Wiped with everything else.
+    private var sessionAdminPIN: SensitiveBytes?
     private var independentCheckResult: IndependentCheck?
     private var pairingUR: UR?
 
@@ -331,6 +334,8 @@ public final class ProvisioningCeremony {
         try await withMutatingStep(.pinProvisioning) {
             try await card.setPINs(userPIN: userPIN, adminPIN: adminPIN)
         }
+        sessionAdminPIN?.zeroize()
+        sessionAdminPIN = SensitiveBytes(copying: adminPIN)
         advance(to: .policy)
     }
 
@@ -338,8 +343,11 @@ public final class ProvisioningCeremony {
 
     public func applyPolicy() async throws {
         try requireCurrent(.policy)
+        guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
+        var pin = adminPIN.materializedCopy()
+        defer { VaultKit.wipe(&pin) }
         try await withMutatingStep(.policy) {
-            try await card.applyPolicy()
+            try await card.applyPolicy(adminPIN: pin)
         }
         let after = try await card.inventory()
         inventory = after
@@ -673,6 +681,7 @@ public final class ProvisioningCeremony {
         entropy?.zeroize(); entropy = nil
         seed?.zeroize(); seed = nil
         privateKey?.zeroize(); privateKey = nil
+        sessionAdminPIN?.zeroize(); sessionAdminPIN = nil
         chainCode = nil
         for index in mnemonicWords.indices { mnemonicWords[index] = "" }
         mnemonicWords = []

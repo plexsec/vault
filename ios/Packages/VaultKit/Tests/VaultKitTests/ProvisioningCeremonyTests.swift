@@ -114,7 +114,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
         // The card call sequence must match design.md §4.2 exactly.
         XCTAssertEqual(card.calls, [
-            .inventory, .reset, .inventory, .setPINs, .applyPolicy, .inventory,
+            .inventory, .reset, .inventory, .setPINs,
+            .applyPolicy(adminPIN: Array("87654321".utf8)), .inventory,
             .importSignatureKey(fingerprint: walk.summary.fingerprintHex),
             .readSignaturePublicKey, .signatureCounter,
         ])

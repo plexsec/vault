@@ -10,7 +10,7 @@ final class MockSignerCard: SignerCard {
         case inventory
         case reset
         case setPINs
-        case applyPolicy
+        case applyPolicy(adminPIN: [UInt8])
         case importSignatureKey(fingerprint: String)
         case readSignaturePublicKey
         case signatureCounter
@@ -95,8 +95,8 @@ final class MockSignerCard: SignerCard {
         pinChangeCount += 1
     }
 
-    func applyPolicy() async throws {
-        calls.append(.applyPolicy)
+    func applyPolicy(adminPIN: [UInt8]) async throws {
+        calls.append(.applyPolicy(adminPIN: adminPIN))
         if failurePoint == .applyPolicy { throw CardError.unexpectedStatusWord(sw1: 0x6A, sw2: 0x80) }
         appliedPolicy = true
         dataObjects[0xD6] = [0x02, 0x20]

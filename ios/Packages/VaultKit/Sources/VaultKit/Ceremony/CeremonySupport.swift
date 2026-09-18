@@ -81,7 +81,9 @@ public protocol SignerCard: AnyObject {
 
     /// Applies the mandatory policy: UIF = Fixed on the signature slot and
     /// PW1 status 0x00 (PIN required for every signature).
-    func applyPolicy() async throws
+    ///
+    /// The Admin PIN is required because these are protected data objects.
+    func applyPolicy(adminPIN: [UInt8]) async throws
 
     /// `PUT DATA 3F FF` with the Extended Header List for CRT B6, then the
     /// algorithm attributes, fingerprint and creation time.
@@ -276,6 +278,7 @@ public enum CeremonyMode: String, Codable, Sendable {
 
 public enum CeremonyError: Swift.Error, Equatable {
     case stepOutOfOrder(expected: CeremonyStep, actual: CeremonyStep)
+    case missingAdminPIN
     case alreadyRunning
     case notRunning
     case missingEntropy
@@ -298,6 +301,8 @@ public enum CeremonyError: Swift.Error, Equatable {
         switch self {
         case .stepOutOfOrder(let expected, let actual):
             return "Ceremony order violation: \(actual.title) cannot run before \(expected.title)."
+        case .missingAdminPIN:
+            return "No Admin PIN is held for this session; the PIN step must run first."
         case .alreadyRunning: return "A ceremony is already in progress."
         case .notRunning: return "No ceremony is in progress."
         case .missingEntropy: return "No entropy has been generated yet."
