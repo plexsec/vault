@@ -84,9 +84,10 @@ ceremony be exercised with no hardware present.
   All four are specified with resolution procedures in
   [`docs/m0-hardware-verification.md`](docs/m0-hardware-verification.md).
 * No signing (v0.2), no Bitcoin PSBT (v0.3), no desktop client (v0.3).
-* Dice entropy is non-authoritative in v0.1, which raises the backdoored-RNG
-  residual risk to Medium — recorded in §9.5 of the design and in
-  [`docs/v1-threat-notes.md`](docs/v1-threat-notes.md).
+* Dice entropy is non-authoritative in v0.1, but the 256-bit entropy is now the
+  XOR of the YubiKey's hardware RNG (`GET CHALLENGE`) and the iOS CSPRNG, so a
+  single backdoored RNG cannot determine the key — recorded as Low in §9.5 of the
+  design and in [`docs/v1-threat-notes.md`](docs/v1-threat-notes.md).
 * The Ed25519 key sits in the authentication slot, which has no hardware
   signature counter, so the counter audit covers secp256k1 chains only. PIN and
   touch still gate every Ed25519 signature; the trade is recorded in §4.3, §9.5

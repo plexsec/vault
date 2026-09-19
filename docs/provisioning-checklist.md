@@ -45,7 +45,8 @@ step completed rather than trusting the flow.
 - [ ] **Policy applied**
       - [ ] Touch policy reads **Fixed**
       - [ ] PW1 status reads `0x00`
-- [ ] **Entropy commitment** (first 8 hex digits of SHA-256 of the entropy):
+- [ ] **Entropy commitment** (first 8 hex digits of SHA-256 of the entropy read
+      from the YubiKey's hardware RNG):
       `________`
       - [ ] (Optional, non-authoritative) dice rolls ≥ 99 recorded:
             `________________________________________`

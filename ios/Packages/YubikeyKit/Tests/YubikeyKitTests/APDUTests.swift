@@ -57,6 +57,22 @@ final class APDUTests: XCTestCase {
         )
     }
 
+    func testGetChallengeAPDUBytes() {
+        XCTAssertEqual(
+            CommandAPDU(cla: 0x00, ins: 0x84, p1: 0x00, p2: 0x00, expectedLength: 32).hex,
+            "0084000020"
+        )
+    }
+
+    func testGetChallengeReturnsHardwareRandomBytes() async throws {
+        let transport = MockYubikeyTransport()
+        transport.challengeBytes = [UInt8](repeating: 0xAB, count: 32)
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        let bytes = try await card.randomBytes(count: 32)
+        XCTAssertTrue(bytes.isEqualTo([UInt8](repeating: 0xAB, count: 32)))
+    }
+
     func testReadPublicKeyAPDUBytes() {
         // The CRT in the command data addresses the slot: B6 signature, A4 auth.
         let signature = CommandAPDU(cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
@@ -309,8 +325,7 @@ final class APDUTests: XCTestCase {
         // No key yet.
         await XCTAssertThrowsErrorAsync { try await card.readPublicKey(slot: .signature) }
 
-        let entropy = ScriptedEntropySource(repeating: 0x2A, count: 32)
-        let privateKey = try entropy.randomBytes(count: 32)
+        let privateKey = SensitiveBytes(copying: [UInt8](repeating: 0x2A, count: 32))
         try await card.importKey(
             slot: .signature,
             algorithm: .secp256k1,
@@ -357,7 +372,7 @@ final class APDUTests: XCTestCase {
         // Before import, the authentication slot is empty.
         await XCTAssertThrowsErrorAsync { try await card.readPublicKey(slot: .authentication) }
 
-        let seed = try ScriptedEntropySource(repeating: 0x5A, count: 32).randomBytes(count: 32)
+        let seed = SensitiveBytes(copying: [UInt8](repeating: 0x5A, count: 32))
         try await card.importKey(
             slot: .authentication,
             algorithm: .ed25519,
@@ -373,7 +388,7 @@ final class APDUTests: XCTestCase {
         XCTAssertEqual(transport.currentFingerprint(.authentication), [UInt8](repeating: 0xCD, count: 20))
 
         // Writing secp256k1 into the signature slot must not disturb it.
-        let scalar = try ScriptedEntropySource(repeating: 0x11, count: 32).randomBytes(count: 32)
+        let scalar = SensitiveBytes(copying: [UInt8](repeating: 0x11, count: 32))
         try await card.importKey(
             slot: .signature,
             algorithm: .secp256k1,
@@ -448,7 +463,7 @@ final class APDUTests: XCTestCase {
             try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
             try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
             try await card.applyPolicy(adminPIN: Array("87654321".utf8))
-            let scalar = try ScriptedEntropySource(repeating: 0x33, count: 32).randomBytes(count: 32)
+            let scalar = SensitiveBytes(copying: [UInt8](repeating: 0x33, count: 32))
             try await card.importKey(
                 slot: .signature,
                 algorithm: .secp256k1,
@@ -457,7 +472,7 @@ final class APDUTests: XCTestCase {
                 creationTime: Date(timeIntervalSince1970: 0),
                 adminPIN: Array("87654321".utf8)
             )
-            let seed = try ScriptedEntropySource(repeating: 0x44, count: 32).randomBytes(count: 32)
+            let seed = SensitiveBytes(copying: [UInt8](repeating: 0x44, count: 32))
             try await card.importKey(
                 slot: .authentication,
                 algorithm: .ed25519,

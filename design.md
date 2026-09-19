@@ -86,7 +86,7 @@ Prerequisites: a **brand-new or factory-reset** iPhone, no SIM, airplane mode; a
    - Touch policy `UIF = 0x02` (Fixed: touch permanently required, cannot be disabled later) on **both** signing-capable slots — `0xD6` (signature) and `0xD8` (authentication);
    - `PW1 status (0xC4[0]) = 0x00`: PIN must be re-verified for every signature;
    - Set a User PIN (≥ 6 digits) and an Admin PIN (≥ 8 digits), different from each other.
-4. **Generate entropy.** The app uses iOS `SecRandomCopyBytes` as the **sole authoritative** entropy source. Dice are optional and **non-authoritative**: if the user rolls, the app records and displays the rolls as a ceremony witness, but they do not feed the mnemonic, so a dice sequence cannot be used to reproduce it afterwards (see the amendment in §9.5). The app displays the first 8 hex digits of the SHA-256 of the entropy — the *entropy commitment* — as a ceremony witness for the record.
+4. **Generate entropy.** The app reads 256 bits from the YubiKey's hardware random-number generator (`GET CHALLENGE`, INS `0x84`) and 256 bits from the iOS system CSPRNG (`SecRandomCopyBytes`), then XORs the two into the **sole authoritative** entropy. Because either source being unpredictable keeps the XOR unpredictable, neither a backdoored card RNG nor a backdoored OS RNG alone can determine the mnemonic. Dice are optional and **non-authoritative**: if the user rolls, the app records and displays the rolls as a ceremony witness, but they do not feed the mnemonic, so a dice sequence cannot be used to reproduce it afterwards (see the amendment in §9.5). The app displays the first 8 hex digits of the SHA-256 of the entropy — the *entropy commitment* — as a ceremony witness for the record.
 5. **Generate the mnemonic** (BIP39, 24 words), display it on screen, and have the user transcribe it onto a steel plate. The app requires the user to back-fill 3 randomly chosen words to confirm correct transcription. This one mnemonic is the backup of **both** keys below.
 6. **Derive and import both keys.** From the BIP39 seed the app derives two keys at fixed paths and imports each into its slot via `PUT DATA 0x4D` (Extended Header List):
    - **secp256k1** at `m/44'/0'/0'/0/0` (BIP32) into the **signature** slot (CRT `0xB6`), with algorithm attributes `0xC1 = ECDSA secp256k1 (1.3.132.0.10)`, fingerprint `0xC7`, creation time;
@@ -223,6 +223,7 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 | Operation | APDU | Notes |
 |---|---|---|
 | Select applet | `00 A4 04 00 06 D2 76 00 01 24 01` | OpenPGP AID |
+| Get challenge (entropy) | `00 84 00 00 20` | Hardware RNG; returns 32 random bytes, XORed with the iOS CSPRNG (§4.2 step 4) |
 | Verify signing PIN | `00 20 00 81 Lc <PIN>` | PW1 mode 81 |
 | Sign | `00 2A 9E 9A 20 <32-byte digest> 00` | PSO:COMPUTE DIGITAL SIGNATURE; returns r‖s (64 bytes) |
 | Read public key | `00 47 81 00 01 B6 00` | GENERATE ASYMMETRIC KEY PAIR, P1=0x81 (read mode), signature slot |
@@ -343,8 +344,8 @@ Asset theft
 │   ├── Extract sk from YubiKey ── out of scope (secure element / side channel)
 │   ├── Mnemonic leaked during generation (§4.2)
 │   │   ├── App displays a mnemonic it did not actually write ── NOT mitigated in v0.1 (the independent cross-check was removed; see §9.5)
-│   │   ├── Backdoored RNG ── NOT mitigated in v1: the system CSPRNG is
-│   │   │   authoritative and dice do not feed the mnemonic (see §9.5)
+│   │   ├── Backdoored RNG ── both card and system RNG must fail: the entropy is
+│   │   │   their XOR; dice do not feed the mnemonic (see §9.5)
 │   │   ├── Steganography in exported pubkey QR ── fixed format + Desktop field alarm; no cameras at generation
 │   │   └── Improper transcription / storage ── operational controls (§8.1)
 │   └── iPhone not wiped after generation ── in-app memory wipe; dedicated offline device
@@ -373,7 +374,7 @@ Ratings are residual risk after the listed mitigations.
 | Pairing-phase public-key / address substitution | Compromise of the Desktop during §4.2 step 8 | Character-by-character address comparison on both devices; small-value test transaction | **Low** |
 | iPhone app tampered (signing phase) | Compromise of the iPhone app | Desktop independent verification (§5.1 18.5); one-touch-per-tx rule; Desktop counter audit | Needs an extra touch **and** a second exit channel, and is detectable afterward. **Low** |
 | iPhone app tampered (generation phase) | Compromise of the iPhone app | Offline fresh device; reproducible-build verification; read-back confirms the card holds the key the app derived | Highest single point of app trust; the independent cross-check that bounded it was removed in v0.1. **Medium** |
-| Backdoored or faulty entropy source (system CSPRNG) | Compromise of the iPhone OS or of its RNG | **None in v1.** `SecRandomCopyBytes` is authoritative and dice are non-authoritative (§4.2 step 4 as amended). An app that emitted a mnemonic of its own choosing is no longer caught: the independent cross-check was removed in v0.1 | **Medium** — raised from Low by the v1 entropy policy. A future version can reduce it again by making dice authoritative, which would require the dice→entropy function to be specified and published |
+| Backdoored or faulty entropy source | Compromise of the YubiKey secure element **and** the iPhone OS RNG | The 256-bit entropy is the XOR of the card's `GET CHALLENGE` and the iOS `SecRandomCopyBytes` (§4.2 step 4); either source alone cannot determine the mnemonic | **Low** — a single compromised RNG no longer yields the key; both independent RNGs must be backdoored, which requires compromising two vendors' stacks at once |
 | Counterfeit YubiKey | Supply-chain substitution | Official channels; Yubico attestation; the read-back comparison fails if the card holds a different key | **Low** |
 | Weak YubiKey internal RNG (nonce `k`) | — | `sk` is generated on the iPhone, not the YubiKey; no property of `k` is relied upon beyond secrecy | Leaked `k` ⇒ leaked `sk` (inherent ECDSA); depends on Yubico's secure element. **Low** |
 | QR channel observed by a camera | Physical observation | Channel content is public (unsigned tx + signature) | **Low** |
@@ -397,7 +398,7 @@ Ratings are residual risk after the listed mitigations.
 
 9. **v1 is provisioning-only.** The app resets a card, generates or restores a mnemonic, derives both keys, imports them, verifies them by read-back and exports the public keys. It does **not** sign. The signing flow (§5), the `eth-sign-request`/`eth-signature` exchange, the counter-delta audit and therefore the small-value test transaction of §4.2 step 10 are v2 work. Everything in §5 should be read as design intent for v2, not as shipped behaviour.
 
-10. **Dice entropy is non-authoritative in v1** (§4.2 step 4). A backdoored or faulty system CSPRNG is therefore not mitigated by user dice, which is why §9.5 records that residual risk as Medium rather than Low. Reproducible builds bound the risk but cannot remove it; the independent cross-check that previously provided an additional bound was removed in v0.1.
+10. **Dice entropy is non-authoritative in v1** (§4.2 step 4). A backdoored or faulty RNG is mitigated by construction — the entropy is the XOR of the card's hardware RNG and the iOS CSPRNG — so user dice are the one thing that is not fed into the mnemonic. Reproducible builds bound the residual risk further; the independent cross-check that previously provided an additional bound was removed in v0.1.
 
 11. **One key per YubiKey limits desktop-wallet interoperability.** Wallets that expect an account-level extended public key *with a chain code* in order to enumerate accounts cannot be served without advertising child addresses this YubiKey cannot sign for. v1 therefore exports a single address-level key with no chain code by default (§6.4), and MetaMask's QR hardware flow — which keys off the Keystone UR family — may require manual confirmation rather than automatic account discovery. A custom Desktop client is the clean fix and is v2 work.
 

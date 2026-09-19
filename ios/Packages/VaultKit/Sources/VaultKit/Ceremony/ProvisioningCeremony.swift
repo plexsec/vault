@@ -209,7 +209,7 @@ public final class ProvisioningCeremony {
     // MARK: Inputs
 
     private let card: SignerCard
-    private let entropySource: EntropySource
+    private let systemRandom: (Int) throws -> SensitiveBytes
     private let clock: () -> Date
     private let appVersion: String
 
@@ -244,13 +244,13 @@ public final class ProvisioningCeremony {
 
     public init(
         card: SignerCard,
-        entropySource: EntropySource = SystemEntropySource(),
+        systemRandom: @escaping (Int) throws -> SensitiveBytes = SystemCSPRNG.randomBytes,
         transportDescription: String,
         appVersion: String,
         clock: @escaping () -> Date = Date.init
     ) {
         self.card = card
-        self.entropySource = entropySource
+        self.systemRandom = systemRandom
         self.transportDescription = transportDescription
         self.appVersion = appVersion
         self.clock = clock
@@ -527,14 +527,20 @@ public final class ProvisioningCeremony {
     // MARK: Step 6 — entropy
 
     /// Returns the commitment the operator writes down (first 8 hex digits of
-    /// SHA-256(entropy)).
+    /// SHA-256(entropy)). The entropy is the XOR of the card's hardware RNG
+    /// (`GET CHALLENGE`) and the iOS system CSPRNG, so that neither source alone
+    /// determines the mnemonic.
     @discardableResult
-    public func generateEntropy() throws -> String {
+    public func generateEntropy() async throws -> String {
         try requireCurrent(.entropy)
         guard mode == .freshGeneration else {
             throw CeremonyError.unsupportedRecovery("restore ceremonies do not generate new entropy")
         }
-        let generated = try entropySource.randomBytes(count: BIP39.entropyByteCount)
+        let cardBytes = try await card.randomBytes(count: BIP39.entropyByteCount)
+        let systemBytes = try systemRandom(BIP39.entropyByteCount)
+        let generated = Self.mixEntropy(cardBytes, systemBytes)
+        cardBytes.zeroize()
+        systemBytes.zeroize()
         entropy?.zeroize()
         entropy = generated
         let commitment = Hex.encode(Array(SHA256.hash(generated.materializedCopy()).prefix(4)))
@@ -542,6 +548,22 @@ public final class ProvisioningCeremony {
         // Deliberately does NOT advance: the commitment must stay on screen
         // until the operator has written it down.
         return commitment
+    }
+
+    /// XORs two equal-length secret buffers into a new one. Either input being
+    /// unpredictable keeps the output unpredictable, so a backdoored card RNG or
+    /// a backdoored OS RNG alone cannot determine the entropy.
+    private static func mixEntropy(_ a: SensitiveBytes, _ b: SensitiveBytes) -> SensitiveBytes {
+        precondition(a.count == b.count, "entropy sources must produce equal-length buffers")
+        let result = SensitiveBytes(count: a.count)
+        result.withUnsafeMutableBytes { out in
+            a.withUnsafeBytes { lhs in
+                b.withUnsafeBytes { rhs in
+                    for i in 0..<a.count { out[i] = lhs[i] ^ rhs[i] }
+                }
+            }
+        }
+        return result
     }
 
     /// Records dice rolls. v1 makes these **non-authoritative**: they are shown

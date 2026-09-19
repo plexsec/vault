@@ -176,7 +176,7 @@ public final class CeremonyViewModel {
         )
         let ceremony = ProvisioningCeremony(
             card: card,
-            entropySource: Self.entropySource(),
+            systemRandom: Self.systemRandom(),
             transportDescription: transportChoice.title,
             appVersion: BuildInfo.summary
         )
@@ -273,11 +273,11 @@ public final class CeremonyViewModel {
         }
     }
 
-    /// Generates entropy. The commitment stays on screen until the operator has
-    /// written it down and calls `advance()`.
-    public func generateEntropy() {
-        runSync { ceremony in
-            self.entropyCommitment = try ceremony.generateEntropy()
+    /// Generates entropy from the YubiKey's hardware RNG. The commitment stays on
+    /// screen until the operator has written it down and calls `advance()`.
+    public func generateEntropy() async {
+        await run { ceremony in
+            self.entropyCommitment = try await ceremony.generateEntropy()
         }
     }
 
@@ -501,24 +501,21 @@ public final class CeremonyViewModel {
         }
     }
 
-    /// Entropy source for the ceremony.
+    /// System-entropy source mixed with the card's hardware RNG.
     ///
-    /// DEBUG builds honour `-deterministic-entropy <64 hex chars>` so a UI test can
-    /// drive the whole ceremony, including the transcription back-fill, which is
-    /// impossible with random words. Release builds always use the system CSPRNG:
-    /// this hook does not exist there, and `tools/audit-release.sh` checks for its
-    /// marker string in the shipped binary.
-    private static func entropySource() -> EntropySource {
+    /// In production this is `SecRandomCopyBytes`. DEBUG builds honour
+    /// `-deterministic-entropy <64 hex chars>` by forcing the system side to
+    /// all-zero, so the XOR result equals the card's `challengeBytes` (which the
+    /// simulated card also seeds from the same flag) and the ceremony produces a
+    /// known mnemonic. The hook does not exist in Release.
+    private static func systemRandom() -> (Int) throws -> SensitiveBytes {
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
-        if let index = arguments.firstIndex(of: "-deterministic-entropy"),
-           index + 1 < arguments.count,
-           let bytes = try? Hex.decode(arguments[index + 1]),
-           bytes.count == BIP39.entropyByteCount {
-            return ScriptedEntropySource(bytes: bytes)
+        if arguments.contains("-deterministic-entropy") {
+            return { count in SensitiveBytes(count: count) }
         }
         #endif
-        return SystemEntropySource()
+        return SystemCSPRNG.randomBytes
     }
 
     private static func makeTransport(_ choice: TransportChoice) -> YubikeyTransport {

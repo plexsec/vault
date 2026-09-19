@@ -209,7 +209,7 @@ struct EntropyStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "The 24 words are generated from 256 bits produced by the iOS system CSPRNG (SecRandomCopyBytes). One mnemonic backs up both signing keys. The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
+            why: "The 24 words are generated from 256 bits produced by the YubiKey's hardware random-number generator (GET CHALLENGE). One mnemonic backs up both signing keys. The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
             actionTitle: hasCommitment ? "Reveal the mnemonic" : "Generate entropy",
             isEnabled: !hasCommitment || commitmentRecorded,
             action: {
@@ -218,7 +218,7 @@ struct EntropyStepView: View {
                     // mnemonic step can never be reached empty.
                     viewModel.advance()
                 } else {
-                    viewModel.generateEntropy()
+                    Task { await viewModel.generateEntropy() }
                 }
             }
         ) {

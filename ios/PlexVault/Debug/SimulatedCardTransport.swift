@@ -25,11 +25,24 @@ final class SimulatedCardTransport: YubikeyTransport {
     /// physical persistence: without it each step would see a factory-fresh card
     /// and the Admin PIN set by the PIN step would already be gone by the time
     /// `applyPolicy` verifies it.
-    private static let shared = MockYubikeyTransport(
-        transportName: "Simulated YubiKey (debug)",
-        serial: 0x00DE_71A5,
-        openPGPVersion: "3.4"
-    )
+    private static let shared: MockYubikeyTransport = {
+        let mock = MockYubikeyTransport(
+            transportName: "Simulated YubiKey (debug)",
+            serial: 0x00DE_71A5,
+            openPGPVersion: "3.4"
+        )
+        // DEBUG-only deterministic entropy for the UI tests: GET CHALLENGE
+        // returns these bytes instead of random data, so the ceremony produces a
+        // known mnemonic. Compiled out of Release entirely.
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "-deterministic-entropy"),
+           index + 1 < arguments.count,
+           let bytes = try? Hex.decode(arguments[index + 1]),
+           bytes.count == BIP39.entropyByteCount {
+            mock.challengeBytes = bytes
+        }
+        return mock
+    }()
 
     private let inner = SimulatedCardTransport.shared
 

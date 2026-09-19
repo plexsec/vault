@@ -186,6 +186,30 @@ fixtures still cross-check the Swift derivation against an independent Python
 implementation at build/test time), but it is no longer part of the operator
 procedure.
 
+## 9. Entropy source: YubiKey hardware RNG XORed with the iOS CSPRNG
+
+**Sections:** §4.2 step 4, §6.5, §9.4, §9.5, §10 item 10.
+
+*Before:* §4.2 step 4 generated the 256-bit BIP39 entropy on the iPhone with
+`SecRandomCopyBytes`, the iOS system CSPRNG.
+
+*After:* the entropy is the XOR of the YubiKey's hardware random-number generator
+(`GET CHALLENGE`, INS `0x84`) and the iOS system CSPRNG (`SecRandomCopyBytes`).
+The mnemonic and both private keys are still derived on the iPhone from that
+entropy, so the "mnemonic is the backup" model is unchanged; only the source of
+the random bits changes.
+
+*Why:* the operator wants the private key's randomness to come from the YubiKey's
+secure-element RNG rather than the general-purpose iPhone OS RNG alone — and
+mixing the two means neither a backdoored card RNG nor a backdoored OS RNG can
+determine the key on its own.
+
+*Consequence recorded in the spec:* the §9.5 "Backdoored or faulty entropy source"
+residual risk drops from Medium to Low, because a single compromised RNG no longer
+yields the key. The §9.4 attack tree's "Backdoored RNG" node is updated
+accordingly. The exact per-call response length of `GET CHALLENGE` is an M0
+hardware-verification item (see `docs/m0-hardware-verification.md`).
+
 ## What was deliberately *not* changed
 
 * **§5.2 rule 1 (one transaction, one `PSO:CDS`) and rule 2 (one touch)** are

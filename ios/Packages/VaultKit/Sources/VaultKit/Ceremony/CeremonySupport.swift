@@ -1,63 +1,32 @@
 import Foundation
 
-// MARK: - Entropy
-
-public enum EntropyError: Swift.Error, Equatable {
-    case systemEntropyUnavailable(Int32)
-    case invalidByteCount(Int)
-}
-
-/// Source of entropy for mnemonic generation.
-///
-/// v1 policy (design.md §4.2 step 4 as amended): the system CSPRNG is the
-/// **authoritative** source. The dice ritual is recorded and displayed but is
-/// explicitly non-authoritative, which is why it cannot be folded into this
-/// protocol — a future dice-authoritative mode would need its own type so that
-/// no call site can accidentally mix the two.
-public protocol EntropySource {
-    func randomBytes(count: Int) throws -> SensitiveBytes
-}
-
 #if canImport(Security)
 import Security
 #endif
 
-/// `SecRandomCopyBytes` — the only entropy source used in production.
-public struct SystemEntropySource: EntropySource {
-    public init() {}
-
-    public func randomBytes(count: Int) throws -> SensitiveBytes {
-        guard count > 0 else { throw EntropyError.invalidByteCount(count) }
+/// The iOS system CSPRNG (`SecRandomCopyBytes`).
+///
+/// Used to mix entropy with the card's hardware RNG: the two sources are XORed,
+/// so that neither a backdoored card RNG nor a backdoored OS RNG alone can
+/// determine the mnemonic — either one being unpredictable keeps the result
+/// unpredictable.
+public enum SystemCSPRNG {
+    public static func randomBytes(count: Int) throws -> SensitiveBytes {
+        precondition(count > 0, "requested byte count must be positive")
         let buffer = SensitiveBytes(count: count)
         let status = buffer.withUnsafeMutableBytes { raw -> Int32 in
             #if canImport(Security)
             return SecRandomCopyBytes(kSecRandomDefault, count, raw.baseAddress!)
             #else
-            // Non-Apple platforms only (unit tests on Linux would land here).
+            // Non-Apple platforms only (this package targets Apple OSes).
             for i in 0..<count { raw[i] = UInt8.random(in: 0...255) }
             return errSecSuccess
             #endif
         }
-        guard status == errSecSuccess else { throw EntropyError.systemEntropyUnavailable(status) }
+        guard status == errSecSuccess else {
+            throw CeremonyError.systemEntropyUnavailable(status)
+        }
         return buffer
-    }
-}
-
-/// Deterministic source for tests. Never used outside the test target.
-public struct ScriptedEntropySource: EntropySource {
-    private let bytes: [UInt8]
-
-    public init(bytes: [UInt8]) {
-        self.bytes = bytes
-    }
-
-    public init(repeating value: UInt8, count: Int) {
-        self.bytes = [UInt8](repeating: value, count: count)
-    }
-
-    public func randomBytes(count: Int) throws -> SensitiveBytes {
-        guard bytes.count >= count else { throw EntropyError.invalidByteCount(count) }
-        return SensitiveBytes(copying: Array(bytes.prefix(count)))
     }
 }
 
@@ -102,6 +71,11 @@ public enum KeySlot: String, CaseIterable, Codable, Sendable, Hashable {
 public protocol SignerCard: AnyObject {
     /// Reads application data (0x6E) and the security support template (0x7A).
     func inventory() async throws -> CardInventory
+
+    /// Reads `count` random bytes from the card's hardware random-number
+    /// generator (`GET CHALLENGE`, INS 0x84). This is the entropy source for
+    /// mnemonic generation (design.md §4.2 step 4).
+    func randomBytes(count: Int) async throws -> SensitiveBytes
 
     /// `VERIFY PW3` + `TERMINATE DF` + `ACTIVATE FILE`, then re-selects.
     /// Resets **all** slots.
@@ -336,6 +310,7 @@ public enum CeremonyError: Swift.Error, Equatable {
     case counterNotZero(UInt32)
     case unsupportedRecovery(String)
     case unsupportedAlgorithm(KeyAlgorithm, String)
+    case systemEntropyUnavailable(Int32)
 
     public var userFacingDescription: String {
         switch self {
@@ -371,6 +346,8 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "Restore is not possible here: \(detail)."
         case .unsupportedAlgorithm(let algorithm, let detail):
             return "\(algorithm.displayName) cannot be provisioned on this YubiKey: \(detail)."
+        case .systemEntropyUnavailable(let status):
+            return "The system random-number generator failed (OSStatus \(status))."
         }
     }
 }

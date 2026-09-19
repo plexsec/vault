@@ -62,6 +62,11 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// counterfeit or tampered card that does not hold the key it claims to.
     public var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
     public var injectedFailure: InjectedFailure = .none
+    /// Random bytes returned by `GET CHALLENGE` (INS 0x84). Defaults to all-zero
+    /// so tests and the DEBUG simulated card are reproducible; the app's DEBUG
+    /// card overrides it via `-deterministic-entropy`, and a real card always
+    /// answers from its hardware RNG.
+    public var challengeBytes: [UInt8] = [UInt8](repeating: 0, count: 32)
     private var didInjectOnce = false
     private var pendingChainedData: [UInt8]?
 
@@ -141,6 +146,8 @@ public final class MockYubikeyTransport: YubikeyTransport {
             return status(0x90, 0x00)
         case (0x47, _, _):
             return try readPublicKey(command)
+        case (0x84, _, _):
+            return try getChallenge(command)
         default:
             return status(0x6D, 0x00)
         }
@@ -394,6 +401,13 @@ public final class MockYubikeyTransport: YubikeyTransport {
         let point = TLV(tag: OpenPGPDataObject.ecdsaPublicPoint, value: publicKey).encoded
         let template = TLV(tag: OpenPGPDataObject.publicKeyTemplate, value: point).encoded
         return ResponseAPDU(data: template, status: .success)
+    }
+
+    private func getChallenge(_ command: CommandAPDU) throws -> ResponseAPDU {
+        if let error = try requireSelected() { return error }
+        let count = command.expectedLength ?? 0
+        guard count > 0, challengeBytes.count >= count else { return status(0x6A, 0x80) }
+        return ResponseAPDU(data: Array(challengeBytes.prefix(count)), status: .success)
     }
 
     private func resetApplet() {

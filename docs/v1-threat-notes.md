@@ -25,11 +25,12 @@ the key derived from the mnemonic, verified by read-back.
 
 ## Deviations from the design, with rationale
 
-### 1. Entropy: system CSPRNG authoritative, dice non-authoritative
+### 1. Entropy: card RNG XORed with the iOS CSPRNG; dice non-authoritative
 
-**Change.** §4.2 step 4 now says `SecRandomCopyBytes` is the sole authoritative
-source; dice are recorded as a witness only. The dice→mnemonic cross-check in
-§4.2 step 6b and Appendix B is removed.
+**Change.** §4.2 step 4 now builds the 256-bit entropy by XORing the YubiKey's
+hardware random-number generator (`GET CHALLENGE`, INS `0x84`) with the iOS system
+CSPRNG (`SecRandomCopyBytes`); dice are recorded as a witness only. The
+dice→mnemonic cross-check in §4.2 step 6b and Appendix B is removed.
 
 **Why.** This was an explicit product decision. Implementing dice as an entropy
 source requires a specified, published dice→entropy function so that an
@@ -37,10 +38,11 @@ independent tool can reproduce the mapping; without one, the Appendix B check
 would be unverifiable, which is worse than not claiming it.
 
 **Consequence, stated plainly.** The "backdoored RNG" node of the §9.4 attack tree
-is no longer mitigated. A tampered app or OS RNG could produce a mnemonic of its
-own choosing, and nothing in v0.1 catches this: the independent cross-check that
-would at least have compared addresses was removed (amendment 8). §9.5 records
-this as **Medium** residual risk.
+is now mitigated by construction: the entropy is the XOR of two independent RNGs
+(the card's secure element and the iOS CSPRNG), so a single backdoored source no
+longer determines the key. What remains uncaught is a coordinated compromise of
+*both* RNGs, and the independent cross-check that would have compared derived
+addresses was removed (amendment 8). §9.5 records the residual risk as **Low**.
 
 **Compensating controls that do exist.** Reproducible-build verification; the
 entropy commitment (8 hex digits of SHA-256 of the entropy) which binds the
@@ -137,7 +139,7 @@ option is documented rather than implemented.
 
 | Risk | v0.1 mitigation | Residual |
 |---|---|---|
-| Backdoored/faulty entropy source | **None** (see deviation 1); the entropy commitment binds the record | **Medium** |
+| Backdoored/faulty entropy source | XOR of card RNG and iOS CSPRNG (see deviation 1); a single compromised source cannot determine the key | **Low** |
 | Tampered app at generation time | Reproducible-build hash; read-back comparison; factory-reset offline device | **Medium** — the independent cross-check that bounded it was removed |
 | Wrong key silently provisioned onto the card | Mandatory read-back comparison of the card's public key against the derived key, which voids and wipes on mismatch | **Low** |
 | Malicious card (counterfeit) | Read-back mismatch; report records serial/applet and the operator writes down the fingerprint | **Low** |
@@ -181,4 +183,5 @@ it: the defect was only visible by tapping the actual screen.
 2. The M0 hardware verification pass (`docs/m0-hardware-verification.md`).
 3. Implementing the signing flow and the Desktop verifier, which is what makes the
    scheme's central claim testable at all.
-4. Making dice authoritative again, which returns the backdoored-RNG risk to Low.
+4. Making dice authoritative again, which would add a third independent entropy
+   source on top of the card-RNG-plus-iOS-CSPRNG XOR.

@@ -312,6 +312,23 @@ public final class OpenPGPCard: SignerCard {
         return (UInt32(counter[0]) << 16) | (UInt32(counter[1]) << 8) | UInt32(counter[2])
     }
 
+    /// `GET CHALLENGE` (INS 0x84) — the card's hardware random-number generator.
+    ///
+    /// This is the entropy source for mnemonic generation (design.md §4.2 step 4):
+    /// the 256 BIP39 entropy bits come from the YubiKey's secure element rather
+    /// than the iOS CSPRNG. The exact per-call response-length limit is an M0
+    /// hardware-verification item (`docs/m0-hardware-verification.md`); this
+    /// requests `count` bytes in one call and fails if fewer come back.
+    public func randomBytes(count: Int) async throws -> SensitiveBytes {
+        let apdu = CommandAPDU(cla: 0x00, ins: 0x84, p1: 0x00, p2: 0x00, data: [], expectedLength: count)
+        let response = try await transport.exchange(apdu)
+        try Self.check(response, operation: .getChallenge)
+        guard response.data.count == count else {
+            throw CardError.malformedResponse("GET CHALLENGE returned \(response.data.count) bytes, expected \(count)")
+        }
+        return SensitiveBytes(copying: response.data)
+    }
+
     // MARK: Status word handling
 
     static func check(_ response: ResponseAPDU, operation: OpenPGPOperation) throws {

@@ -26,9 +26,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
         entropy: [UInt8] = [UInt8](repeating: 0, count: 32),
         date: Date = Date(timeIntervalSince1970: 1_700_000_000)
     ) -> ProvisioningCeremony {
-        ProvisioningCeremony(
+        card.challengeBytes = entropy
+        return ProvisioningCeremony(
             card: card,
-            entropySource: ScriptedEntropySource(bytes: entropy),
+            systemRandom: { count in SensitiveBytes(count: count) },
             transportDescription: "USB-C (CCID)",
             appVersion: "0.1.0-test",
             clock: { date }
@@ -58,7 +59,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
         } else {
-            try ceremony.generateEntropy()
+            try await ceremony.generateEntropy()
             // Advancing from the entropy step is what derives the words, so
             // "step == .mnemonic" always implies a populated mnemonic.
             try ceremony.advance()
@@ -180,6 +181,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(card.calls, [
             .inventory, .reset, .inventory, .setPINs,
             .applyPolicy(adminPIN: Array("87654321".utf8)), .inventory,
+            .randomBytes(count: 32),
             .importKey(slot: .signature, algorithm: .secp256k1, fingerprint: Expected.secp256k1Fingerprint),
             .importKey(slot: .authentication, algorithm: .ed25519, fingerprint: Expected.ed25519Fingerprint),
             .readPublicKey(slot: .signature),
@@ -250,7 +252,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         await XCTAssertThrowsErrorAsync {
             try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         }
-        XCTAssertThrowsError(try ceremony.generateEntropy())
+        await XCTAssertThrowsErrorAsync { try await ceremony.generateEntropy() }
         // The mnemonic cannot be reached without generating entropy first.
         XCTAssertThrowsError(try ceremony.advance())
     }
@@ -273,7 +275,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
-        try ceremony.generateEntropy()
+        try await ceremony.generateEntropy()
         // Without advancing, the mnemonic step is not even due yet, so derivation
         // is refused by the ordering gate.
         XCTAssertThrowsError(try ceremony.deriveKeys())
@@ -297,7 +299,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
-        try ceremony.generateEntropy()
+        try await ceremony.generateEntropy()
         try ceremony.advance()
         XCTAssertThrowsError(try ceremony.confirmTranscription(entries: [(5, "wrong")])) { error in
             XCTAssertEqual(error as? CeremonyError, .transcriptionMismatch(index: 5))
@@ -630,10 +632,34 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
-        let commitment = try ceremony.generateEntropy()
+        let commitment = try await ceremony.generateEntropy()
         XCTAssertEqual(commitment, Hex.encode(Array(SHA256.hash(entropy).prefix(4))))
         XCTAssertEqual(ceremony.report.entropyCommitmentHex, commitment)
         XCTAssertEqual(commitment.count, 8)
+    }
+
+    /// The entropy must be the XOR of the card RNG and the system RNG: either
+    /// source being predictable alone must not make the result predictable.
+    func testEntropyIsXOROfCardAndSystemRNG() async throws {
+        let card = MockSignerCard()
+        card.challengeBytes = [UInt8](repeating: 0xAA, count: 32)
+        let ceremony = ProvisioningCeremony(
+            card: card,
+            systemRandom: { count in SensitiveBytes(copying: [UInt8](repeating: 0xFF, count: count)) },
+            transportDescription: "USB-C (CCID)",
+            appVersion: "0.1.0-test",
+            clock: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.applyPolicy()
+
+        let commitment = try await ceremony.generateEntropy()
+        // 0xAA XOR 0xFF = 0x55
+        XCTAssertEqual(commitment, Hex.encode(Array(SHA256.hash([UInt8](repeating: 0x55, count: 32)).prefix(4))))
     }
 
     func testDiceRollsAreRecordedButNonAuthoritative() async throws {
@@ -649,7 +675,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertThrowsError(try ceremony.recordDiceRolls([7])) { error in
             XCTAssertEqual(error as? CeremonyError, .diceRollsOutOfRange)
         }
-        try ceremony.generateEntropy()
+        try await ceremony.generateEntropy()
         try ceremony.advance()
         let words = try ceremony.mnemonicForDisplay()
         // All-zero scripted entropy still yields the all-abandon mnemonic even
@@ -669,7 +695,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
-        try ceremony.generateEntropy()
+        try await ceremony.generateEntropy()
         try ceremony.advance()
         let first = try ceremony.transcriptionChallenge()
         let second = try ceremony.transcriptionChallenge()

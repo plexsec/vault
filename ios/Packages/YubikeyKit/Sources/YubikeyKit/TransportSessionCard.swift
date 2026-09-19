@@ -101,6 +101,10 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.signatureCounter() }
     }
 
+    public func randomBytes(count: Int) async throws -> SensitiveBytes {
+        try await withSession { try await $0.randomBytes(count: count) }
+    }
+
     public func putDataObject(_ tag: UInt16, value: [UInt8]) async throws {
         try await withSession { try await $0.putDataObject(tag, value: value) }
     }

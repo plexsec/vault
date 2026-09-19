@@ -219,3 +219,26 @@ the operator compares the resulting public key against the app's screen.
 
 Record which path was taken in `docs/reproducible-build.md` alongside the hash
 record, since it changes the trust story (see §10 of the design).
+
+## 9. `GET CHALLENGE` (INS 0x84) entropy length
+
+**Assumption in code** (`OpenPGPCard.randomBytes`). The OpenPGP applet answers
+`GET CHALLENGE` (`00 84 00 00 Le`) with exactly `Le` bytes of hardware-RNG output,
+and `Le = 32` (256 bits) is supported in a single call. This is the entropy source
+for mnemonic generation (design.md §4.2 step 4).
+
+**How to verify.** On a desktop with the key attached, after selecting the OpenPGP
+applet, issue `00 84 00 00 20` and confirm the response carries 32 bytes:
+
+```sh
+cd ios/Packages/YubikeyKit && swift test --filter testGetChallengeReturnsHardwareRandomBytes
+# plus a hardware trace: ykman --log-level DEBUG / a CCID shim to observe the 0x84 exchange
+```
+
+If the card returns fewer than 32 bytes (or caps the response length regardless of
+`Le`), the fix is to call `GET CHALLENGE` repeatedly and concatenate until 32 bytes
+have been collected — a change confined to `OpenPGPCard.randomBytes`.
+
+**Why it is safe to be wrong.** A short response is a visible, hard failure (the
+app throws `CardError.malformedResponse`) before any mnemonic is derived; it cannot
+silently produce short entropy. The fallback is a mechanical loop.

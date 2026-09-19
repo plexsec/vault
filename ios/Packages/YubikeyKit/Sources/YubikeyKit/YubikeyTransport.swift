@@ -115,4 +115,5 @@ public enum OpenPGPOperation: String, Sendable {
     case importKey
     case readPublicKey
     case readCounter
+    case getChallenge
 }

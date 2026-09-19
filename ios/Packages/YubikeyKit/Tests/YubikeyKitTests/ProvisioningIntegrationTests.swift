@@ -36,10 +36,11 @@ final class ProvisioningIntegrationTests: XCTestCase {
     ) -> (ProvisioningCeremony, TransportSessionCard) {
         // Every card operation gets its own transport session, exactly as the app
         // does, so the per-session VERIFY behaviour is exercised for real.
+        transport.challengeBytes = entropy
         let card = TransportSessionCard(makeTransport: { transport })
         let ceremony = ProvisioningCeremony(
             card: card,
-            entropySource: ScriptedEntropySource(bytes: entropy),
+            systemRandom: { count in SensitiveBytes(count: count) },
             transportDescription: "Simulated (integration test)",
             appVersion: appVersion,
             clock: { Date(timeIntervalSince1970: 1_700_000_000) }
@@ -69,7 +70,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
         } else {
-            try ceremony.generateEntropy()
+            try await ceremony.generateEntropy()
             try ceremony.advance()
         }
         let words = try ceremony.mnemonicForDisplay()
@@ -108,7 +109,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentPWStatus.first, 0x00)
         XCTAssertEqual(transport.currentPWStatus.count, 7)
 
-        try ceremony.generateEntropy()
+        try await ceremony.generateEntropy()
         try ceremony.advance()
 
         let words = try ceremony.mnemonicForDisplay()

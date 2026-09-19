@@ -18,6 +18,7 @@ final class MockSignerCard: SignerCard {
         case importKey(slot: KeySlot, algorithm: KeyAlgorithm, fingerprint: String)
         case readPublicKey(slot: KeySlot)
         case signatureCounter
+        case randomBytes(count: Int)
         case putDataObject(tag: UInt16)
         case getDataObject(tag: UInt16)
     }
@@ -32,6 +33,7 @@ final class MockSignerCard: SignerCard {
         case keyImport
         case readPublicKey
         case counter
+        case challenge
     }
 
     private(set) var calls: [Call] = []
@@ -41,6 +43,9 @@ final class MockSignerCard: SignerCard {
     var inventoryResult: CardInventory
     var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
     var counterValue: UInt32
+    /// Random bytes returned by `randomBytes`. Defaults to all-zero so the
+    /// derived keys match the `Expected` values in the tests.
+    var challengeBytes: [UInt8] = [UInt8](repeating: 0, count: 32)
     private(set) var storedPrivateKeys: [KeySlot: [UInt8]] = [:]
     private(set) var storedFingerprints: [KeySlot: [UInt8]] = [:]
     private(set) var storedCreationTime: Date?
@@ -158,6 +163,14 @@ final class MockSignerCard: SignerCard {
         calls.append(.signatureCounter)
         if failurePoint == .counter { throw CardError.transportUnavailable("mock") }
         return counterValue
+    }
+
+    func randomBytes(count: Int) async throws -> SensitiveBytes {
+        calls.append(.randomBytes(count: count))
+        if failurePoint == .challenge { throw CardError.transportUnavailable("mock") }
+        var bytes = challengeBytes
+        while bytes.count < count { bytes.append(0) }
+        return SensitiveBytes(copying: Array(bytes.prefix(count)))
     }
 
     func putDataObject(_ tag: UInt16, value: [UInt8]) async throws {
