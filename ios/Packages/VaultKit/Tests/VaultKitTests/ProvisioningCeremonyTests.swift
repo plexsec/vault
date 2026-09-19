@@ -363,7 +363,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         }
     }
 
-    func testUnsupportedOpenPGPVersionWarns() async throws {
+    func testUnsupportedOpenPGPVersionWarnsAndHardGates() async throws {
         let card = MockSignerCard(inventory: CardInventory(
             openPGPVersion: "3.3",
             serial: "12345678",
@@ -371,10 +371,15 @@ final class ProvisioningCeremonyTests: XCTestCase {
         ))
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("secp256k1") })
+        let inventory = try await ceremony.inspectCard()
+        XCTAssertFalse(inventory.likelySupportsSecp256k1)
+        XCTAssertTrue(inventory.isDefinitelyUnsupported)
+        // The inventory stays readable, but the warning is definitive ...
+        XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("does not support secp256k1/Ed25519") })
+        // ... and the ceremony refuses to advance.
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(error as? CeremonyError, .unsupportedAppletVersion(version: "3.3"))
+        }
     }
 
     // MARK: Mandatory verification failures

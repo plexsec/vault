@@ -295,8 +295,11 @@ public final class ProvisioningCeremony {
             throw CeremonyError.stepOutOfOrder(expected: .cardInventory, actual: step)
 
         case .cardInventory:
-            guard inventory != nil else {
+            guard let inventory else {
                 throw CeremonyError.stepIncomplete(step: .cardInventory, detail: "the YubiKey has not been read yet")
+            }
+            if inventory.isDefinitelyUnsupported {
+                throw CeremonyError.unsupportedAppletVersion(version: inventory.openPGPVersion)
             }
             step = .reset
 
@@ -417,9 +420,13 @@ public final class ProvisioningCeremony {
         if !result.isFactoryFresh {
             report.warnings.append("YubiKey was not factory-fresh: \(describe(result)).")
         }
-        if !result.likelySupportsSecp256k1 {
+        if result.isDefinitelyUnsupported {
             report.warnings.append(
-                "OpenPGP applet version \(result.openPGPVersion) may not support secp256k1/Ed25519 (3.4 or newer is required)."
+                "OpenPGP applet version \(result.openPGPVersion) does not support secp256k1/Ed25519 (3.4 or newer is required); this YubiKey cannot be provisioned and its firmware is not upgradeable."
+            )
+        } else if !result.likelySupportsSecp256k1 {
+            report.warnings.append(
+                "OpenPGP applet version \(result.openPGPVersion) could not be confirmed to support secp256k1/Ed25519 (3.4 or newer is required)."
             )
         }
         // Deliberately does NOT advance: the inventory must stay on screen for

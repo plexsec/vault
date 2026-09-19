@@ -214,12 +214,25 @@ public struct CardInventory: Equatable, Sendable {
 
     public func holdsKey(in slot: KeySlot) -> Bool { occupiedSlots.contains(slot) }
 
+    /// The minimum OpenPGP applet version that supports secp256k1/Ed25519
+    /// (YubiKey 5 firmware 5.2.3 or newer).
+    public static let minimumOpenPGPVersion = (3, 4)
+
     /// secp256k1 requires OpenPGP 3.4+ applet behaviour, i.e. YubiKey 5 firmware
     /// 5.2.3 or newer. Reported rather than assumed, because the failure mode
     /// otherwise is an unexplained 6A80 at key-import time.
     public var likelySupportsSecp256k1: Bool {
         guard let version = Self.parseVersion(openPGPVersion) else { return false }
-        return version >= (3, 4)
+        return version >= Self.minimumOpenPGPVersion
+    }
+
+    /// True when the reported applet version is definitively below the minimum.
+    /// An older applet (2.x / 3.3) cannot be provisioned with secp256k1/Ed25519
+    /// at all, and its firmware is not upgradeable — the ceremony hard-gates on
+    /// this rather than merely warning.
+    public var isDefinitelyUnsupported: Bool {
+        guard let version = Self.parseVersion(openPGPVersion) else { return false }
+        return version < Self.minimumOpenPGPVersion
     }
 
     static func parseVersion(_ string: String) -> (Int, Int)? {
@@ -313,6 +326,7 @@ public enum CeremonyError: Swift.Error, Equatable {
     case counterNotZero(UInt32)
     case unsupportedRecovery(String)
     case unsupportedAlgorithm(KeyAlgorithm, String)
+    case unsupportedAppletVersion(version: String)
     case systemEntropyUnavailable(Int32)
 
     public var userFacingDescription: String {
@@ -349,6 +363,8 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "Restore is not possible here: \(detail)."
         case .unsupportedAlgorithm(let algorithm, let detail):
             return "\(algorithm.displayName) cannot be provisioned on this YubiKey: \(detail)."
+        case .unsupportedAppletVersion(let version):
+            return "This YubiKey's OpenPGP applet is version \(version), which does not support secp256k1 or Ed25519. A YubiKey with applet 3.4 or newer (firmware 5.2.3+) is required, and the firmware cannot be upgraded."
         case .systemEntropyUnavailable(let status):
             return "The system random-number generator failed (OSStatus \(status))."
         }

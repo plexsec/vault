@@ -261,6 +261,13 @@ final class APDUTests: XCTestCase {
         XCTAssertFalse(CardInventory(openPGPVersion: "3.3").likelySupportsSecp256k1)
         XCTAssertFalse(CardInventory(openPGPVersion: "2.1").likelySupportsSecp256k1)
         XCTAssertFalse(CardInventory(openPGPVersion: "unknown").likelySupportsSecp256k1)
+
+        // isDefinitelyUnsupported distinguishes "below the floor" from "unknown".
+        XCTAssertFalse(CardInventory(openPGPVersion: "3.4").isDefinitelyUnsupported)
+        XCTAssertFalse(CardInventory(openPGPVersion: "4.0").isDefinitelyUnsupported)
+        XCTAssertTrue(CardInventory(openPGPVersion: "3.3").isDefinitelyUnsupported)
+        XCTAssertTrue(CardInventory(openPGPVersion: "2.1").isDefinitelyUnsupported)
+        XCTAssertFalse(CardInventory(openPGPVersion: "unknown").isDefinitelyUnsupported)
     }
 
     // MARK: Exchange-layer behaviour (61xx / 6Cxx)

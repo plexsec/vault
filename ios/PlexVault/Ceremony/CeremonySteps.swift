@@ -48,6 +48,7 @@ struct InventoryStepView: View {
                 : nil,
             actionTitle: hasInventory ? "Continue" : "Read YubiKey",
             isBusy: viewModel.busy,
+            isEnabled: !viewModel.isUnsupportedApplet,
             action: {
                 if hasInventory {
                     viewModel.advance()
@@ -59,7 +60,14 @@ struct InventoryStepView: View {
             if let inventory = viewModel.inventory {
                 KeyValueRows(rows: viewModel.cardInventorySummary)
 
-                if !inventory.likelySupportsSecp256k1 {
+                if inventory.isDefinitelyUnsupported {
+                    Label(
+                        "This YubiKey's OpenPGP applet is version \(inventory.openPGPVersion) — too old to provision. Firmware 5.2.3 / applet 3.4 or newer is required, and the firmware cannot be upgraded.",
+                        systemImage: "xmark.octagon.fill"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                } else if !inventory.likelySupportsSecp256k1 {
                     Label(
                         "This applet version may not support secp256k1 or Ed25519. YubiKey firmware 5.2.3 or newer is required.",
                         systemImage: "exclamationmark.triangle.fill"
@@ -73,7 +81,7 @@ struct InventoryStepView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Text(viewModel.transportChoice == .usbC
-                     ? "Plug the YubiKey into the USB-C port."
+                     ? "Plug the YubiKey into the USB-C port. OTP must be disabled (ykman config usb --disable OTP) or the keyboard will not appear."
                      : "Hold the YubiKey against the top of the iPhone when the reader appears.")
                     .font(.callout)
             }

@@ -258,6 +258,7 @@ Specification requirement: **any Desktop client claiming compatibility with this
 ### 7.2 Hardware
 
 - YubiKey: 5 NFC, 5C NFC (firmware ≥ 5.2.3). Two transports are supported: **NFC** (CoreNFC ISO 7816) and **USB-C CCID** (CryptoTokenKit). Touch behaviour over NFC must be verified per firmware version; the wired path is more reliable for touch confirmation.
+- **USB-C and OTP:** the YubiKey's OTP interface registers as a HID keyboard; when it is enabled over USB-C it suppresses the iPhone's on-screen keyboard, so the PIN cannot be entered. Disable it once with `ykman config usb --disable OTP` (this leaves NFC OTP unaffected). The app cannot do this itself: the OTP configuration is managed over the HID interface, which iOS does not expose to apps.
 - **Lightning / 5Ci is no longer supported.** The 5Ci required a vendor MFi accessory SDK that YubiKit 4.x dropped, which made it the project's only external SDK dependency and an availability risk. USB-C CCID replaces it using only Apple frameworks, so a YubiKey 5C NFC is the recommended wired key.
 - iPhone: NFC requires any model supporting CoreNFC tag read/write (iPhone 7 and later). The **USB-C transport requires an iPhone 15 or later**, or a USB-C iPad. A dedicated device with the SIM removed and permanent airplane mode is recommended.
 - Desktop: no longer required for provisioning. For the signing flow it still needs a USB port to read the counter (macOS / Linux / Windows via PC/SC).

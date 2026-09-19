@@ -177,6 +177,10 @@ final class ProvisioningIntegrationTests: XCTestCase {
         // The whole exchange must have gone through real APDUs, including per-slot
         // addresses.
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00a40400") }, "no SELECT")
+        // TERMINATE DF and ACTIVATE FILE are case-1 commands (no Le byte); a Le
+        // byte was rejected by real hardware.
+        XCTAssertTrue(transport.receivedAPDUs.contains("00e60000"), "TERMINATE DF must be case 1 (no Le)")
+        XCTAssertTrue(transport.receivedAPDUs.contains("00440000"), "ACTIVATE FILE must be case 1 (no Le)")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00db3fff") }, "no key import")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810002b600") }, "no signature-slot read")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810002a400") }, "no authentication-slot read")

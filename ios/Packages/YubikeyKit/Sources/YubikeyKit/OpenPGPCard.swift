@@ -121,13 +121,17 @@ public final class OpenPGPCard: SignerCard {
     }
 
     public func terminateDF() async throws {
-        let apdu = CommandAPDU(cla: 0x00, ins: 0xE6, p1: 0x00, p2: 0x00, data: [], expectedLength: 0)
+        // TERMINATE DF is a case-1 command (no data, no Le). The previous form
+        // sent a Le byte (00 E6 00 00 00), which real hardware rejected; the
+        // correct form is 00 E6 00 00.
+        let apdu = CommandAPDU(cla: 0x00, ins: 0xE6, p1: 0x00, p2: 0x00)
         let response = try await transport.exchange(apdu)
         try Self.check(response, operation: .terminate)
     }
 
     public func activateFile() async throws {
-        let apdu = CommandAPDU(cla: 0x00, ins: 0x44, p1: 0x00, p2: 0x00, data: [], expectedLength: 0)
+        // Same: case-1 command, no Le byte (00 44 00 00).
+        let apdu = CommandAPDU(cla: 0x00, ins: 0x44, p1: 0x00, p2: 0x00)
         let response = try await transport.exchange(apdu)
         try Self.check(response, operation: .activate)
     }

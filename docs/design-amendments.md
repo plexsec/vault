@@ -245,6 +245,42 @@ the slot as occupied so the destructive reset gate still applies. Any other
 missing-EC-point response is reported with an explicit "firmware 5.2.3 or newer
 required" message instead of the cryptic "no EC point (86)".
 
+## 12. TERMINATE DF / ACTIVATE FILE are case-1 commands (no Le byte)
+
+**Sections:** §6.5.
+
+*Before:* `terminateDF()` and `activateFile()` sent `00 E6 00 00 00` and
+`00 44 00 00 00` — a spurious Le byte (`expectedLength: 0`) on what are case-1
+(no-data, no-response) commands.
+
+*After:* both send the 4-byte case-1 form `00 E6 00 00` / `00 44 00 00`. Real
+hardware rejected the 5-byte form with `6581` (card memory failure) during the
+reset step.
+
+*Why:* the OpenPGP card spec defines TERMINATE DF and ACTIVATE FILE as case-1
+commands. The code had applied the "always include Le" convention where it does
+not belong, and the golden test (`00e60000` / `00440000`) had drifted from the
+actual method.
+
+## 13. The ceremony hard-gates on an unsupported OpenPGP applet
+
+**Sections:** §4.2 step 2, §7.2.
+
+*Before:* a card whose OpenPGP applet was below 3.4 (firmware < 5.2.3) produced
+only a warning on the inventory screen, and the ceremony would continue to the
+reset step and then fail later with confusing errors (6A80, 7F49 without an EC
+point, 6581 memory failure).
+
+*After:* `CardInventory.isDefinitelyUnsupported` detects a parseable applet
+version below 3.4, the inventory screen shows a red "too old to provision"
+notice, and `advance()` from the inventory step throws
+`unsupportedAppletVersion`, so the ceremony cannot proceed on hardware that
+cannot hold secp256k1/Ed25519.
+
+*Why:* real-device testing on firmware 5.1.2 (OpenPGP applet 2.1) confirmed the
+applet only supports RSA. YubiKey firmware is not upgradeable, so no code change
+can make such a card work; the app must refuse up front rather than fail later.
+
 ## What was deliberately *not* changed
 
 * **§5.2 rule 1 (one transaction, one `PSO:CDS`) and rule 2 (one touch)** are

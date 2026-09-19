@@ -49,9 +49,21 @@ public final class NFCTagTransport: NSObject, YubikeyTransport {
 
     public func send(_ command: CommandAPDU) async throws -> ResponseAPDU {
         guard let tag else { throw CardError.transportUnavailable("no NFC tag in session") }
-        let apduData = Data(command.bytes)
+        // Use the structured initializer, not the raw-bytes `data:` form: the raw
+        // form's parsing of a trailing Le byte (especially Le = 0x00) is
+        // ambiguous and was reported as 6581 (card memory failure) on real
+        // hardware. Map the ISO 7816 Le field explicitly: -1 = no Le,
+        // 256 = Le 0x00 (maximum length).
+        let apdu = NFCISO7816APDU(
+            instructionClass: command.cla,
+            instructionCode: command.ins,
+            p1Parameter: command.p1,
+            p2Parameter: command.p2,
+            data: Data(command.data),
+            expectedResponseLength: command.expectedLength.map { $0 == 0 ? 256 : $0 } ?? -1
+        )
         return try await withCheckedThrowingContinuation { continuation in
-            tag.sendCommand(apdu: NFCISO7816APDU(data: apduData)!) { data, sw1, sw2, error in
+            tag.sendCommand(apdu: apdu) { data, sw1, sw2, error in
                 if let error {
                     continuation.resume(throwing: CardError.transportUnavailable(error.localizedDescription))
                     return

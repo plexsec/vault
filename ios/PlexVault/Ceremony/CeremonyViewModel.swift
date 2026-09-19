@@ -51,7 +51,7 @@ public final class CeremonyViewModel {
         public var detail: String {
             switch self {
             case .nfc: return "Hold the iPhone against the YubiKey when prompted. Every step asks for a fresh tap."
-            case .usbC: return "Plug the YubiKey into the USB-C port and leave it in. Requires iPhone 15 or later."
+            case .usbC: return "Plug the YubiKey into the USB-C port and leave it in. Requires iPhone 15 or later. Disable the YubiKey's OTP interface first (ykman config usb --disable OTP) or the keyboard will not appear."
             #if DEBUG
             case .simulated: return "No YubiKey required. Runs against a simulated card; never use this for a real key."
             #endif
@@ -152,6 +152,12 @@ public final class CeremonyViewModel {
     public var cardHoldsAnyKey: Bool {
         guard let inventory else { return false }
         return KeySlot.allCases.contains { inventory.holdsKey(in: $0) }
+    }
+
+    /// True when the card's OpenPGP applet is definitively below the minimum
+    /// (3.4 / firmware 5.2.3), which cannot be provisioned.
+    public var isUnsupportedApplet: Bool {
+        inventory?.isDefinitelyUnsupported == true
     }
 
     public var allReadBacksSucceeded: Bool {
