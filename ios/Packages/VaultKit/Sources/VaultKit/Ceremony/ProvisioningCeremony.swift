@@ -159,6 +159,9 @@ public final class ProvisioningCeremony {
     /// Held only between the PIN step and the policy step so that PUT DATA of the
     /// protected policy objects can authenticate. Wiped with everything else.
     private var sessionAdminPIN: SensitiveBytes?
+    /// Set only by `confirmPairingAddressMatches`; gates completion of the pairing
+    /// step (design.md §4.2 step 8 requires the operator to compare addresses).
+    private var pairingAddressConfirmedByOperator = false
     private var independentCheckResult: IndependentCheck?
     private var pairingUR: UR?
 
@@ -195,6 +198,91 @@ public final class ProvisioningCeremony {
             // actual   = the step the caller tried to run.
             throw CeremonyError.stepOutOfOrder(expected: step, actual: expected)
         }
+    }
+
+    /// Completes the current step and moves to the next one.
+    ///
+    /// Workers that produce operator-facing output deliberately do **not** advance
+    /// themselves: the operator reads the result and then calls this. Without that
+    /// split, everything a step produced — the card inventory, the entropy
+    /// commitment, the derived address, the read-back comparison, the pairing QR
+    /// and the counter value — was replaced by the next screen in the same render
+    /// pass and never seen.
+    ///
+    /// Each step's precondition is checked here, so "read the card, then reset"
+    /// and "confirm the wallet shows this address" cannot be skipped by the view
+    /// layer.
+    public func advance() throws {
+        switch step {
+        case .notStarted, .preflight:
+            throw CeremonyError.stepOutOfOrder(expected: .cardInventory, actual: step)
+
+        case .cardInventory:
+            guard inventory != nil else {
+                throw CeremonyError.stepIncomplete(step: .cardInventory, detail: "the YubiKey has not been read yet")
+            }
+            step = .reset
+
+        case .reset, .pinProvisioning, .policy, .keyImport:
+            // Action-only steps advance themselves once the card accepts them.
+            throw CeremonyError.stepIncomplete(step: step, detail: "this step completes when the YubiKey accepts it")
+
+        case .entropy:
+            guard let entropy else {
+                throw CeremonyError.stepIncomplete(step: .entropy, detail: "entropy has not been generated yet")
+            }
+            // The words are derived here, so "step is .mnemonic" always implies the
+            // mnemonic exists. Previously the UI could reach the mnemonic step
+            // with nothing to show, which is exactly the empty-list bug.
+            let words = try BIP39.mnemonic(fromEntropy: entropy.materializedCopy())
+            installMnemonic(words)
+            step = .mnemonic
+
+        case .mnemonic:
+            throw CeremonyError.stepIncomplete(step: .mnemonic, detail: "confirm the transcription first")
+
+        case .derivation:
+            guard derivedKey != nil else {
+                throw CeremonyError.stepIncomplete(step: .derivation, detail: "the key has not been derived yet")
+            }
+            step = .keyImport
+
+        case .readBackCheck:
+            guard report.readBackVerified else {
+                throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public key has not been verified yet")
+            }
+            step = .independentCheck
+
+        case .independentCheck:
+            guard independentCheckResult?.matched == true else {
+                throw CeremonyError.stepIncomplete(step: .independentCheck, detail: "the independent cross-check has not passed")
+            }
+            step = .pairingExport
+
+        case .pairingExport:
+            guard pairingUR != nil else {
+                throw CeremonyError.stepIncomplete(step: .pairingExport, detail: "the pairing code has not been produced yet")
+            }
+            guard pairingAddressConfirmedByOperator else {
+                throw CeremonyError.pairingAddressNotConfirmed
+            }
+            step = .counterBaseline
+
+        case .counterBaseline:
+            guard report.counterBaseline != nil else {
+                throw CeremonyError.stepIncomplete(step: .counterBaseline, detail: "the signature counter has not been read yet")
+            }
+            step = .teardown
+
+        case .teardown:
+            throw CeremonyError.stepIncomplete(step: .teardown, detail: "call finish() to close the ceremony")
+        }
+    }
+
+    /// Records that the operator compared the address their wallet shows with the
+    /// address in the ceremony. Required before the pairing step can complete.
+    public func confirmPairingAddressMatches(_ matches: Bool) {
+        pairingAddressConfirmedByOperator = matches
     }
 
     private func advance(to next: CeremonyStep) {
@@ -263,7 +351,8 @@ public final class ProvisioningCeremony {
                 "OpenPGP applet version \(result.openPGPVersion) may not support secp256k1 (3.4 or newer is required)."
             )
         }
-        advance(to: .reset)
+        // Deliberately does NOT advance: the inventory must stay on screen for
+        // the operator to read before the destructive reset.
         return result
     }
 
@@ -374,7 +463,8 @@ public final class ProvisioningCeremony {
         entropy = generated
         let commitment = Hex.encode(Array(SHA256.hash(generated.materializedCopy()).prefix(4)))
         report.entropyCommitmentHex = commitment
-        advance(to: .mnemonic)
+        // Deliberately does NOT advance: the commitment must stay on screen
+        // until the operator has written it down.
         return commitment
     }
 
@@ -394,12 +484,6 @@ public final class ProvisioningCeremony {
 
     // MARK: Step 7 — mnemonic
 
-    public func generateMnemonic() throws -> [String] {
-        guard let entropy else { throw CeremonyError.missingEntropy }
-        let words = try BIP39.mnemonic(fromEntropy: entropy.materializedCopy())
-        installMnemonic(words)
-        return words
-    }
 
     /// Restore path (design.md §8.2). Words enter app memory, are validated for
     /// checksum before any derivation, and are wiped at teardown.
@@ -506,7 +590,8 @@ public final class ProvisioningCeremony {
         report.address = address
         report.publicKeyHex = publicKey.hexString
         report.publicKeyFingerprintHex = summary.fingerprintHex
-        advance(to: .keyImport)
+        // Deliberately does NOT advance: the derived address is needed for the
+        // independent cross-check two steps later.
         return summary
     }
 
@@ -570,7 +655,8 @@ public final class ProvisioningCeremony {
             throw CeremonyError.readBackMismatch(local: summary.publicKeyHex, card: cardPublicKey.hexString)
         }
         report.readBackVerified = true
-        advance(to: .independentCheck)
+        // Deliberately does NOT advance: the read-back comparison is the whole
+        // point of this step and must be seen.
         return result
     }
 
@@ -609,7 +695,8 @@ public final class ProvisioningCeremony {
             step = .cardInventory
             throw CeremonyError.independentCheckFailed
         }
-        advance(to: .pairingExport)
+        // Deliberately does NOT advance: the verdict must be seen before the
+        // pairing code is produced.
         return check
     }
 
@@ -643,7 +730,8 @@ public final class ProvisioningCeremony {
         report.pairingIncludedChainCode = policy.includesChainCode
         report.pairingURType = ur.type
         if let warning = policy.warning { report.warnings.append(warning) }
-        advance(to: .counterBaseline)
+        // Deliberately does NOT advance: the operator must scan the code and
+        // confirm the wallet shows the same address first.
         return ur
     }
 
@@ -657,7 +745,8 @@ public final class ProvisioningCeremony {
         let counter = try await card.signatureCounter()
         report.counterBaseline = counter
         guard counter == 0 else { throw CeremonyError.counterNotZero(counter) }
-        advance(to: .teardown)
+        // Deliberately does NOT advance: a non-zero counter is a stop condition
+        // and the operator must record the value either way.
         return counter
     }
 

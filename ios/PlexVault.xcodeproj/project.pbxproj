@@ -13,6 +13,7 @@
 		32C6D8D273D2584A10695987 /* SecretEntryField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 961B2568A7E9DB1563B80115 /* SecretEntryField.swift */; };
 		36A93EAE33708CE1B102D692 /* PlexVaultApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */; };
 		3B33481E22E7BD547502F6EA /* YubikeyKitNFC in Frameworks */ = {isa = PBXBuildFile; productRef = A9241AD16D138382E96C9A4F /* YubikeyKitNFC */; };
+		3C3C3F780EDB321F5DE73F51 /* CeremonyFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */; };
 		68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7029409A50A278443DA04717 /* SetupFlowUITests.swift */; };
 		76A9922172A9452E09512B36 /* YubikeyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4FFA45CC3FEACDAFA238223C /* YubikeyKit */; };
 		7C51E72B2FB24B55FCE108C1 /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = 96FB3B402292C2FB1A645A38 /* VaultKit */; };
@@ -21,6 +22,7 @@
 		A4ADF89D1FD15205C30AFDFF /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */; };
 		C322294583EFF8589E7BEDC8 /* CeremonyRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1249F80D8E8A09D2B2FDC701 /* CeremonyRootView.swift */; };
 		D5DEC7C15C9EE6A2216A8A68 /* SimulatedCardTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */; };
+		E1220D992627CC16822B2D2B /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = C6834C84E5CF504892BA8E71 /* VaultKit */; };
 		E779B12C4CFD586022163D58 /* QRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8809A236D2A19B5D0D92541 /* QRCodeView.swift */; };
 		EBBAD967C4AB3EF33F4D5E43 /* YubikeyKitCCID in Frameworks */ = {isa = PBXBuildFile; productRef = 5148AB7BCC6FBDC80A2B9896 /* YubikeyKitCCID */; };
 /* End PBXBuildFile section */
@@ -39,6 +41,7 @@
 		0309A73C9494EC5D851C7CA2 /* PlexVault.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PlexVault.entitlements; sourceTree = "<group>"; };
 		0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatedCardTransport.swift; sourceTree = "<group>"; };
 		1249F80D8E8A09D2B2FDC701 /* CeremonyRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyRootView.swift; sourceTree = "<group>"; };
+		427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyFlowUITests.swift; sourceTree = "<group>"; };
 		42A82FC3A8ECF99D53C02C8F /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		4C86391DCA17B1F914EB9256 /* CeremonyViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyViewModel.swift; sourceTree = "<group>"; };
 		637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlexVaultApp.swift; sourceTree = "<group>"; };
@@ -65,6 +68,14 @@
 				76A9922172A9452E09512B36 /* YubikeyKit in Frameworks */,
 				3B33481E22E7BD547502F6EA /* YubikeyKitNFC in Frameworks */,
 				EBBAD967C4AB3EF33F4D5E43 /* YubikeyKitCCID in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FDF94341207EB280F2614EF2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1220D992627CC16822B2D2B /* VaultKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -101,6 +112,7 @@
 		562D40D650E836605B51664A /* PlexVaultUITests */ = {
 			isa = PBXGroup;
 			children = (
+				427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */,
 				7029409A50A278443DA04717 /* SetupFlowUITests.swift */,
 			);
 			path = PlexVaultUITests;
@@ -213,6 +225,7 @@
 			buildConfigurationList = 0DD51C2CC323182E099C8AF7 /* Build configuration list for PBXNativeTarget "PlexVaultUITests" */;
 			buildPhases = (
 				D54527DDB107F4217F5B447F /* Sources */,
+				FDF94341207EB280F2614EF2 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -221,6 +234,7 @@
 			);
 			name = PlexVaultUITests;
 			packageProductDependencies = (
+				C6834C84E5CF504892BA8E71 /* VaultKit */,
 			);
 			productName = PlexVaultUITests;
 			productReference = B633C23222CA0AAE9EFE3EF7 /* PlexVaultUITests.xctest */;
@@ -292,6 +306,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3C3C3F780EDB321F5DE73F51 /* CeremonyFlowUITests.swift in Sources */,
 				68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -580,6 +595,10 @@
 		A9241AD16D138382E96C9A4F /* YubikeyKitNFC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = YubikeyKitNFC;
+		};
+		C6834C84E5CF504892BA8E71 /* VaultKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VaultKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

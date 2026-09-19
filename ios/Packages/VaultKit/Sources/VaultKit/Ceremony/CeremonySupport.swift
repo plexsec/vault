@@ -284,6 +284,8 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
 
 public enum CeremonyError: Swift.Error, Equatable {
     case stepOutOfOrder(expected: CeremonyStep, actual: CeremonyStep)
+    case stepIncomplete(step: CeremonyStep, detail: String)
+    case pairingAddressNotConfirmed
     case missingAdminPIN
     case alreadyRunning
     case notRunning
@@ -307,6 +309,10 @@ public enum CeremonyError: Swift.Error, Equatable {
         switch self {
         case .stepOutOfOrder(let expected, let actual):
             return "Ceremony order violation: \(actual.title) cannot run before \(expected.title)."
+        case .stepIncomplete(let step, let detail):
+            return "\(step.title) is not finished: \(detail)."
+        case .pairingAddressNotConfirmed:
+            return "Confirm that your wallet shows the same address as this ceremony before continuing."
         case .missingAdminPIN:
             return "No Admin PIN is held for this session; the PIN step must run first."
         case .alreadyRunning: return "A ceremony is already in progress."

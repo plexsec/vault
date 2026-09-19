@@ -51,7 +51,26 @@ struct CeremonyRootView: View {
                     PrivacyFooter()
                 }
             }
+            // The PIN fields use `.numberPad`, which has no return key: without an
+            // explicit dismiss the keyboard covers the lower part of the form and
+            // cannot be closed at all.
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { Self.dismissKeyboard() }
+                        .accessibilityIdentifier("dismiss-keyboard")
+                }
+            }
         }
+    }
+
+    private static func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private var title: String {

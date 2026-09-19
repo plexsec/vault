@@ -100,6 +100,11 @@ targets:
       - path: PlexVaultUITests
     dependencies:
       - target: PlexVault
+      # The UI tests compute the expected mnemonic and back-fill challenge with the
+      # same library the app uses, so they assert the *wiring* rather than
+      # re-deriving the crypto.
+      - package: VaultKit
+        product: VaultKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.plexsec.vault.uitests

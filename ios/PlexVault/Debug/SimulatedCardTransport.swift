@@ -19,11 +19,19 @@ import YubikeyKit
 final class SimulatedCardTransport: YubikeyTransport {
     let transportName = "Simulated YubiKey (debug)"
 
-    private let inner = MockYubikeyTransport(
+    /// A real YubiKey keeps its PINs and keys on the card between NFC taps, but
+    /// `TransportSessionCard` opens a *fresh* transport for every step. Sharing
+    /// one mock behind every `SimulatedCardTransport` instance reproduces that
+    /// physical persistence: without it each step would see a factory-fresh card
+    /// and the Admin PIN set by the PIN step would already be gone by the time
+    /// `applyPolicy` verifies it.
+    private static let shared = MockYubikeyTransport(
         transportName: "Simulated YubiKey (debug)",
         serial: 0x00DE_71A5,
         openPGPVersion: "3.4"
     )
+
+    private let inner = SimulatedCardTransport.shared
 
     func open() async throws { try await inner.open() }
     func send(_ command: CommandAPDU) async throws -> ResponseAPDU { try await inner.send(command) }

@@ -7,19 +7,20 @@ import YubikeyKit
 struct InventoryStepView: View {
     @Bindable var viewModel: CeremonyViewModel
 
+    private var hasInventory: Bool { viewModel.inventory != nil }
+
     var body: some View {
         StepScaffold(
-            why: "Read the card before changing anything. This records the applet version, the serial number and the signature counter baseline in your provisioning record.",
+            why: "Read the card before changing anything. This records the applet version, the serial number and the signature-counter baseline in your provisioning record.",
             caution: viewModel.inventory?.hasSignatureKey == true
                 ? "This YubiKey already holds a signature key. Continuing will erase it."
                 : nil,
-            actionTitle: viewModel.inventory == nil ? "Read YubiKey" : "Continue",
+            actionTitle: hasInventory ? "Continue" : "Read YubiKey",
             isBusy: viewModel.busy,
             action: {
-                if viewModel.inventory == nil {
-                    Task { await viewModel.inspectCard() }
+                if hasInventory {
+                    viewModel.advance()
                 } else {
-                    // The ceremony advances on its own; this button only re-reads.
                     Task { await viewModel.inspectCard() }
                 }
             }
@@ -36,8 +37,9 @@ struct InventoryStepView: View {
                     .foregroundStyle(.orange)
                 }
 
-                Text("Hold the YubiKey against the top of the iPhone" )
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Check the serial number against the key you intend to provision, then continue.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 Text(viewModel.transportChoice == .usbC
                      ? "Plug the YubiKey into the USB-C port."
@@ -166,18 +168,33 @@ struct PolicyStepView: View {
 
 struct EntropyStepView: View {
     @Bindable var viewModel: CeremonyViewModel
+    @State private var commitmentRecorded = false
+
+    private var hasCommitment: Bool { viewModel.entropyCommitment != nil }
 
     var body: some View {
         StepScaffold(
             why: "The 24 words are generated from 256 bits produced by the iOS system CSPRNG (SecRandomCopyBytes). The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
-            actionTitle: "Generate entropy",
-            isEnabled: viewModel.entropyCommitment == nil,
-            action: { viewModel.generateEntropy() }
+            actionTitle: hasCommitment ? "Reveal the mnemonic" : "Generate entropy",
+            isEnabled: !hasCommitment || commitmentRecorded,
+            action: {
+                if hasCommitment {
+                    // Advancing here is also what derives the words, so the
+                    // mnemonic step can never be reached empty.
+                    viewModel.advance()
+                } else {
+                    viewModel.generateEntropy()
+                }
+            }
         ) {
             if let commitment = viewModel.entropyCommitment {
                 AddressDisplay(label: "Entropy commitment (first 8 hex of SHA-256)", value: commitment)
-                Text("Write this down. It goes on your provisioning record.")
+                Text("Write this on your provisioning record before continuing.")
                     .font(.caption).foregroundStyle(.secondary)
+
+                Toggle("I have written down the entropy commitment", isOn: $commitmentRecorded)
+                    .font(.footnote)
+                    .padding(.top, 4)
 
                 Divider().padding(.vertical, 4)
 
@@ -202,15 +219,9 @@ struct EntropyStepView: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-
-                Button {
-                    viewModel.generateMnemonic()
-                } label: {
-                    Text("Continue to the mnemonic").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.top, 8)
+            } else {
+                Text("256 bits of entropy will be generated on this device and never leave it.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -260,26 +271,15 @@ struct MnemonicStepView: View {
         StepScaffold(
             why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; the YubiKey can be replaced, the words cannot.",
             caution: viewModel.screenIsCaptured
-                ? "Screen recording or mirroring is active. The words are hidden."
-                : "No cameras, no screenshots. The words are hidden unless you hold your finger down.",
+                ? "Screen recording or mirroring is active. The words cannot be shown."
+                : "No cameras, no screenshots. The words hide themselves again after \(CeremonyViewModel.revealWindowSeconds) seconds.",
             actionTitle: "Confirm transcription",
             isEnabled: backfillComplete,
+            secondaryTitle: viewModel.mnemonicRevealed ? "Hide the words now" : nil,
+            secondaryAction: viewModel.mnemonicRevealed ? { viewModel.hideMnemonic() } : nil,
             action: { viewModel.confirmTranscription() }
         ) {
-            HoldToReveal(isCaptured: viewModel.screenIsCaptured) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
-                    ForEach(Array(viewModel.mnemonic.enumerated()), id: \.offset) { index, word in
-                        HStack(spacing: 6) {
-                            Text("\(index + 1).").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            Text(word).font(.system(.callout, design: .monospaced))
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                }
-            }
+            mnemonicPanel
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("Back-fill these words to prove the transcription")
@@ -300,6 +300,61 @@ struct MnemonicStepView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var mnemonicPanel: some View {
+        if viewModel.mnemonic.isEmpty {
+            // Unreachable by construction: the words are derived when the entropy
+            // step completes. Kept as an explicit state so a future regression
+            // shows a message instead of a blank panel (which is what the
+            // "empty mnemonic list" bug looked like).
+            Label("The mnemonic has not been generated. Go back to the entropy step and continue.", systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+                .foregroundStyle(.orange)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        } else if viewModel.mnemonicRevealed {
+            VStack(alignment: .leading, spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+                    ForEach(Array(viewModel.mnemonic.enumerated()), id: \.offset) { index, word in
+                        HStack(spacing: 6) {
+                            Text("\(index + 1).").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Text(word).font(.system(.callout, design: .monospaced))
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                Label("Hiding in \(viewModel.revealSecondsRemaining)s", systemImage: "timer")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Button {
+                viewModel.revealMnemonic()
+            } label: {
+                VStack(spacing: 10) {
+                    Image(systemName: "eye.fill").font(.largeTitle)
+                    Text("Reveal the 24 words")
+                        .font(.headline)
+                    Text("They will hide again after \(CeremonyViewModel.revealWindowSeconds) seconds.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
+                .background(Color.accentColor.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.screenIsCaptured)
+            .accessibilityIdentifier("reveal-mnemonic")
+        }
+    }
 }
 
 // MARK: - Step 8: derivation
@@ -310,9 +365,14 @@ struct DerivationStepView: View {
     var body: some View {
         StepScaffold(
             why: "Derives the signing key for \(viewModel.chain.displayName) at \(viewModel.chain.defaultPath.description). The key itself stays in memory until it is imported into the YubiKey.",
-            actionTitle: "Derive key",
-            isEnabled: viewModel.derivedKey == nil,
-            action: { viewModel.deriveKey() }
+            actionTitle: viewModel.derivedKey == nil ? "Derive key" : "Continue",
+            action: {
+                if viewModel.derivedKey == nil {
+                    viewModel.deriveKey()
+                } else {
+                    viewModel.advance()
+                }
+            }
         ) {
             if let key = viewModel.derivedKey {
                 AddressDisplay(label: "Address", value: key.address)
@@ -367,9 +427,15 @@ struct ReadBackStepView: View {
     var body: some View {
         StepScaffold(
             why: "Reads the public key back out of the YubiKey and compares it byte-for-byte against the key derived on this device. This is the mandatory check that the card holds the key you think it does.",
-            actionTitle: "Verify read-back",
+            actionTitle: viewModel.readBack == nil ? "Verify read-back" : "Continue",
             isBusy: viewModel.busy,
-            action: { Task { await viewModel.verifyReadBack() } }
+            action: {
+                if viewModel.readBack == nil {
+                    Task { await viewModel.verifyReadBack() }
+                } else {
+                    viewModel.advance()
+                }
+            }
         ) {
             if let result = viewModel.readBack {
                 KeyValueRows(rows: [
@@ -399,9 +465,16 @@ struct IndependentCheckStepView: View {
     var body: some View {
         StepScaffold(
             why: "Enter the same address as derived by a different tool on a different device — tools/derive from this repository, an offline BIP39 site, a Coldcard or a SeedSigner. This is the check that catches a tampered iPhone or a wrong wordlist.",
-            actionTitle: "Compare addresses",
-            isEnabled: !viewModel.independentAddress.trimmingCharacters(in: .whitespaces).isEmpty,
-            action: { viewModel.submitIndependentCheck() }
+            actionTitle: viewModel.independentCheck?.matched == true ? "Continue" : "Compare addresses",
+            isEnabled: viewModel.independentCheck?.matched == true
+                || !viewModel.independentAddress.trimmingCharacters(in: .whitespaces).isEmpty,
+            action: {
+                if viewModel.independentCheck?.matched == true {
+                    viewModel.advance()
+                } else {
+                    viewModel.submitIndependentCheck()
+                }
+            }
         ) {
             if let key = viewModel.derivedKey {
                 AddressDisplay(label: "Address from this device", value: key.address)
@@ -440,12 +513,19 @@ struct PairingStepView: View {
     var body: some View {
         StepScaffold(
             why: "Scan this code with your desktop wallet's QR hardware-wallet import. It carries the public key, the derivation path and the master fingerprint — never the private key.",
-            actionTitle: viewModel.pairingURString == nil ? "Prepare pairing code" : "Re-generate pairing code",
+            actionTitle: viewModel.pairingURString == nil ? "Prepare pairing code" : "Continue",
             isEnabled: viewModel.pairingURString == nil
-                || (!viewModel.pairingIncludesChainCode || viewModel.acknowledgeChainCodeWarning),
+                ? (!viewModel.pairingIncludesChainCode || viewModel.acknowledgeChainCodeWarning)
+                : viewModel.pairingAddressConfirmed,
             secondaryTitle: viewModel.pairingURString == nil ? nil : "Regenerate with current settings",
             secondaryAction: viewModel.pairingURString == nil ? nil : { viewModel.buildPairingUR() },
-            action: { viewModel.buildPairingUR() }
+            action: {
+                if viewModel.pairingURString == nil {
+                    viewModel.buildPairingUR()
+                } else {
+                    viewModel.advance()
+                }
+            }
         ) {
             if let urString = viewModel.pairingURString, let ur = try? UR(urString: urString) {
                 AnimatedURView(ur: ur)
@@ -457,8 +537,12 @@ struct PairingStepView: View {
                 AddressDisplay(label: "Address your wallet must show", value: key.address)
             }
 
-            Toggle("I confirmed my desktop wallet shows this exact address", isOn: $viewModel.pairingAddressConfirmed)
-                .font(.footnote)
+            Toggle("I confirmed my desktop wallet shows this exact address", isOn: Binding(
+                get: { viewModel.pairingAddressConfirmed },
+                set: { viewModel.setPairingAddressConfirmed($0) }
+            ))
+            .font(.footnote)
+            .disabled(viewModel.pairingURString == nil)
 
             DisclosureGroup("Advanced: wire format and chain code", isExpanded: $showAdvanced) {
                 Picker("UR type", selection: $viewModel.pairingStyle) {
@@ -496,9 +580,15 @@ struct CounterStepView: View {
     var body: some View {
         StepScaffold(
             why: "Reads the YubiKey's hardware signature counter, which must be zero after an import. This number is the baseline your desktop wallet compares against later: any increase means the card signed something you did not ask for.",
-            actionTitle: "Read counter",
+            actionTitle: viewModel.counterBaseline == nil ? "Read counter" : "Continue",
             isBusy: viewModel.busy,
-            action: { Task { await viewModel.readCounterBaseline() } }
+            action: {
+                if viewModel.counterBaseline == nil {
+                    Task { await viewModel.readCounterBaseline() }
+                } else {
+                    viewModel.advance()
+                }
+            }
         ) {
             if let counter = viewModel.counterBaseline {
                 KeyValueRows(rows: [("Signature counter", "\(counter)")])

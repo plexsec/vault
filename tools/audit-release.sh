@@ -51,13 +51,13 @@ matches() { grep -qE "$2" <<<"$1"; }
 # 1. No simulated card in the release bundle.
 # ---------------------------------------------------------------------------
 echo
-echo "[1] Simulated YubiKey must be absent"
+echo "[1] Simulated YubiKey and test hooks must be absent"
 simulated_hits=0
 while IFS= read -r -d '' file; do
   case "$file" in *.dylib|*.app/*|*/PlexVault|*/PlexVault.debug.dylib) ;; *) continue ;; esac
   file_strings="$(strings "$file" 2>/dev/null || true)"
-  if matches "$file_strings" 'MockYubikey|Simulated YubiKey|simulated card'; then
-    note_fail "simulated-card strings found in $(basename "$file")"
+  if matches "$file_strings" 'MockYubikey|Simulated YubiKey|simulated card|deterministic-entropy'; then
+    note_fail "debug-only string found in $(basename "$file")"
     simulated_hits=$((simulated_hits + 1))
   fi
 done < <(find "$APP" -type f -print0)

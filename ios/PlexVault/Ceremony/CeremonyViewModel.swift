@@ -104,12 +104,26 @@ public final class CeremonyViewModel {
     public var pairingIncludesChainCode = false
     public var acknowledgeChainCodeWarning = false
     public var pairingAddressConfirmed = false
-    public var mnemonicRevealed = false
+
+    /// The mnemonic is hidden by default and revealed deliberately, then hidden
+    /// again after `revealWindowSeconds`. Holding a finger on the screen while
+    /// writing 24 words onto a steel plate is not physically possible, so
+    /// hold-to-reveal was the wrong affordance; a bounded reveal window keeps the
+    /// exposure short without making the screen unusable.
+    public private(set) var mnemonicRevealed = false
+    public private(set) var revealSecondsRemaining = 0
+    public static let revealWindowSeconds = 60
+    private var revealTimer: Timer?
 
     /// True while the screen is being mirrored or recorded. The mnemonic is
     /// hidden in that case: a screen capture of the words defeats the whole
     /// ceremony.
-    public var screenIsCaptured = false
+    public var screenIsCaptured = false {
+        didSet {
+            // A capture starting mid-reveal hides the words immediately.
+            if screenIsCaptured { hideMnemonic() }
+        }
+    }
 
     private var ceremony: ProvisioningCeremony?
     private var restoredMnemonic: [String]?
@@ -152,6 +166,7 @@ public final class CeremonyViewModel {
         )
         let ceremony = ProvisioningCeremony(
             card: card,
+            entropySource: Self.entropySource(),
             transportDescription: transportChoice.title,
             appVersion: BuildInfo.summary
         )
@@ -170,7 +185,7 @@ public final class CeremonyViewModel {
     /// a mutating step that was in flight forces a card re-inspection, and hides
     /// the mnemonic.
     public func applicationDidBackground() {
-        mnemonicRevealed = false
+        hideMnemonic()
         ceremony?.noteInterruption()
         step = ceremony?.step ?? step
     }
@@ -251,9 +266,78 @@ public final class CeremonyViewModel {
         }
     }
 
+    /// Generates entropy. The commitment stays on screen until the operator has
+    /// written it down and calls `advance()`.
     public func generateEntropy() {
         runSync { ceremony in
             self.entropyCommitment = try ceremony.generateEntropy()
+        }
+    }
+
+    /// Completes the current step. Steps that produce output call this only once
+    /// the operator has read that output, which is what keeps the entropy
+    /// commitment, the derived address, the read-back result, the pairing code and
+    /// the counter on screen.
+    public func advance() {
+        guard let ceremony else { return }
+        errorMessage = nil
+        do {
+            try ceremony.advance()
+            step = ceremony.step
+            report = ceremony.report
+            syncStepOutputs()
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// Records the operator's comparison of the wallet's address with the one the
+    /// ceremony shows. Required before the pairing step can complete.
+    public func setPairingAddressConfirmed(_ confirmed: Bool) {
+        pairingAddressConfirmed = confirmed
+        ceremony?.confirmPairingAddressMatches(confirmed)
+    }
+
+    /// Pulls in output that only exists once a step has been completed — chiefly
+    /// the mnemonic, which is derived when the entropy step completes.
+    private func syncStepOutputs() {
+        guard let ceremony else { return }
+        if step == .mnemonic {
+            mnemonic = (try? ceremony.mnemonicForDisplay()) ?? []
+            transcriptionChallenge = (try? ceremony.transcriptionChallenge()) ?? []
+            backfillEntries = [:]
+            hideMnemonic()
+        }
+    }
+
+    // MARK: Mnemonic reveal
+
+    public func revealMnemonic() {
+        // Never reveal while the screen is mirrored or recorded.
+        guard !screenIsCaptured, !mnemonic.isEmpty else { return }
+        mnemonicRevealed = true
+        startRevealCountdown()
+    }
+
+    public func hideMnemonic() {
+        revealTimer?.invalidate()
+        revealTimer = nil
+        mnemonicRevealed = false
+        revealSecondsRemaining = 0
+    }
+
+    private func startRevealCountdown() {
+        revealTimer?.invalidate()
+        revealSecondsRemaining = Self.revealWindowSeconds
+        revealTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.revealSecondsRemaining <= 1 {
+                    self.hideMnemonic()
+                } else {
+                    self.revealSecondsRemaining -= 1
+                }
+            }
         }
     }
 
@@ -264,13 +348,6 @@ public final class CeremonyViewModel {
         }
     }
 
-    public func generateMnemonic() {
-        runSync { ceremony in
-            self.mnemonic = try ceremony.generateMnemonic()
-            self.transcriptionChallenge = try ceremony.transcriptionChallenge()
-            self.backfillEntries = [:]
-        }
-    }
 
     public func restoreMnemonic() {
         runSync { ceremony in
@@ -278,10 +355,12 @@ public final class CeremonyViewModel {
                 .split(whereSeparator: { $0.isWhitespace || $0 == "," })
                 .map { String($0).lowercased() }
             try ceremony.restoreMnemonic(words: words)
-            self.mnemonic = words
+            self.step = ceremony.step
+            self.mnemonic = try ceremony.mnemonicForDisplay()
             self.transcriptionChallenge = try ceremony.transcriptionChallenge()
             self.restoreWords = ""
             self.backfillEntries = [:]
+            self.hideMnemonic()
         }
     }
 
@@ -344,9 +423,9 @@ public final class CeremonyViewModel {
         report = ceremony.finish()
         step = ceremony.step
         phase = .finished
+        hideMnemonic()
         mnemonic = []
         restoredMnemonic = nil
-        mnemonicRevealed = false
     }
 
     // MARK: Helpers
@@ -416,6 +495,26 @@ public final class CeremonyViewModel {
         default:
             return error.localizedDescription
         }
+    }
+
+    /// Entropy source for the ceremony.
+    ///
+    /// DEBUG builds honour `-deterministic-entropy <64 hex chars>` so a UI test can
+    /// drive the whole ceremony, including the transcription back-fill, which is
+    /// impossible with random words. Release builds always use the system CSPRNG:
+    /// this hook does not exist there, and `tools/audit-release.sh` checks for its
+    /// marker string in the shipped binary.
+    private static func entropySource() -> EntropySource {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "-deterministic-entropy"),
+           index + 1 < arguments.count,
+           let bytes = try? Hex.decode(arguments[index + 1]),
+           bytes.count == BIP39.entropyByteCount {
+            return ScriptedEntropySource(bytes: bytes)
+        }
+        #endif
+        return SystemEntropySource()
     }
 
     private static func makeTransport(_ choice: TransportChoice) -> YubikeyTransport {

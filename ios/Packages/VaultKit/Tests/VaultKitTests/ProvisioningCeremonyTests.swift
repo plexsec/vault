@@ -39,6 +39,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
     ) async throws -> WalkResult {
         try ceremony.begin(mode: mode, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
@@ -46,12 +48,16 @@ final class ProvisioningCeremonyTests: XCTestCase {
             try ceremony.restoreMnemonic(words: restoredWords)
         } else {
             try ceremony.generateEntropy()
-            _ = try ceremony.generateMnemonic()
+            // Advancing from the entropy step is what derives the words, so
+            // "step == .mnemonic" always implies a populated mnemonic.
+            try ceremony.advance()
         }
         let words = try ceremony.mnemonicForDisplay()
+        XCTAssertEqual(words.count, 24, "the mnemonic must be populated at the mnemonic step")
         let challenge = try ceremony.transcriptionChallenge()
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         let summary = try ceremony.deriveKey(for: chain)
+        try ceremony.advance()
         return WalkResult(summary: summary, mnemonic: words)
     }
 
@@ -61,12 +67,17 @@ final class ProvisioningCeremonyTests: XCTestCase {
         style: URTypeStyle = .keystoneLegacy,
         policy: PairingPolicy = .singleKeyOnly
     ) async throws -> CeremonyReport {
-        try await ceremony.importKey()
+        try await ceremony.importKey()                 // -> readBackCheck
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()                         // -> independentCheck
         let address = ceremony.derivedKey!.address
         _ = try ceremony.submitIndependentCheck(address: address, source: "tools/derive (Python)")
+        try ceremony.advance()                         // -> pairingExport
         _ = try ceremony.buildPairingUR(style: style, policy: policy)
+        ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()                         // -> counterBaseline
         _ = try await ceremony.readCounterBaseline()
+        try ceremony.advance()                         // -> teardown
         return ceremony.finish()
     }
 
@@ -90,18 +101,45 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(readBack.cardPublicKeyHex, walk.summary.publicKeyHex)
         XCTAssertEqual(readBack.addressFromCardKey, walk.summary.address)
 
+        // The read-back output stays on screen until the operator advances.
+        XCTAssertEqual(ceremony.step, .readBackCheck)
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .independentCheck)
+
         let check = try ceremony.submitIndependentCheck(
             address: "  0xF278CF59F82EDCF871D630F28ECC8056F25C1CDB ",
             source: "tools/derive (Python)"
         )
+        try ceremony.advance()
         XCTAssertTrue(check.matched, "comparison must be case-insensitive and whitespace tolerant")
+
+        XCTAssertEqual(ceremony.step, .pairingExport)
+
+        // Pairing cannot complete without a pairing code ...
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepIncomplete(step: .pairingExport, detail: "the pairing code has not been produced yet")
+            )
+        }
 
         let ur = try ceremony.buildPairingUR(style: .keystoneLegacy)
         XCTAssertEqual(ur.type, "crypto-hdkey")
         XCTAssertNoThrow(try UR(urString: ur.string))
 
+        // ... and, with the code on screen, not until the operator has compared
+        // the address their wallet shows with the one in this ceremony.
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(error as? CeremonyError, .pairingAddressNotConfirmed)
+        }
+        ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .counterBaseline)
+
         let baseline = try await ceremony.readCounterBaseline()
         XCTAssertEqual(baseline, 0)
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .teardown)
         let report = ceremony.finish()
 
         XCTAssertNotNil(report.completedAt)
@@ -161,6 +199,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .restoreFromMnemonic, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
@@ -185,7 +225,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
             try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         }
         XCTAssertThrowsError(try ceremony.generateEntropy())
-        XCTAssertThrowsError(try ceremony.generateMnemonic())
+        // The mnemonic cannot be reached without generating entropy first.
+        XCTAssertThrowsError(try ceremony.advance())
     }
 
     func testMnemonicCannotBeReadAfterTheMnemonicStep() async throws {
@@ -201,11 +242,20 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
         try ceremony.generateEntropy()
-        _ = try ceremony.generateMnemonic()
+        // Without advancing, the mnemonic step is not even due yet, so derivation
+        // is refused by the ordering gate.
+        XCTAssertThrowsError(try ceremony.deriveKey(for: .ethereum))
+        try ceremony.advance()
+        // The transcription gate fires next, which is the stronger guarantee; the
+        // `mnemonicNotConfirmed` guard is defence-in-depth behind it.
+        let words = try ceremony.mnemonicForDisplay()
+        XCTAssertEqual(words.count, 24)
         // The ordering gate fires first (the mnemonic step is still due), which is
         // the stronger guarantee; the `mnemonicNotConfirmed` guard is
         // defence-in-depth behind it.
@@ -218,11 +268,13 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
         try ceremony.generateEntropy()
-        _ = try ceremony.generateMnemonic()
+        try ceremony.advance()
         XCTAssertThrowsError(try ceremony.confirmTranscription(entries: [(5, "wrong")])) { error in
             XCTAssertEqual(error as? CeremonyError, .transcriptionMismatch(index: 5))
         }
@@ -246,6 +298,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         let inventory = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         XCTAssertTrue(inventory.hasSignatureKey)
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("not factory-fresh") })
 
@@ -272,6 +326,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("secp256k1") })
     }
 
@@ -303,6 +359,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
 
         XCTAssertThrowsError(try ceremony.submitIndependentCheck(
             address: "0x0000000000000000000000000000000000000000",
@@ -319,8 +376,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let walk = try await runThroughDerivation(ceremony, chain: .bitcoin)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         // Uppercase bech32 is valid and must compare equal.
         _ = try ceremony.submitIndependentCheck(address: walk.summary.address.uppercased(), source: "Coldcard")
+        try ceremony.advance()
         XCTAssertEqual(ceremony.step, .pairingExport)
     }
 
@@ -329,6 +388,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         // Ordering gate: the independent-check step is still due.
         XCTAssertThrowsError(try ceremony.buildPairingUR(style: .v2)) { error in
             XCTAssertEqual(error as? CeremonyError, .stepOutOfOrder(expected: .independentCheck, actual: .pairingExport))
@@ -341,8 +401,12 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         _ = try ceremony.submitIndependentCheck(address: ceremony.derivedKey!.address, source: "tools/derive")
+        try ceremony.advance()
         _ = try ceremony.buildPairingUR(style: .keystoneLegacy)
+        ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
 
         // The card has signed something the desktop does not know about.
         card.counterValue = 3
@@ -379,6 +443,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         await XCTAssertThrowsErrorAsync {
             try await ceremony.setPINs(userPIN: Array("1234".utf8), adminPIN: Array("87654321".utf8))
@@ -393,9 +459,13 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let walk = try await runThroughDerivation(ceremony)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         _ = try ceremony.submitIndependentCheck(address: walk.summary.address, source: "tools/derive")
+        try ceremony.advance()
 
         let ur = try ceremony.buildPairingUR(style: .keystoneLegacy, policy: .singleKeyOnly)
+        ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
         let key = try HDKey(ur: ur)
         XCTAssertNil(key.chainCode, "chain code must be omitted so no unsignable children are offered")
         XCTAssertEqual(key.keyData, walk.summary.publicKeyCompressed)
@@ -409,7 +479,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         _ = try ceremony.submitIndependentCheck(address: ceremony.derivedKey!.address, source: "tools/derive")
+        try ceremony.advance()
         XCTAssertThrowsError(try ceremony.buildPairingUR(
             style: .v2,
             policy: .includeChainCode(acknowledgedUnsignableChildren: false)
@@ -423,12 +495,16 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let walk = try await runThroughDerivation(ceremony)
         try await ceremony.importKey()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         _ = try ceremony.submitIndependentCheck(address: walk.summary.address, source: "tools/derive")
+        try ceremony.advance()
 
         let ur = try ceremony.buildPairingUR(
             style: .v2,
             policy: .includeChainCode(acknowledgedUnsignableChildren: true)
         )
+        try ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
         XCTAssertNotNil(try HDKey(ur: ur).chainCode)
         XCTAssertTrue(ceremony.report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("cannot sign") })
@@ -483,6 +559,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         XCTAssertEqual(ceremony.step, .reset)
 
         // The NFC session drops mid-`PUT DATA`: the card state is now unknown.
@@ -498,6 +576,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         // Not a mutating step, so an interruption leaves the position alone.
         ceremony.noteInterruption()
         XCTAssertEqual(ceremony.step, .reset)
@@ -510,6 +590,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(entropy: entropy)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
@@ -523,6 +605,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
@@ -531,7 +615,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
             XCTAssertEqual(error as? CeremonyError, .diceRollsOutOfRange)
         }
         try ceremony.generateEntropy()
-        let words = try ceremony.generateMnemonic()
+        try ceremony.advance()
+        let words = try ceremony.mnemonicForDisplay()
         // All-zero scripted entropy still yields the all-abandon mnemonic even
         // though dice rolls were recorded: dice do not feed the mnemonic in v1.
         XCTAssertEqual(words.first, "abandon")
@@ -544,11 +629,13 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.applyPolicy()
         try ceremony.generateEntropy()
-        _ = try ceremony.generateMnemonic()
+        try ceremony.advance()
         let first = try ceremony.transcriptionChallenge()
         let second = try ceremony.transcriptionChallenge()
         XCTAssertEqual(first, second)

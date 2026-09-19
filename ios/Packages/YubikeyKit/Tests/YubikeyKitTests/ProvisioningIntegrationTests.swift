@@ -43,6 +43,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
 
         let inventory = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         XCTAssertEqual(inventory.openPGPVersion, "3.4")
         XCTAssertFalse(inventory.hasSignatureKey)
         XCTAssertTrue(inventory.isFactoryFresh)
@@ -60,11 +62,17 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentPWStatus.count, 7)
 
         try ceremony.generateEntropy()
-        let words = try ceremony.generateMnemonic()
+
+
+        try ceremony.advance()
+
+
+        let words = try ceremony.mnemonicForDisplay()
         let challenge = try ceremony.transcriptionChallenge()
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
 
         let summary = try ceremony.deriveKey(for: .ethereum)
+        try ceremony.advance()
         // The 24-word form of all-zero entropy is "abandon x23 + art", and this
         // address was produced independently by tools/derive.
         XCTAssertEqual(words.last, "art")
@@ -83,6 +91,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertTrue(Hex.encode(transport.currentFingerprint).hasPrefix(summary.fingerprintHex))
 
         let readBack = try await ceremony.verifyReadBack()
+        try ceremony.advance()
         XCTAssertTrue(readBack.matches)
         XCTAssertEqual(readBack.cardPublicKeyHex, summary.publicKeyHex)
 
@@ -90,9 +99,12 @@ final class ProvisioningIntegrationTests: XCTestCase {
             address: summary.address,
             source: "tools/derive (independent)"
         )
+        try ceremony.advance()
         XCTAssertTrue(check.matched)
 
         let ur = try ceremony.buildPairingUR(style: .keystoneLegacy, policy: .singleKeyOnly)
+        try ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
         XCTAssertEqual(ur.type, "crypto-hdkey")
         let decoded = try HDKey(ur: try UR(urString: ur.string))
         XCTAssertNil(decoded.chainCode)
@@ -100,6 +112,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(decoded.origin?.sourceFingerprint, UInt32(summary.masterFingerprintHex.prefix(8), radix: 16))
 
         let baseline = try await ceremony.readCounterBaseline()
+        try ceremony.advance()
         XCTAssertEqual(baseline, 0)
 
         let report = ceremony.finish()
@@ -125,14 +138,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let (first, _) = makeCeremony(transport: transport)
         try first.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await first.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try first.advance()
         try await first.resetCard(adminPIN: Array("12345678".utf8))
         try await first.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await first.applyPolicy()
         try first.generateEntropy()
-        let words = try first.generateMnemonic()
+
+        try first.advance()
+
+        let words = try first.mnemonicForDisplay()
         let challenge = try first.transcriptionChallenge()
         try first.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         _ = try first.deriveKey(for: .ethereum)
+        try first.advance()
         try await first.importKey()
         XCTAssertTrue(transport.hasKey)
         let firstFingerprint = transport.currentFingerprint
@@ -145,6 +164,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
         )
         try second.begin(mode: .freshGeneration, postureConfirmed: true)
         let inventory = try await second.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try second.advance()
         XCTAssertTrue(inventory.hasSignatureKey)
         XCTAssertFalse(inventory.isFactoryFresh)
         XCTAssertTrue(second.report.warnings.contains { $0.contains("not factory-fresh") })
@@ -177,10 +198,12 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try await second.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await second.applyPolicy()
         try second.generateEntropy()
-        let words2 = try second.generateMnemonic()
+        try second.advance()
+        let words2 = try second.mnemonicForDisplay()
         let challenge2 = try second.transcriptionChallenge()
         try second.confirmTranscription(entries: challenge2.map { ($0, words2[$0]) })
         let summary2 = try second.deriveKey(for: .ethereum)
+        try second.advance()
         try await second.importKey()
         let readBack = try await second.verifyReadBack()
         XCTAssertTrue(readBack.matches)
@@ -194,19 +217,27 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let (original, _) = makeCeremony(transport: originalTransport)
         try original.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await original.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try original.advance()
         try await original.resetCard(adminPIN: Array("12345678".utf8))
         try await original.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await original.applyPolicy()
         try original.generateEntropy()
-        let words = try original.generateMnemonic()
+
+        try original.advance()
+
+        let words = try original.mnemonicForDisplay()
         let challenge = try original.transcriptionChallenge()
         try original.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         let originalSummary = try original.deriveKey(for: .ethereum)
+        try original.advance()
 
         let newTransport = MockYubikeyTransport(serial: 0x1111_2222)
         let (restored, _) = makeCeremony(transport: newTransport)
         try restored.begin(mode: .restoreFromMnemonic, postureConfirmed: true)
         _ = try await restored.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try restored.advance()
         try await restored.resetCard(adminPIN: Array("12345678".utf8))
         try await restored.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await restored.applyPolicy()
@@ -214,6 +245,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let challenge2 = try restored.transcriptionChallenge()
         try restored.confirmTranscription(entries: challenge2.map { ($0, words[$0]) })
         let restoredSummary = try restored.deriveKey(for: .ethereum)
+        try restored.advance()
         try await restored.importKey()
         let readBack = try await restored.verifyReadBack()
 
@@ -235,14 +267,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let (ceremony, _) = makeCeremony(transport: transport)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
         try await ceremony.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await ceremony.applyPolicy()
         try ceremony.generateEntropy()
-        let words = try ceremony.generateMnemonic()
+
+        try ceremony.advance()
+
+        let words = try ceremony.mnemonicForDisplay()
         let challenge = try ceremony.transcriptionChallenge()
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         _ = try ceremony.deriveKey(for: .ethereum)
+        try ceremony.advance()
         try await ceremony.importKey()
 
         await XCTAssertThrowsErrorAsync { try await ceremony.verifyReadBack() } verify: { error in
@@ -260,14 +298,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let (ceremony, _) = makeCeremony(transport: transport)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
         try await ceremony.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await ceremony.applyPolicy()
         try ceremony.generateEntropy()
-        let words = try ceremony.generateMnemonic()
+
+        try ceremony.advance()
+
+        let words = try ceremony.mnemonicForDisplay()
         let challenge = try ceremony.transcriptionChallenge()
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         _ = try ceremony.deriveKey(for: .ethereum)
+        try ceremony.advance()
 
         transport.injectedFailure = .transportError("NFC session invalidated")
         await XCTAssertThrowsErrorAsync { try await ceremony.importKey() }

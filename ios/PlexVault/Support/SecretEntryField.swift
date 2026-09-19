@@ -29,8 +29,10 @@ struct SecretEntryField: View {
                         TextField(prompt, text: $text)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .accessibilityIdentifier("secret-\(title)")
                     } else {
                         SecureField(prompt, text: $text)
+                            .accessibilityIdentifier("secret-\(title)")
                     }
                 }
                 .textFieldStyle(.roundedBorder)
