@@ -151,7 +151,7 @@ final class URTests: XCTestCase {
             keyData: Array(try Hex.decode("026fe2355745bb2db3630bbc80ef5d58951c963c841f54170ba6e5c12be7fc12a6")),
             chainCode: Array(try Hex.decode("ced155c72456255881793514edc5bd9447e7f74abb88c6d6b6480fd016ee8c85")),
             useInfo: CoinInfo(type: 60, network: 0),
-            origin: URKeyPath(path: .evmDefault),
+            origin: URKeyPath(path: .secp256k1Default),
             parentFingerprint: 0x1234_5678
         )
         for style in URTypeStyle.allCases {
@@ -162,6 +162,32 @@ final class URTests: XCTestCase {
             XCTAssertEqual(decoded, ur)
             XCTAssertEqual(try HDKey(ur: decoded), key)
         }
+    }
+
+    /// An Ed25519 key is 32 bytes of raw point rather than a 33-byte compressed
+    /// secp256k1 key, and BCR-2020-007 has no explicit curve field: the length
+    /// (plus `use-info`) is what distinguishes them.
+    func testEd25519HDKeyRoundTrip() throws {
+        let key = HDKey(
+            keyData: Array(try Hex.decode("f036276246a75b9de3349ed42b15e232f6518fc20f5fcd4f1d64e81f9bd258f7")),
+            chainCode: Array(try Hex.decode("fb304a2a20f3d97f5240150cd6261a3f7d52e0981381f2c1f935d124d827de83")),
+            useInfo: CoinInfo(type: 501, network: 0),
+            origin: URKeyPath(path: .ed25519Default),
+            parentFingerprint: 0x0FDB_C659
+        )
+        XCTAssertEqual(key.keyData.count, 32)
+        XCTAssertTrue(key.isEd25519)
+        XCTAssertNoThrow(try key.validate())
+
+        for style in URTypeStyle.allCases {
+            let ur = try key.ur(style: style)
+            let decoded = try UR(urString: ur.string)
+            XCTAssertEqual(try HDKey(ur: decoded), key)
+            XCTAssertEqual(try HDKey(ur: decoded).useInfo?.type, 501)
+        }
+
+        // A 31-byte key-data is neither a valid secp256k1 nor Ed25519 key.
+        XCTAssertThrowsError(try HDKey(keyData: [UInt8](repeating: 1, count: 31)).validate())
     }
 
     func testMultiPartAnimatedURRoundTripWithOutOfOrderReception() throws {

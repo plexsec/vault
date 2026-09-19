@@ -18,6 +18,10 @@ import VaultKit
 ///
 /// It performs no cryptography and makes no policy decisions: every gate lives in
 /// `ProvisioningCeremony`, so a UI bug cannot skip verification.
+///
+/// One run provisions **two** keys — secp256k1 and Ed25519 — from a single
+/// mnemonic, so the derived-key, read-back and pairing state is keyed by
+/// algorithm rather than being a single value.
 @MainActor
 @Observable
 public final class CeremonyViewModel {
@@ -65,7 +69,6 @@ public final class CeremonyViewModel {
 
     public var transportChoice: TransportChoice = .nfc
     public var mode: CeremonyMode = .freshGeneration
-    public var chain: SigningChain = .ethereum
 
     // MARK: Ceremony state
 
@@ -79,10 +82,9 @@ public final class CeremonyViewModel {
     public private(set) var entropyCommitment: String?
     public private(set) var mnemonic: [String] = []
     public private(set) var transcriptionChallenge: [Int] = []
-    public private(set) var derivedKey: DerivedKeySummary?
-    public private(set) var readBack: ProvisioningCeremony.ReadBackResult?
-    public private(set) var independentCheck: IndependentCheck?
-    public private(set) var pairingURString: String?
+    public private(set) var derivedKeys: DerivedKeys?
+    public private(set) var readBack: [KeyAlgorithm: ReadBackResult] = [:]
+    public private(set) var pairingURStrings: [KeyAlgorithm: String] = [:]
     public private(set) var counterBaseline: UInt32?
     public private(set) var report: CeremonyReport?
 
@@ -98,8 +100,6 @@ public final class CeremonyViewModel {
     public var diceRolls: [Int] = []
     public var backfillEntries: [Int: String] = [:]
     public var restoreWords = ""
-    public var independentAddress = ""
-    public var independentSource = "tools/derive (Python, separate device)"
     public var pairingStyle: URTypeStyle = .keystoneLegacy
     public var pairingIncludesChainCode = false
     public var acknowledgeChainCodeWarning = false
@@ -126,7 +126,6 @@ public final class CeremonyViewModel {
     }
 
     private var ceremony: ProvisioningCeremony?
-    private var restoredMnemonic: [String]?
 
     public init() {}
 
@@ -138,17 +137,28 @@ public final class CeremonyViewModel {
         if let manufacturer = inventory.manufacturer { rows.append(("Manufacturer", manufacturer)) }
         if let serial = inventory.serial { rows.append(("Serial", serial)) }
         if let counter = inventory.signatureCounter { rows.append(("Signature counter", "\(counter)")) }
-        if let attributes = inventory.algorithmAttributes {
-            rows.append(("Algorithm attributes", attributes.hexString))
+        for slot in KeySlot.allCases {
+            if let attributes = inventory.algorithmAttributes[slot] {
+                rows.append(("\(slot.displayName) algorithm", attributes.hexString))
+            }
+            rows.append(("\(slot.displayName) key present", inventory.holdsKey(in: slot) ? "yes" : "no"))
         }
-        rows.append(("Existing signature key", inventory.hasSignatureKey ? "yes" : "no"))
         rows.append(("Factory fresh", inventory.isFactoryFresh ? "yes" : "no"))
         return rows
     }
 
-    public var modeSummary: String {
-        mode == .freshGeneration ? "Generate a new wallet" : "Restore an existing wallet"
+    /// True when the card holds a key in either signing-capable slot, which is
+    /// what the destructive reset gate keys off.
+    public var cardHoldsAnyKey: Bool {
+        guard let inventory else { return false }
+        return KeySlot.allCases.contains { inventory.holdsKey(in: $0) }
     }
+
+    public var allReadBacksSucceeded: Bool {
+        KeyAlgorithm.allCases.allSatisfy { readBack[$0]?.matches == true }
+    }
+
+    public var pairingPrepared: Bool { !pairingURStrings.isEmpty }
 
     // MARK: Lifecycle
 
@@ -200,11 +210,9 @@ public final class CeremonyViewModel {
 
     private func resetTransientState() {
         mnemonic = []
-        restoredMnemonic = nil
-        derivedKey = nil
-        readBack = nil
-        independentCheck = nil
-        pairingURString = nil
+        derivedKeys = nil
+        readBack = [:]
+        pairingURStrings = [:]
         counterBaseline = nil
         entropyCommitment = nil
         backfillEntries = [:]
@@ -215,7 +223,6 @@ public final class CeremonyViewModel {
         adminPINConfirmation = ""
         resetAdminPIN = ""
         restoreWords = ""
-        independentAddress = ""
         diceRolls = []
     }
 
@@ -276,8 +283,8 @@ public final class CeremonyViewModel {
 
     /// Completes the current step. Steps that produce output call this only once
     /// the operator has read that output, which is what keeps the entropy
-    /// commitment, the derived address, the read-back result, the pairing code and
-    /// the counter on screen.
+    /// commitment, the derived addresses, the read-back results, the pairing codes
+    /// and the counter on screen.
     public func advance() {
         guard let ceremony else { return }
         errorMessage = nil
@@ -291,8 +298,8 @@ public final class CeremonyViewModel {
         }
     }
 
-    /// Records the operator's comparison of the wallet's address with the one the
-    /// ceremony shows. Required before the pairing step can complete.
+    /// Records the operator's comparison of the wallet's addresses with the ones
+    /// the ceremony shows. Required before the pairing step can complete.
     public func setPairingAddressConfirmed(_ confirmed: Bool) {
         pairingAddressConfirmed = confirmed
         ceremony?.confirmPairingAddressMatches(confirmed)
@@ -348,7 +355,6 @@ public final class CeremonyViewModel {
         }
     }
 
-
     public func restoreMnemonic() {
         runSync { ceremony in
             let words = self.restoreWords
@@ -374,15 +380,15 @@ public final class CeremonyViewModel {
         }
     }
 
-    public func deriveKey() {
+    public func deriveKeys() {
         runSync { ceremony in
-            self.derivedKey = try ceremony.deriveKey(for: self.chain)
+            self.derivedKeys = try ceremony.deriveKeys()
         }
     }
 
-    public func importKey() async {
+    public func importKeys() async {
         await run { ceremony in
-            try await ceremony.importKey()
+            try await ceremony.importKeys()
         }
     }
 
@@ -392,23 +398,13 @@ public final class CeremonyViewModel {
         }
     }
 
-    public func submitIndependentCheck() {
-        runSync { ceremony in
-            self.independentCheck = try ceremony.submitIndependentCheck(
-                address: self.independentAddress,
-                source: self.independentSource
-            )
-            self.independentAddress = ""
-        }
-    }
-
-    public func buildPairingUR() {
+    public func buildPairingURs() {
         runSync { ceremony in
             let policy: PairingPolicy = self.pairingIncludesChainCode
                 ? .includeChainCode(acknowledgedUnsignableChildren: self.acknowledgeChainCodeWarning)
                 : .singleKeyOnly
-            let ur = try ceremony.buildPairingUR(style: self.pairingStyle, policy: policy)
-            self.pairingURString = ur.string
+            let urs = try ceremony.buildPairingURs(style: self.pairingStyle, policy: policy)
+            self.pairingURStrings = urs.mapValues(\.string)
         }
     }
 
@@ -425,7 +421,6 @@ public final class CeremonyViewModel {
         phase = .finished
         hideMnemonic()
         mnemonic = []
-        restoredMnemonic = nil
     }
 
     // MARK: Helpers
@@ -469,8 +464,10 @@ public final class CeremonyViewModel {
     private func fail(_ error: Error) {
         errorMessage = Self.describe(error)
         // A voided procedure wipes the ceremony's secrets; keep the UI consistent.
-        if ceremony?.derivedKey == nil { derivedKey = nil }
-        if ceremony?.step != .teardown { readBack = nil }
+        if ceremony?.derivedKeys == nil {
+            derivedKeys = nil
+            readBack = [:]
+        }
     }
 
     public static func describe(_ error: Error) -> String {
@@ -489,6 +486,13 @@ public final class CeremonyViewModel {
             switch bip32 {
             case .invalidSeedLength(let count): return "Invalid seed length: \(count) bytes."
             default: return "Key derivation failed: \(bip32)."
+            }
+        case let slip10 as SLIP0010Error:
+            switch slip10 {
+            case .invalidSeedLength(let count): return "Invalid seed length: \(count) bytes."
+            case .nonHardenedIndex(let index):
+                return "Ed25519 derivation path component \(index) is not hardened, which SLIP-0010 forbids."
+            case .depthExceeded: return "Ed25519 derivation path is too deep."
             }
         case let path as DerivationPath.ParseError:
             return "Invalid derivation path: \(path)."

@@ -34,9 +34,10 @@ struct SetupView: View {
                     DisclosureGroup("How this works", isExpanded: $showExplanation) {
                         Text("""
                         This app provisions a YubiKey as an air-gapped signer. It creates a \
-                        24-word BIP39 mnemonic, derives one signing key from it, imports that \
-                        key into the YubiKey's OpenPGP applet, verifies the import by reading \
-                        the public key back, and exports the public key for your desktop \
+                        24-word BIP39 mnemonic, derives two signing keys from it — secp256k1 \
+                        and Ed25519 — imports them into the YubiKey's OpenPGP applet \
+                        (signature and authentication slots), verifies the import by reading \
+                        each public key back, and exports both public keys for your desktop \
                         wallet. It never signs anything, and it never needs a network.
                         """)
                         .font(.callout)
@@ -69,17 +70,16 @@ struct SetupView: View {
                     }
                 }
 
-                section("Chain") {
-                    ForEach(SigningChain.allCases, id: \.self) { chain in
-                        ChoiceRow(
-                            title: chain.displayName,
-                            detail: "Path \(chain.defaultPath.description)",
-                            isSelected: viewModel.chain == chain
-                        ) {
-                            viewModel.chain = chain
-                        }
-                    }
-                    Text("One YubiKey signature slot holds exactly one key, so a ceremony provisions one address.")
+                section("Keys") {
+                    keySummaryRow(
+                        title: "ECDSA secp256k1",
+                        detail: "Signature slot, path \(DerivationPath.secp256k1Default.description). Serves your EVM and Bitcoin chains from one key."
+                    )
+                    keySummaryRow(
+                        title: "Ed25519",
+                        detail: "Authentication slot, path \(DerivationPath.ed25519Default.description). Serves Solana, Cardano, Polkadot and the other Ed25519 chains."
+                    )
+                    Text("Each ceremony writes both keys from the one mnemonic. Only the signature slot has a hardware signature counter, so the counter audit covers secp256k1 chains.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -162,6 +162,23 @@ struct SetupView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Non-interactive row: both keys are always provisioned, so there is no
+    /// choice to present here — only an explanation of what will be written.
+    private func keySummaryRow(title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "key.fill").foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.callout.weight(.medium))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func rule(_ text: String) -> some View {

@@ -30,6 +30,10 @@ struct CeremonyRootView: View {
                         }
                         .padding()
                     }
+                    // The back-fill and address fields sit above the step's action:
+                    // without this the keyboard covers the action until the user
+                    // reaches for the keyboard's Done button.
+                    .scrollDismissesKeyboard(.interactively)
                 case .finished:
                     ReportView(viewModel: viewModel)
                 }
@@ -102,8 +106,6 @@ struct CeremonyRootView: View {
             ImportStepView(viewModel: viewModel)
         case .readBackCheck:
             ReadBackStepView(viewModel: viewModel)
-        case .independentCheck:
-            IndependentCheckStepView(viewModel: viewModel)
         case .pairingExport:
             PairingStepView(viewModel: viewModel)
         case .counterBaseline:

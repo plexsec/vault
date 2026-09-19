@@ -26,9 +26,9 @@ final class AddressTests: XCTestCase {
         let words = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
             .split(separator: " ").map(String.init)
         let seed = try BIP39.seed(mnemonic: words)
-        let node = try ExtendedPrivateKey.master(seed: seed).derived(.evmDefault)
+        let node = try ExtendedPrivateKey.master(seed: seed).derived(.secp256k1Default)
         let address = try EVMAddress.checksummed(fromPublicKey: node.publicKey())
-        XCTAssertEqual(address, "0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+        XCTAssertEqual(address, "0x030821f53C79461511bCf64367eCc9D013060408")
         XCTAssertTrue(EVMAddress.isValid(address))
     }
 

@@ -1,5 +1,35 @@
 import Foundation
 
+/// One algorithm's entry in the ceremony record. Contains **no secrets**.
+public struct KeyRecord: Equatable, Codable, Sendable {
+    public var algorithm: String
+    public var slot: String
+    public var path: String
+    /// Primary display identity: EIP-55 address (secp256k1) or public key hex
+    /// (Ed25519).
+    public var identity: String
+    /// secp256k1 only: the EVM address derived from the same key.
+    public var evmAddress: String?
+    /// secp256k1 only: the native-segwit Bitcoin address derived from the same key.
+    public var bitcoinAddress: String?
+    public var publicKeyHex: String?
+    public var fingerprintHex: String?
+    public var parentFingerprintHex: String?
+    public var masterFingerprintHex: String?
+    public var readBackVerified: Bool = false
+    public var pairingURType: String?
+    public var pairingIncludedChainCode: Bool = false
+
+    public var keyAlgorithm: KeyAlgorithm? { KeyAlgorithm(rawValue: algorithm) }
+
+    public init(algorithm: KeyAlgorithm, slot: KeySlot, path: String, identity: String) {
+        self.algorithm = algorithm.rawValue
+        self.slot = slot.rawValue
+        self.path = path
+        self.identity = identity
+    }
+}
+
 /// Everything the ceremony records for the user's file. Contains **no secrets**:
 /// it is safe to display, print, export as QR and keep alongside the steel plate.
 public struct CeremonyReport: Equatable, Codable, Sendable {
@@ -12,21 +42,26 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     public var entropyCommitmentHex: String?
     /// Dice rolls, kept for the record only. Non-authoritative in v1.
     public var diceRolls: [Int] = []
-    public var chain: SigningChain?
-    public var derivationPath: String?
-    public var address: String?
-    /// BIP32 fingerprint of the imported key (first 4 bytes of HASH160(pubkey)).
-    public var publicKeyFingerprintHex: String?
-    public var publicKeyHex: String?
     public var cardSerial: String?
     public var cardOpenPGPVersion: String?
     public var counterBaseline: UInt32?
-    public var readBackVerified: Bool = false
-    public var independentCheck: IndependentCheck?
-    /// True when the exported UR carried a chain code (see `PairingPolicy`).
-    public var pairingIncludedChainCode: Bool = false
-    public var pairingURType: String?
+    /// Ordered: secp256k1, then Ed25519. Empty until derivation.
+    public var keys: [KeyRecord] = []
     public var warnings: [String] = []
+
+    public func key(_ algorithm: KeyAlgorithm) -> KeyRecord? {
+        keys.first { $0.algorithm == algorithm.rawValue }
+    }
+
+    /// True only when every provisioned key was verified by read-back.
+    public var readBackVerified: Bool {
+        !keys.isEmpty && keys.allSatisfy(\.readBackVerified)
+    }
+
+    /// True when any exported key carried a chain code (see `PairingPolicy`).
+    public var pairingIncludedChainCode: Bool {
+        keys.contains { $0.pairingIncludedChainCode }
+    }
 
     /// Lines an operator would transcribe onto paper.
     public func printableLines() -> [String] {
@@ -38,20 +73,27 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
         if let completedAt { lines.append("completed: \(Self.formatter.string(from: completedAt))") }
         if let entropyCommitmentHex { lines.append("entropy commitment: \(entropyCommitmentHex)") }
         if !diceRolls.isEmpty { lines.append("dice rolls (non-authoritative): \(diceRolls.map(String.init).joined())") }
-        if let chain { lines.append("chain: \(chain.displayName)") }
-        if let derivationPath { lines.append("path: \(derivationPath)") }
-        if let address { lines.append("address: \(address)") }
-        if let publicKeyHex { lines.append("public key (compressed): \(publicKeyHex)") }
-        if let publicKeyFingerprintHex { lines.append("key fingerprint: \(publicKeyFingerprintHex)") }
         if let cardSerial { lines.append("yubikey serial: \(cardSerial)") }
         if let cardOpenPGPVersion { lines.append("openpgp applet: \(cardOpenPGPVersion)") }
-        if let counterBaseline { lines.append("signature counter baseline: \(counterBaseline)") }
-        lines.append("read-back verified: \(readBackVerified ? "yes" : "no")")
-        if let independentCheck {
-            lines.append("independent check: \(independentCheck.matched ? "MATCH" : "MISMATCH") via \(independentCheck.source)")
-            lines.append("independent address: \(independentCheck.expectedAddress)")
+
+        for record in keys {
+            lines.append("")
+            lines.append("[\(record.algorithm)] \(record.slot)")
+            lines.append("path: \(record.path)")
+            lines.append("public key: \(record.publicKeyHex ?? "-")")
+            lines.append("key fingerprint: \(record.fingerprintHex ?? "-")")
+            if let evmAddress = record.evmAddress { lines.append("evm address: \(evmAddress)") }
+            if let bitcoinAddress = record.bitcoinAddress { lines.append("bitcoin address: \(bitcoinAddress)") }
+            if record.evmAddress == nil, record.bitcoinAddress == nil {
+                lines.append("identity: \(record.identity)")
+            }
+            lines.append("read-back verified: \(record.readBackVerified ? "yes" : "no")")
+            if let pairingURType = record.pairingURType { lines.append("pairing UR type: \(pairingURType)") }
+            if record.pairingIncludedChainCode { lines.append("pairing included chain code: yes") }
         }
-        if let pairingURType { lines.append("pairing UR type: \(pairingURType)") }
+
+        if let counterBaseline { lines.append("signature counter baseline (secp256k1/signature slot): \(counterBaseline)") }
+        lines.append("note: the Ed25519 key has no hardware signature counter; the counter audit covers secp256k1 only.")
         for warning in warnings { lines.append("warning: \(warning)") }
         return lines
     }
@@ -63,26 +105,18 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     }()
 }
 
-public struct IndependentCheck: Equatable, Codable, Sendable {
-    public var expectedAddress: String
-    public var source: String
-    public var matched: Bool
-    public var checkedAt: Date
-}
-
 /// Policy for what the pairing UR is allowed to advertise.
 ///
-/// One YubiKey slot holds exactly one key (design.md §4.3), so the address-level
-/// key has no signable children. Exporting a chain code lets a wallet derive
-/// further addresses the card *cannot sign for* — it would offer accounts that
-/// fail at signing time. The default is therefore to omit the chain code and
-/// publish only the single address-level key; including it requires an explicit
-/// acknowledgement.
+/// One YubiKey slot holds exactly one key (design.md §4.3), so neither
+/// address-level key has signable children. Exporting a chain code lets a wallet
+/// derive further addresses the card *cannot sign for* — it would offer accounts
+/// that fail at signing time. The default is therefore to omit the chain code and
+/// publish only the single key; including it requires an explicit acknowledgement.
 public enum PairingPolicy: Equatable, Sendable {
-    /// Single address-level key, no chain code. Safe default.
+    /// Single key, no chain code. Safe default.
     case singleKeyOnly
-    /// Address-level key *with* chain code, so wallets that require one accept
-    /// the pairing. `acknowledgedUnsignableChildren` must be true.
+    /// Key *with* chain code, so wallets that require one accept the pairing.
+    /// `acknowledgedUnsignableChildren` must be true.
     case includeChainCode(acknowledgedUnsignableChildren: Bool)
 
     public var includesChainCode: Bool {
@@ -103,17 +137,56 @@ public enum PairingPolicy: Equatable, Sendable {
     }
 }
 
-/// Public summary of the derived key handed to the UI (never the private key).
+/// Public summary of one derived key handed to the UI (never the private key).
 public struct DerivedKeySummary: Equatable, Sendable {
-    public let chain: SigningChain
+    public let algorithm: KeyAlgorithm
+    public let slot: KeySlot
     public let path: DerivationPath
-    public let address: String
-    public let publicKeyCompressed: [UInt8]
+    /// 33-byte SEC1 compressed point (secp256k1) or 32-byte raw point (Ed25519).
+    public let publicKey: [UInt8]
     public let fingerprintHex: String
     public let parentFingerprintHex: String
     public let masterFingerprintHex: String
+    /// Primary display identity: EIP-55 address (secp256k1) or public key hex.
+    public let identity: String
+    /// secp256k1 only: the EVM address derived from this same key.
+    public let evmAddress: String?
+    /// secp256k1 only: the native-segwit Bitcoin address derived from this key.
+    public let bitcoinAddress: String?
 
-    public var publicKeyHex: String { publicKeyCompressed.hexString }
+    public var publicKeyHex: String { publicKey.hexString }
+}
+
+/// Both keys produced by one ceremony, addressed by algorithm.
+public struct DerivedKeys: Equatable, Sendable {
+    public let secp256k1: DerivedKeySummary
+    public let ed25519: DerivedKeySummary
+
+    public init(secp256k1: DerivedKeySummary, ed25519: DerivedKeySummary) {
+        self.secp256k1 = secp256k1
+        self.ed25519 = ed25519
+    }
+
+    public subscript(_ algorithm: KeyAlgorithm) -> DerivedKeySummary {
+        switch algorithm {
+        case .secp256k1: return secp256k1
+        case .ed25519: return ed25519
+        }
+    }
+
+    public var all: [DerivedKeySummary] { [secp256k1, ed25519] }
+}
+
+/// One key's read-back comparison (design.md §4.2 step 7).
+public struct ReadBackResult: Equatable, Sendable {
+    public let algorithm: KeyAlgorithm
+    public let slot: KeySlot
+    public let cardPublicKeyHex: String
+    public let derivedPublicKeyHex: String
+    public let matches: Bool
+    /// The identity recomputed from the *card's* public key — so a mismatch is
+    /// visible as two different addresses, not just two different hex strings.
+    public let identityFromCardKey: String
 }
 
 /// Drives design.md §4.2 as an ordered state machine.
@@ -123,7 +196,11 @@ public struct DerivedKeySummary: Equatable, Sendable {
 /// view layer cannot skip the read-back check or sign the pairing QR before the
 /// independent cross-check has run.
 ///
-/// Secret lifetime: entropy, seed, private key and mnemonic words live only in
+/// One ceremony provisions **both** algorithms in one pass — secp256k1 into the
+/// signature slot, Ed25519 into the authentication slot — from a single BIP39
+/// mnemonic. The per-key steps therefore act on both keys at once.
+///
+/// Secret lifetime: entropy, seed, private keys and mnemonic words live only in
 /// this object and are wiped by `wipe()`, by `finish()`, and by `abort()`. An
 /// interrupted ceremony is resumed by re-entering the mnemonic (restore mode) —
 /// no secret is ever persisted, so there is nothing on disk to steal.
@@ -143,15 +220,17 @@ public final class ProvisioningCeremony {
     public private(set) var transportDescription: String
     public private(set) var inventory: CardInventory?
     public private(set) var report: CeremonyReport
-    public private(set) var derivedKey: DerivedKeySummary?
+    public private(set) var derivedKeys: DerivedKeys?
+    public private(set) var readBackResults: [KeyAlgorithm: ReadBackResult] = [:]
+    public private(set) var pairingURs: [KeyAlgorithm: UR] = [:]
 
     // MARK: Secrets (wiped on every exit path)
 
     private var entropy: SensitiveBytes?
     private var mnemonicWords: [String] = []
     private var seed: SensitiveBytes?
-    private var privateKey: SensitiveBytes?
-    private var chainCode: [UInt8]?
+    private var privateKeys: [KeyAlgorithm: SensitiveBytes] = [:]
+    private var chainCodes: [KeyAlgorithm: [UInt8]] = [:]
     private var pendingDiceRolls: [Int] = []
     private var mnemonicConfirmed = false
     private var cardHeldExistingKey = false
@@ -162,8 +241,6 @@ public final class ProvisioningCeremony {
     /// Set only by `confirmPairingAddressMatches`; gates completion of the pairing
     /// step (design.md §4.2 step 8 requires the operator to compare addresses).
     private var pairingAddressConfirmedByOperator = false
-    private var independentCheckResult: IndependentCheck?
-    private var pairingUR: UR?
 
     public init(
         card: SignerCard,
@@ -205,9 +282,9 @@ public final class ProvisioningCeremony {
     /// Workers that produce operator-facing output deliberately do **not** advance
     /// themselves: the operator reads the result and then calls this. Without that
     /// split, everything a step produced — the card inventory, the entropy
-    /// commitment, the derived address, the read-back comparison, the pairing QR
-    /// and the counter value — was replaced by the next screen in the same render
-    /// pass and never seen.
+    /// commitment, the derived addresses, the read-back comparison, the pairing
+    /// codes and the counter value — was replaced by the next screen in the same
+    /// render pass and never seen.
     ///
     /// Each step's precondition is checked here, so "read the card, then reset"
     /// and "confirm the wallet shows this address" cannot be skipped by the view
@@ -242,26 +319,20 @@ public final class ProvisioningCeremony {
             throw CeremonyError.stepIncomplete(step: .mnemonic, detail: "confirm the transcription first")
 
         case .derivation:
-            guard derivedKey != nil else {
-                throw CeremonyError.stepIncomplete(step: .derivation, detail: "the key has not been derived yet")
+            guard derivedKeys != nil else {
+                throw CeremonyError.stepIncomplete(step: .derivation, detail: "the keys have not been derived yet")
             }
             step = .keyImport
 
         case .readBackCheck:
             guard report.readBackVerified else {
-                throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public key has not been verified yet")
-            }
-            step = .independentCheck
-
-        case .independentCheck:
-            guard independentCheckResult?.matched == true else {
-                throw CeremonyError.stepIncomplete(step: .independentCheck, detail: "the independent cross-check has not passed")
+                throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public keys have not been verified yet")
             }
             step = .pairingExport
 
         case .pairingExport:
-            guard pairingUR != nil else {
-                throw CeremonyError.stepIncomplete(step: .pairingExport, detail: "the pairing code has not been produced yet")
+            guard pairingURs.count == KeyAlgorithm.allCases.count else {
+                throw CeremonyError.stepIncomplete(step: .pairingExport, detail: "the pairing codes have not been produced yet")
             }
             guard pairingAddressConfirmedByOperator else {
                 throw CeremonyError.pairingAddressNotConfirmed
@@ -279,8 +350,8 @@ public final class ProvisioningCeremony {
         }
     }
 
-    /// Records that the operator compared the address their wallet shows with the
-    /// address in the ceremony. Required before the pairing step can complete.
+    /// Records that the operator compared the addresses their wallet shows with
+    /// the ones in the ceremony. Required before the pairing step can complete.
     public func confirmPairingAddressMatches(_ matches: Bool) {
         pairingAddressConfirmedByOperator = matches
     }
@@ -342,13 +413,13 @@ public final class ProvisioningCeremony {
         inventory = result
         report.cardSerial = result.serial
         report.cardOpenPGPVersion = result.openPGPVersion
-        cardHeldExistingKey = result.hasSignatureKey
+        cardHeldExistingKey = !result.occupiedSlots.isEmpty
         if !result.isFactoryFresh {
             report.warnings.append("YubiKey was not factory-fresh: \(describe(result)).")
         }
         if !result.likelySupportsSecp256k1 {
             report.warnings.append(
-                "OpenPGP applet version \(result.openPGPVersion) may not support secp256k1 (3.4 or newer is required)."
+                "OpenPGP applet version \(result.openPGPVersion) may not support secp256k1/Ed25519 (3.4 or newer is required)."
             )
         }
         // Deliberately does NOT advance: the inventory must stay on screen for
@@ -358,18 +429,23 @@ public final class ProvisioningCeremony {
 
     private func describe(_ inventory: CardInventory) -> String {
         var parts: [String] = []
-        if inventory.hasSignatureKey { parts.append("signature key present") }
+        for slot in KeySlot.allCases where inventory.holdsKey(in: slot) {
+            parts.append("\(slot.displayName.lowercased()) occupied")
+        }
         if let counter = inventory.signatureCounter { parts.append("counter \(counter)") }
-        if let attributes = inventory.algorithmAttributes {
-            parts.append("algorithm attributes \(attributes.hexString)")
+        if let attributes = inventory.algorithmAttributes[.signature] {
+            parts.append("signature algorithm attributes \(attributes.hexString)")
+        }
+        if let attributes = inventory.algorithmAttributes[.authentication] {
+            parts.append("authentication algorithm attributes \(attributes.hexString)")
         }
         return parts.isEmpty ? "unknown state" : parts.joined(separator: ", ")
     }
 
     // MARK: Step 3 — reset
 
-    /// Destructive: `TERMINATE DF` + `ACTIVATE FILE` erases the existing key on
-    /// the signature slot, so a card that already held a key requires an explicit
+    /// Destructive: `TERMINATE DF` + `ACTIVATE FILE` erases the keys in every
+    /// slot, so a card that already held a key requires an explicit
     /// acknowledgement. This is the hard gate that prevents a stray tap from
     /// destroying a working signer.
     public func resetCard(adminPIN: [UInt8], acknowledgingDestruction: Bool = false) async throws {
@@ -484,7 +560,6 @@ public final class ProvisioningCeremony {
 
     // MARK: Step 7 — mnemonic
 
-
     /// Restore path (design.md §8.2). Words enter app memory, are validated for
     /// checksum before any derivation, and are wiped at teardown.
     ///
@@ -553,11 +628,14 @@ public final class ProvisioningCeremony {
 
     // MARK: Step 8 — derivation
 
-    /// Derives the signing key for `chain` and computes the address.
+    /// Derives **both** keys from the one mnemonic and computes their identities.
     ///
-    /// Only the public summary is returned; the private key and chain code stay
-    /// inside the ceremony object until import completes.
-    public func deriveKey(for chain: SigningChain, passphrase: String = "") throws -> DerivedKeySummary {
+    /// secp256k1 goes through BIP32 and yields both an EVM and a Bitcoin address
+    /// (same key, two encodings); Ed25519 goes through SLIP-0010 and its identity
+    /// is the public key itself. Only public summaries are returned; the private
+    /// keys and chain codes stay inside the ceremony object until import completes.
+    @discardableResult
+    public func deriveKeys(passphrase: String = "") throws -> DerivedKeys {
         try requireCurrent(.derivation)
         guard mnemonicConfirmed else { throw CeremonyError.mnemonicNotConfirmed }
         guard !mnemonicWords.isEmpty else { throw CeremonyError.missingMnemonic }
@@ -566,191 +644,230 @@ public final class ProvisioningCeremony {
         let derivedSeed = try BIP39.seed(mnemonic: mnemonicWords, passphrase: passphrase)
         seed = derivedSeed
 
-        let master = try ExtendedPrivateKey.master(seed: derivedSeed)
-        let node = try master.derived(chain.defaultPath)
-        let publicKey = try node.publicKey()
-        let address = try Self.address(for: chain, publicKey: publicKey)
+        let secp256k1 = try deriveSecp256k1(seed: derivedSeed)
+        let ed25519 = try deriveEd25519(seed: derivedSeed)
+        let keys = DerivedKeys(secp256k1: secp256k1, ed25519: ed25519)
+        derivedKeys = keys
 
-        if let existing = privateKey { existing.zeroize() }
-        privateKey = node.key
-        chainCode = node.chainCode
-
-        let summary = DerivedKeySummary(
-            chain: chain,
-            path: chain.defaultPath,
-            address: address,
-            publicKeyCompressed: publicKey,
-            fingerprintHex: Hex.encode(try node.fingerprint()),
-            parentFingerprintHex: Hex.encode(node.parentFingerprint),
-            masterFingerprintHex: Hex.encode(try master.fingerprint())
-        )
-        derivedKey = summary
-        report.chain = chain
-        report.derivationPath = chain.defaultPath.description
-        report.address = address
-        report.publicKeyHex = publicKey.hexString
-        report.publicKeyFingerprintHex = summary.fingerprintHex
-        // Deliberately does NOT advance: the derived address is needed for the
-        // independent cross-check two steps later.
-        return summary
+        report.keys = keys.all.map { summary in
+            var record = KeyRecord(
+                algorithm: summary.algorithm,
+                slot: summary.slot,
+                path: summary.path.description,
+                identity: summary.identity
+            )
+            record.evmAddress = summary.evmAddress
+            record.bitcoinAddress = summary.bitcoinAddress
+            record.publicKeyHex = summary.publicKeyHex
+            record.fingerprintHex = summary.fingerprintHex
+            record.parentFingerprintHex = summary.parentFingerprintHex
+            record.masterFingerprintHex = summary.masterFingerprintHex
+            return record
+        }
+        // Deliberately does NOT advance: the derived identities are needed for
+        // the independent cross-check two steps later.
+        return keys
     }
 
-    static func address(for chain: SigningChain, publicKey: [UInt8]) throws -> String {
-        switch chain {
-        case .ethereum: return try EVMAddress.checksummed(fromPublicKey: publicKey)
-        case .bitcoin: return try BitcoinAddress.p2wpkh(publicKeyCompressed: publicKey)
+    private func deriveSecp256k1(seed: SensitiveBytes) throws -> DerivedKeySummary {
+        let master = try ExtendedPrivateKey.master(seed: seed)
+        let node = try master.derived(.secp256k1Default)
+        let publicKey = try node.publicKey()
+
+        privateKeys[.secp256k1]?.zeroize()
+        privateKeys[.secp256k1] = node.key
+        chainCodes[.secp256k1] = node.chainCode
+
+        return DerivedKeySummary(
+            algorithm: .secp256k1,
+            slot: .signature,
+            path: .secp256k1Default,
+            publicKey: publicKey,
+            fingerprintHex: Hex.encode(try node.fingerprint()),
+            parentFingerprintHex: Hex.encode(node.parentFingerprint),
+            masterFingerprintHex: Hex.encode(try master.fingerprint()),
+            identity: try EVMAddress.checksummed(fromPublicKey: publicKey),
+            evmAddress: try EVMAddress.checksummed(fromPublicKey: publicKey),
+            bitcoinAddress: try BitcoinAddress.p2wpkh(publicKeyCompressed: publicKey)
+        )
+    }
+
+    private func deriveEd25519(seed: SensitiveBytes) throws -> DerivedKeySummary {
+        let master = try ExtendedPrivateKeyEd25519.master(seed: seed)
+        let node = try master.derived(.ed25519Default)
+        let publicKey = try node.publicKey()
+        guard publicKey.count == KeyAlgorithm.ed25519.publicKeyLength else {
+            throw CeremonyError.unsupportedAlgorithm(.ed25519, "unexpected public key length \(publicKey.count)")
+        }
+
+        privateKeys[.ed25519]?.zeroize()
+        privateKeys[.ed25519] = node.key
+        chainCodes[.ed25519] = node.chainCode
+
+        return DerivedKeySummary(
+            algorithm: .ed25519,
+            slot: .authentication,
+            path: .ed25519Default,
+            publicKey: publicKey,
+            fingerprintHex: Hex.encode(try node.fingerprint()),
+            parentFingerprintHex: Hex.encode(node.parentFingerprint),
+            masterFingerprintHex: Hex.encode(try master.fingerprint()),
+            identity: publicKey.hexString,
+            evmAddress: nil,
+            bitcoinAddress: nil
+        )
+    }
+
+    /// Identity string for an algorithm from an arbitrary public key. Used by the
+    /// read-back step so the card's key produces the same *kind* of string as the
+    /// derived key, making a mismatch human-readable.
+    static func identity(for algorithm: KeyAlgorithm, publicKey: [UInt8]) throws -> String {
+        switch algorithm {
+        case .secp256k1: return try EVMAddress.checksummed(fromPublicKey: publicKey)
+        case .ed25519: return publicKey.hexString
         }
     }
 
     // MARK: Step 9 — import
 
-    public func importKey(creationTime: Date? = nil) async throws {
+    /// Writes both keys: secp256k1 into the signature slot, Ed25519 into the
+    /// authentication slot. Each write re-verifies the Admin PIN in its own
+    /// session (see `SignerCard.importKey`).
+    public func importKeys(creationTime: Date? = nil) async throws {
         try requireCurrent(.keyImport)
-        guard let privateKey, let summary = derivedKey else { throw CeremonyError.keyNotDerived }
+        guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
-        let fingerprint = Array(try Hex.decode(summary.fingerprintHex))
+
         var pin = adminPIN.materializedCopy()
         defer { VaultKit.wipe(&pin) }
+        let timestamp = creationTime ?? clock()
+
         try await withMutatingStep(.keyImport) {
-            try await card.importSignatureKey(
-                privateKey: privateKey,
-                fingerprint: fingerprint,
-                creationTime: creationTime ?? clock(),
-                adminPIN: pin
-            )
+            for summary in keys.all {
+                guard let privateKey = self.privateKeys[summary.algorithm] else {
+                    throw CeremonyError.keysNotDerived
+                }
+                let fingerprint = Array(try Hex.decode(summary.fingerprintHex))
+                try await self.card.importKey(
+                    slot: summary.slot,
+                    algorithm: summary.algorithm,
+                    privateKey: privateKey,
+                    fingerprint: fingerprint,
+                    creationTime: timestamp,
+                    adminPIN: pin
+                )
+            }
         }
         advance(to: .readBackCheck)
     }
 
     // MARK: Step 10 — read-back (mandatory, design.md §4.2 step 7)
 
-    public struct ReadBackResult: Equatable, Sendable {
-        public let cardPublicKeyHex: String
-        public let derivedPublicKeyHex: String
-        public let matches: Bool
-        public let addressFromCardKey: String
-    }
-
+    /// Reads both public keys back and compares them with the derived ones. A
+    /// mismatch on **either** key voids the entire procedure: everything is
+    /// wiped and the operator is sent back to the card inspection step.
     @discardableResult
-    public func verifyReadBack() async throws -> ReadBackResult {
+    public func verifyReadBack() async throws -> [KeyAlgorithm: ReadBackResult] {
         try requireCurrent(.readBackCheck)
-        guard let summary = derivedKey, let chain = report.chain else { throw CeremonyError.keyNotDerived }
+        guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
 
-        let cardPublicKey = try await card.readSignaturePublicKey()
-        let addressFromCard = try Self.address(for: chain, publicKey: cardPublicKey)
-        let matches = cardPublicKey == summary.publicKeyCompressed
+        var results: [KeyAlgorithm: ReadBackResult] = [:]
+        for summary in keys.all {
+            let cardPublicKey = try await card.readPublicKey(slot: summary.slot)
+            let identityFromCard = try Self.identity(for: summary.algorithm, publicKey: cardPublicKey)
+            let matches = cardPublicKey == summary.publicKey
+            results[summary.algorithm] = ReadBackResult(
+                algorithm: summary.algorithm,
+                slot: summary.slot,
+                cardPublicKeyHex: cardPublicKey.hexString,
+                derivedPublicKeyHex: summary.publicKeyHex,
+                matches: matches,
+                identityFromCardKey: identityFromCard
+            )
 
-        let result = ReadBackResult(
-            cardPublicKeyHex: cardPublicKey.hexString,
-            derivedPublicKeyHex: summary.publicKeyHex,
-            matches: matches,
-            addressFromCardKey: addressFromCard
-        )
-        guard matches else {
-            report.readBackVerified = false
-            // Hard abort: wipe everything and send the operator back to the reset
-            // step. design.md §4.2 step 7: "the entire procedure is void".
-            wipe()
-            step = .cardInventory
-            throw CeremonyError.readBackMismatch(local: summary.publicKeyHex, card: cardPublicKey.hexString)
+            guard matches else {
+                // Hard abort: wipe everything and send the operator back to the
+                // reset step. design.md §4.2 step 7: "the entire procedure is void".
+                wipe()
+                step = .cardInventory
+                throw CeremonyError.readBackMismatch(
+                    algorithm: summary.algorithm,
+                    local: summary.publicKeyHex,
+                    card: cardPublicKey.hexString
+                )
+            }
+            if let index = report.keys.firstIndex(where: { $0.algorithm == summary.algorithm.rawValue }) {
+                report.keys[index].readBackVerified = true
+            }
         }
-        report.readBackVerified = true
+        readBackResults = results
         // Deliberately does NOT advance: the read-back comparison is the whole
         // point of this step and must be seen.
-        return result
+        return results
     }
 
-    // MARK: Step 11 — independent cross-check (mandatory)
+    // MARK: Step 11 — pairing export
 
-    /// `source` names the external tool that produced the address, e.g.
-    /// "tools/derive (Python, separate device)". This and the entropy commitment
-    /// are the two recorded ceremony assertions.
+    /// Builds **two** URs, one per algorithm, for the desktop wallet to scan.
+    /// `policy` decides whether a chain code is advertised; see `PairingPolicy`
+    /// for why the default omits it.
     @discardableResult
-    public func submitIndependentCheck(address: String, source: String) throws -> IndependentCheck {
-        try requireCurrent(.independentCheck)
-        guard let summary = derivedKey else { throw CeremonyError.keyNotDerived }
-
-        let normalisedExpected: String
-        let normalisedActual: String
-        switch summary.chain {
-        case .ethereum:
-            normalisedExpected = EVMAddress.normalisedForComparison(summary.address)
-            normalisedActual = EVMAddress.normalisedForComparison(address)
-        case .bitcoin:
-            normalisedExpected = BitcoinAddress.normalisedForComparison(summary.address)
-            normalisedActual = BitcoinAddress.normalisedForComparison(address)
-        }
-
-        let check = IndependentCheck(
-            expectedAddress: address.trimmingCharacters(in: .whitespacesAndNewlines),
-            source: source,
-            matched: normalisedExpected == normalisedActual,
-            checkedAt: clock()
-        )
-        independentCheckResult = check
-        report.independentCheck = check
-
-        guard check.matched else {
-            wipe()
-            step = .cardInventory
-            throw CeremonyError.independentCheckFailed
-        }
-        // Deliberately does NOT advance: the verdict must be seen before the
-        // pairing code is produced.
-        return check
-    }
-
-    // MARK: Step 12 — pairing export
-
-    /// Builds the UR the desktop wallet scans. `policy` decides whether a chain
-    /// code is advertised; see `PairingPolicy` for why the default omits it.
-    @discardableResult
-    public func buildPairingUR(style: URTypeStyle, policy: PairingPolicy = .singleKeyOnly) throws -> UR {
+    public func buildPairingURs(style: URTypeStyle, policy: PairingPolicy = .singleKeyOnly) throws -> [KeyAlgorithm: UR] {
         try requireCurrent(.pairingExport)
-        guard let summary = derivedKey else { throw CeremonyError.keyNotDerived }
-        guard independentCheckResult?.matched == true else { throw CeremonyError.independentCheckNotRun }
+        guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
         if case .includeChainCode(let acknowledged) = policy, !acknowledged {
             throw CeremonyError.pairingPolicyNotAcknowledged
         }
+        let includeChainCode = policy.includesChainCode
 
-        let useInfo = CoinInfo(type: summary.chain.slip44CoinType, network: 0)
-        let origin = URKeyPath(
-            path: summary.path,
-            sourceFingerprint: UInt32(summary.masterFingerprintHex.prefix(8), radix: 16) ?? 0
-        )
-        let key = HDKey(
-            keyData: summary.publicKeyCompressed,
-            chainCode: policy.includesChainCode ? chainCode : nil,
-            useInfo: useInfo,
-            origin: origin,
-            parentFingerprint: UInt32(summary.parentFingerprintHex.prefix(8), radix: 16)
-        )
-        let ur = try key.ur(style: style)
-        pairingUR = ur
-        report.pairingIncludedChainCode = policy.includesChainCode
-        report.pairingURType = ur.type
+        var urs: [KeyAlgorithm: UR] = [:]
+        for summary in keys.all {
+            let origin = URKeyPath(
+                path: summary.path,
+                sourceFingerprint: UInt32(summary.masterFingerprintHex.prefix(8), radix: 16) ?? 0
+            )
+            let key = HDKey(
+                keyData: summary.publicKey,
+                chainCode: includeChainCode ? chainCodes[summary.algorithm] : nil,
+                useInfo: CoinInfo(type: summary.algorithm.slip44CoinType, network: 0),
+                origin: origin,
+                parentFingerprint: UInt32(summary.parentFingerprintHex.prefix(8), radix: 16)
+            )
+            let ur = try key.ur(style: style)
+            urs[summary.algorithm] = ur
+            if let index = report.keys.firstIndex(where: { $0.algorithm == summary.algorithm.rawValue }) {
+                report.keys[index].pairingURType = ur.type
+                report.keys[index].pairingIncludedChainCode = includeChainCode
+            }
+        }
+        pairingURs = urs
         if let warning = policy.warning { report.warnings.append(warning) }
-        // Deliberately does NOT advance: the operator must scan the code and
-        // confirm the wallet shows the same address first.
-        return ur
+        // Deliberately does NOT advance: the operator must scan the codes and
+        // confirm the wallet shows the same addresses first.
+        return urs
     }
 
-    public var pairingURString: String? { pairingUR?.string }
+    public var pairingURStrings: [KeyAlgorithm: String] {
+        pairingURs.mapValues(\.string)
+    }
 
-    // MARK: Step 13 — counter baseline (design.md §4.2 step 9)
+    // MARK: Step 12 — counter baseline (design.md §4.2 step 9)
 
     @discardableResult
     public func readCounterBaseline() async throws -> UInt32 {
         try requireCurrent(.counterBaseline)
         let counter = try await card.signatureCounter()
         report.counterBaseline = counter
+        report.warnings.append(
+            "The Ed25519 key sits in the authentication slot, which has no hardware signature counter; the counter audit covers the secp256k1 key only."
+        )
         guard counter == 0 else { throw CeremonyError.counterNotZero(counter) }
         // Deliberately does NOT advance: a non-zero counter is a stop condition
         // and the operator must record the value either way.
         return counter
     }
 
-    // MARK: Step 14 — teardown
+    // MARK: Step 13 — teardown
 
     /// Wipes all secrets and returns the final report. An app restart is
     /// required before another ceremony (enforced by the UI, which is what
@@ -768,20 +885,21 @@ public final class ProvisioningCeremony {
 
     /// Wipes every secret in this object. Idempotent.
     ///
-    /// `derivedKey` holds only public data, but it is cleared too: after a void
+    /// `derivedKeys` holds only public data, but it is cleared too: after a void
     /// procedure or an abort, no stale "paired account" may remain visible.
     public func wipe() {
         entropy?.zeroize(); entropy = nil
         seed?.zeroize(); seed = nil
-        privateKey?.zeroize(); privateKey = nil
+        for (_, key) in privateKeys { key.zeroize() }
+        privateKeys = [:]
+        chainCodes = [:]
         sessionAdminPIN?.zeroize(); sessionAdminPIN = nil
-        chainCode = nil
         for index in mnemonicWords.indices { mnemonicWords[index] = "" }
         mnemonicWords = []
         mnemonicConfirmed = false
-        pairingUR = nil
-        derivedKey = nil
-        independentCheckResult = nil
+        pairingURs = [:]
+        derivedKeys = nil
+        readBackResults = [:]
     }
 
     public func abort() {

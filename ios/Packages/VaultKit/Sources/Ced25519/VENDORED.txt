@@ -1,0 +1,29 @@
+VERSION=20140427
+SOURCE=https://tweetnacl.cr.yp.to/20140427/tweetnacl.c
+       https://tweetnacl.cr.yp.to/20140427/tweetnacl.h
+LICENCE=public domain (https://tweetnacl.cr.yp.to/ "public domain")
+UPSTREAM_MD5_tweetnacl.c=d4455ac1e11db9c3b05c9d3b3d1abb23
+UPSTREAM_MD5_tweetnacl.h=02aee579efbe4f12ad8ffb23c6772841
+VENDORED_FILES=tweetnacl.c, include/tweetnacl.h  (both byte-identical to upstream)
+
+MODIFICATIONS=none to the vendored files.
+
+PROJECT_SHIM=vault_ed25519.c / include/vault_ed25519.h
+  TweetNaCl's public API has no keypair-from-seed entry point (only
+  crypto_sign_keypair(), which calls randombytes()), and the seed-free keygen
+  internals are file-static. Rather than patching the vendored source — which
+  would make it unverifiable by hash — vault_ed25519.c #includes tweetnacl.c and
+  exposes vault_ed25519_{seed_keypair,sign,sign_open}. tweetnacl.c is listed in
+  the target's `exclude` in Package.swift so it is compiled exactly once.
+
+RANDOMNESS=disabled
+  randombytes() is defined in vault_ed25519.c and aborts. This module has a
+  single key-generation path (vault_ed25519_seed_keypair, fed by the
+  mnemonic-derived seed); no code in this repository calls a randombytes-driven
+  keygen, and the trap makes that a hard failure rather than a silent one.
+
+UNUSED_SURFACE=the vendored file also implements secretbox, box, scalarmult,
+  onetimeauth, auth and the stream functions. They are compiled (they are what
+  makes the file auditable as a whole) but nothing in this repository calls
+  them; only crypto_hash, crypto_sign, crypto_sign_open and the static keygen
+  helpers are reachable through vault_ed25519.h.

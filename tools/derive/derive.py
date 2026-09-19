@@ -16,9 +16,9 @@ have to be a shared *misreading* of the standards. The published BIP32/BIP39
 test vectors (checked by ``selftest``) close that last gap.
 
 Usage:
-    derive.py --mnemonic "word1 ... word24" --coin eth [--path m/44'/60'/0'/0/0]
-    derive.py --mnemonic "..." --coin eth --json
-    derive.py --seed-hex 000102... --path m/0'/1 --coin btc
+    derive.py --mnemonic "word1 ... word24" [--path m/44'/0'/0'/0/0]
+    derive.py --mnemonic "..." --algorithm ed25519
+    derive.py --seed-hex 000102... --coin eth --path m/44'/60'/0'/0/0
     derive.py selftest
     derive.py gen-fixtures <output-directory>
 
@@ -35,6 +35,7 @@ import os
 import sys
 
 from Crypto.Hash import RIPEMD160, keccak
+from Crypto.PublicKey import ECC
 
 # --------------------------------------------------------------------------
 # secp256k1 (pure Python, affine coordinates)
@@ -207,6 +208,69 @@ def derive(seed: bytes, path: str):
     return node
 
 
+
+# --------------------------------------------------------------------------
+# SLIP-0010 (Ed25519)
+# --------------------------------------------------------------------------
+#
+# A separate section rather than a branch inside BIP32: SLIP-0010 uses a
+# different master salt, treats the 32-byte seed itself as the private key, and
+# does not define non-hardened derivation at all.
+
+SLIP10_CURVE = b"ed25519 seed"
+
+
+def slip10_master_key(seed: bytes):
+    if not (16 <= len(seed) <= 64):
+        raise SystemExit(f"invalid SLIP-0010 seed length: {len(seed)}")
+    digest = hmac.new(SLIP10_CURVE, seed, hashlib.sha512).digest()
+    return {
+        "key": digest[:32],
+        "chain": digest[32:],
+        "depth": 0,
+        "parent": b"\x00" * 4,
+        "index": 0,
+    }
+
+
+def ed25519_public_key(seed32: bytes) -> bytes:
+    """Raw 32-byte Ed25519 public key (RFC 8032 key generation)."""
+    if len(seed32) != 32:
+        raise SystemExit("Ed25519 seed must be 32 bytes")
+    key = ECC.construct(curve="Ed25519", seed=seed32)
+    return key.public_key().export_key(format="raw")
+
+
+def slip10_fingerprint(node) -> bytes:
+    """First four bytes of HASH160(0x00 || pubkey), matching SLIP-0010's own
+    serialisation of an Ed25519 public key."""
+    pub = ed25519_public_key(node["key"])
+    ripemd = RIPEMD160.new()
+    ripemd.update(hashlib.sha256(b"\x00" + pub).digest())
+    return ripemd.digest()[:4]
+
+
+def slip10_ckd_priv(node, index: int):
+    if index < HARDENED:
+        raise SystemExit(f"SLIP-0010 forbids non-hardened index {index}")
+    data = b"\x00" + node["key"] + index.to_bytes(4, "big")
+    digest = hmac.new(node["chain"], data, hashlib.sha512).digest()
+    return {
+        "key": digest[:32],
+        "chain": digest[32:],
+        "depth": node["depth"] + 1,
+        "parent": slip10_fingerprint(node),
+        "index": index,
+    }
+
+
+def slip10_derive(seed: bytes, path: str):
+    node = slip10_master_key(seed)
+    for index in parse_path(path):
+        node = slip10_ckd_priv(node, index)
+    return node
+
+
 # --------------------------------------------------------------------------
 # Addresses
 # --------------------------------------------------------------------------
@@ -293,8 +357,13 @@ def address_for(coin: str, pub_compressed: bytes) -> str:
 
 COIN_PATHS = {"eth": "m/44'/60'/0'/0/0", "btc": "m/84'/0'/0'/0/0"}
 
+# One fixed path per algorithm, matching DerivationPath in the Swift library.
+SECP256K1_PATH = "m/44'/0'/0'/0/0"
+ED25519_PATH = "m/44'/501'/0'/0'"
+
 
 def describe(seed: bytes, path: str, coin: str, source: str):
+    """secp256k1 record for one coin (ad-hoc CLI use)."""
     node = derive(seed, path)
     pub = ser_p(point_mul(node["key"]))
     return {
@@ -308,6 +377,44 @@ def describe(seed: bytes, path: str, coin: str, source: str):
         "parent_fingerprint": node["parent"].hex(),
         "master_fingerprint": fingerprint(master_key(seed)).hex(),
         "address": address_for(coin, pub),
+    }
+
+
+def describe_secp256k1(seed: bytes, path: str, source: str):
+    """The single secp256k1 key and both addresses it serves."""
+    node = derive(seed, path)
+    pub = ser_p(point_mul(node["key"]))
+    return {
+        "source": source,
+        "algorithm": "secp256k1",
+        "path": path,
+        "seed": seed.hex(),
+        "chain_code": node["chain"].hex(),
+        "private_key": f"{node['key']:064x}",
+        "public_key": pub.hex(),
+        "parent_fingerprint": node["parent"].hex(),
+        "fingerprint": fingerprint(node).hex(),
+        "master_fingerprint": fingerprint(master_key(seed)).hex(),
+        "evm_address": evm_address(pub),
+        "bitcoin_address": btc_p2wpkh(pub),
+    }
+
+
+def describe_ed25519(seed: bytes, path: str, source: str):
+    """The single Ed25519 key; its identity is the raw public key."""
+    node = slip10_derive(seed, path)
+    pub = ed25519_public_key(node["key"])
+    return {
+        "source": source,
+        "algorithm": "ed25519",
+        "path": path,
+        "seed": seed.hex(),
+        "chain_code": node["chain"].hex(),
+        "private_key": node["key"].hex(),
+        "public_key": pub.hex(),
+        "parent_fingerprint": node["parent"].hex(),
+        "fingerprint": slip10_fingerprint(node).hex(),
+        "master_fingerprint": slip10_fingerprint(slip10_master_key(seed)).hex(),
     }
 
 
@@ -348,6 +455,45 @@ def selftest() -> int:
             failures.append(f"BIP39 entropy for {mnemonic[:24]}")
         checked += 1
 
+    # SLIP-0010 Ed25519 vector 1 (published in the SLIP-0010 spec).
+    slip10_seed1 = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+    slip10_v1 = [
+        ("m", "90046a93de5380a72b5e45010748567d5ea02bbf6522f979e05c0d8d8ca9fffb",
+         "2b4be7f19ee27bbf30c667b642d5f4aa69fd169872f8fc3059c08ebae2eb19e7",
+         "a4b2856bfec510abab89753fac1ac0e1112364e7d250545963f135f2a33188ed"),
+        ("m/0'", "8b59aa11380b624e81507a27fedda59fea6d0b779a778918a2fd3590e16e9c69",
+         "68e0fe46dfb67e368c75379acec591dad19df3cde26e63b93a8e704f1dade7a3",
+         "8c8a13df77a28f3445213a0f432fde644acaa215fc72dcdf300d5efaa85d350c"),
+        ("m/0'/1'", "a320425f77d1b5c2505a6b1b27382b37368ee640e3557c315416801243552f14",
+         "b1d0bad404bf35da785a64ca1ac54b2617211d2777696fbffaf208f746ae84f2",
+         "1932a5270f335bed617d5b935c80aedb1a35bd9fc1e31acafd5372c30f5c1187"),
+        ("m/0'/1'/2'", "2e69929e00b5ab250f49c3fb1c12f252de4fed2c1db88387094a0f8c4c9ccd6c",
+         "92a5b23c0b8a99e37d07df3fb9966917f5d06e02ddbd909c7e184371463e9fc9",
+         "ae98736566d30ed0e9d2f4486a64bc95740d89c7db33f52121f8ea8f76ff0fc1"),
+        ("m/0'/1'/2'/2'", "8f6d87f93d750e0efccda017d662a1b31a266e4a6f5993b15f5c1f07f74dd5cc",
+         "30d1dc7e5fc04c31219ab25a27ae00b50f6fd66622f6e9c913253d6511d1e662",
+         "8abae2d66361c879b900d204ad2cc4984fa2aa344dd7ddc46007329ac76c429c"),
+        ("m/0'/1'/2'/2'/1000000000'", "68789923a0cac2cd5a29172a475fe9e0fb14cd6adb5ad98a3fa70333e7afa230",
+         "8f94d394a8e8fd6b1bc2f3f49f5c47e385281d5c17e65324b0f62483e37e8793",
+         "3c24da049451555d51a7014a37337aa4e12d41e485abccfa46b47dfb2af54b7a"),
+    ]
+    for slip_path, slip_chain, slip_priv, slip_pub in slip10_v1:
+        node = slip10_derive(slip10_seed1, slip_path)
+        if node["chain"].hex() != slip_chain:
+            failures.append(f"SLIP-0010 v1 {slip_path} chain code")
+        if node["key"].hex() != slip_priv:
+            failures.append(f"SLIP-0010 v1 {slip_path} private key")
+        if ed25519_public_key(node["key"]).hex() != slip_pub:
+            failures.append(f"SLIP-0010 v1 {slip_path} public key")
+        checked += 1
+
+    # RFC 8032 7.1 TEST 1: Ed25519 public key from the published secret.
+    rfc_seed = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    if ed25519_public_key(rfc_seed).hex() != \
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a":
+        failures.append("RFC 8032 TEST 1 public key")
+    checked += 1
+
     if failures:
         print("SELFTEST FAILED:", file=sys.stderr)
         for failure in failures[:20]:
@@ -386,7 +532,12 @@ def base58_encode(data: bytes) -> str:
 
 
 def gen_fixtures(outdir: str) -> int:
-    """Differential fixtures consumed by the Swift test target."""
+    """Differential fixtures consumed by the Swift test target.
+
+    Both algorithms are emitted, so the Swift tests compare against this
+    implementation on the secp256k1 key, its two address encodings, and the
+    Ed25519 key.
+    """
     os.makedirs(outdir, exist_ok=True)
     mnemonics = [
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -399,10 +550,11 @@ def gen_fixtures(outdir: str) -> int:
     records = []
     for mnemonic in mnemonics:
         seed = mnemonic_to_seed(mnemonic.split(), "")
-        for coin, default_path in COIN_PATHS.items():
-            for path in (default_path, "m/44'/60'/0'/0/0" if coin == "eth" else "m/84'/0'/0'/0/0", "m/0'", "m"):
-                record = describe(seed, path, coin, mnemonic[:24])
-                records.append(record)
+        source = mnemonic[:24]
+        for path in (SECP256K1_PATH, "m/44'/60'/0'/0/0", "m/84'/0'/0'/0/0", "m/0'", "m"):
+            records.append(describe_secp256k1(seed, path, source))
+        for path in (ED25519_PATH, "m/0'", "m"):
+            records.append(describe_ed25519(seed, path, source))
     with open(os.path.join(outdir, "derivation_vectors.json"), "w", encoding="utf-8") as handle:
         json.dump({"note": "generated by tools/derive/derive.py (independent implementation)",
                    "vectors": records}, handle, indent=1)
@@ -418,6 +570,7 @@ def main() -> int:
     parser.add_argument("--seed-hex")
     parser.add_argument("--passphrase", default="")
     parser.add_argument("--coin", choices=["eth", "btc"])
+    parser.add_argument("--algorithm", choices=["secp256k1", "ed25519"], default="secp256k1")
     parser.add_argument("--path")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -438,15 +591,38 @@ def main() -> int:
     else:
         parser.error("provide --mnemonic or --seed-hex (or use selftest/gen-fixtures)")
 
-    coin = args.coin or "eth"
-    path = args.path or COIN_PATHS[coin]
-    record = describe(seed, path, coin, source)
+    if args.algorithm == "ed25519":
+        path = args.path or ED25519_PATH
+        record = describe_ed25519(seed, path, source)
+        if args.json:
+            print(json.dumps(record, indent=2))
+        else:
+            print(f"path        : {record['path']}")
+            print(f"public key  : {record['public_key']}")
+            print(f"chain code  : {record['chain_code']}")
+        return 0
+
+    if args.coin:
+        # Ad-hoc single-coin lookup, retained for convenience.
+        path = args.path or COIN_PATHS[args.coin]
+        record = describe(seed, path, args.coin, source)
+        if args.json:
+            print(json.dumps(record, indent=2))
+        else:
+            print(f"path    : {record['path']}")
+            print(f"pubkey  : {record['public_key_compressed']}")
+            print(f"address : {record['address']}")
+        return 0
+
+    path = args.path or SECP256K1_PATH
+    record = describe_secp256k1(seed, path, source)
     if args.json:
         print(json.dumps(record, indent=2))
     else:
-        print(f"path    : {record['path']}")
-        print(f"pubkey  : {record['public_key_compressed']}")
-        print(f"address : {record['address']}")
+        print(f"path            : {record['path']}")
+        print(f"public key      : {record['public_key']}")
+        print(f"evm address     : {record['evm_address']}")
+        print(f"bitcoin address : {record['bitcoin_address']}")
     return 0
 
 

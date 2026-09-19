@@ -14,8 +14,6 @@ look for a way around it — the ordering gates are the security property.
 - [ ] A second YubiKey (optional) for a recovery drill later
 - [ ] Steel plate(s) for the mnemonic, plus a punch or engraver — two plates,
       two locations
-- [ ] A second, independent device for the address cross-check (laptop, tablet,
-      or another hardware wallet), with `tools/derive` ready to run offline
 - [ ] iPhone factory-reset, SIM removed, airplane mode on, no other apps
 - [ ] Decide and record both PINs **before** starting: User PIN ≥ 6 digits,
       Admin PIN ≥ 8 digits, different from each other, in your password manager
@@ -54,23 +52,22 @@ step completed rather than trusting the flow.
 - [ ] **Mnemonic** — 24 words revealed by holding the screen
       - [ ] Transcribed onto steel, **twice**
       - [ ] Back-fill check passed
-- [ ] **Derivation** — chain and path confirmed
-      - Path: `______________________`
-      - Address from this device: `______________________________________`
+- [ ] **Derivation** — both keys derived
+      - secp256k1 path `m/44'/0'/0'/0/0`
+        - EVM address from this device: `______________________________________`
+        - Bitcoin address from this device: `__________________________________`
+      - Ed25519 path `m/44'/501'/0'/0'`
+        - Public key from this device: `______________________________________`
 - [ ] **Import** completed without a second touch request
 - [ ] **Read-back** verified: the YubiKey's public key matches the derived key ✔
-- [ ] **Independent cross-check** (§4.2 step 6b) — on the *other* device:
-      ```
-      tools/derive/.venv/bin/python derive.py --mnemonic "<your 24 words>" --coin eth
-      ```
-      - [ ] Address from the independent tool: `______________________________________`
-      - [ ] Both addresses match character by character ✔
-      - [ ] Tool and device recorded: `____________________________`
-- [ ] **Pairing** — QR shown and scanned by the desktop wallet
-      - [ ] The wallet shows the same address as the app ✔
+- [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
+      - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
+      - [ ] The wallet shows the same Ed25519 public key as the app ✔
       - [ ] (If you enabled chain-code export) you have accepted that child
             addresses cannot be signed for by this key
-- [ ] **Counter baseline** reads **0** ✔
+- [ ] **Counter baseline** reads **0** ✔ (secp256k1 / signature slot)
+      - [ ] Noted: the Ed25519 key has **no** hardware counter, so the counter
+            audit below covers secp256k1 chains only
 - [ ] **Teardown** — secrets wiped, provisioning record saved
 - [ ] Restart the app before any further ceremony
 

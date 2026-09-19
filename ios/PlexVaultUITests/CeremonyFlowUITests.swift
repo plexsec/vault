@@ -93,7 +93,7 @@ final class CeremonyFlowUITests: XCTestCase {
             let cell = app.staticTexts[word]
             XCTAssertTrue(
                 cell.waitForExistence(timeout: 5),
-                "word \\(index + 1) (\\(word)) is missing from the revealed list:\n\\(app.debugDescription)"
+                "word \\(index + 1) (\\(word)) is missing from the revealed list:\n\(app.debugDescription)"
             )
         }
         XCTAssertTrue(app.staticTexts["24."].exists || app.staticTexts["24"].exists, "numbering missing")
@@ -126,13 +126,20 @@ final class CeremonyFlowUITests: XCTestCase {
             field.typeText(challenge[index])
         }
 
+        // The word fields are the last thing before the primary action, so the
+        // keyboard would otherwise cover the button. The app exposes a Done button
+        // on the keyboard for exactly this.
+        let done = app.buttons["dismiss-keyboard"]
+        if done.exists { done.tap() }
+        Thread.sleep(forTimeInterval: 0.3)
+
         let confirm = button("Confirm transcription", in: app)
         XCTAssertTrue(confirm.isEnabled, "a correct back-fill must enable confirmation")
         tap(confirm, in: app)
 
         XCTAssertTrue(
-            button("Derive key", in: app).waitForExistence(timeout: 10),
-            "the ceremony must advance to derivation:\n\\(app.debugDescription)"
+            button("Derive keys", in: app).waitForExistence(timeout: 10),
+            "the ceremony must advance to derivation:\n\(app.debugDescription)"
         )
     }
 

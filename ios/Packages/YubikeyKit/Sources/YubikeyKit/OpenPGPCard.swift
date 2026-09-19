@@ -6,6 +6,10 @@ import VaultKit
 /// This type is the only place that knows APDU byte layouts, and it conforms to
 /// VaultKit's `SignerCard` so the ceremony state machine can drive it without
 /// knowing anything about ISO 7816.
+///
+/// Every key operation is addressed by `KeySlot`; the slot-to-tag mapping lives
+/// in `KeySlotObjects`. Which algorithm goes in which slot is decided above this
+/// layer (`KeyAlgorithm.slot`).
 public final class OpenPGPCard: SignerCard {
     public static let openPGPAID: [UInt8] = [0xD2, 0x76, 0x00, 0x01, 0x24, 0x01]
 
@@ -130,7 +134,12 @@ public final class OpenPGPCard: SignerCard {
 
     /// `GENERATE ASYMMETRIC KEY PAIR` in read mode (`P1 = 0x81`) returns the
     /// public key in `7F49`, with the EC point in `86`.
-    public func readPublicKey(controlReference: UInt16 = OpenPGPDataObject.controlReferenceTemplateSignature) async throws -> [UInt8] {
+    ///
+    /// For Ed25519 the point is the raw 32-byte Edwards point; whether the card
+    /// prefixes it with `0x40` is an M0 hardware-verification item, and a
+    /// non-matching encoding fails the ceremony's read-back step.
+    public func readPublicKey(slot: KeySlot) async throws -> [UInt8] {
+        let controlReference = KeySlotObjects.forSlot(slot).controlReference
         let apdu = CommandAPDU(
             cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
             data: TLV.encodeTag(controlReference),
@@ -154,32 +163,36 @@ public final class OpenPGPCard: SignerCard {
         let sst = try? await securitySupportTemplate()
         let parsed = try OpenPGPApplicationData.parse(applicationData: applicationData, securitySupportTemplate: sst)
 
-        // Detect an existing signature key by attempting a read. 6A88 means the
-        // slot is empty, which is the only reliable signal (a fingerprint object
-        // may be present-but-zero).
-        var hasSignatureKey = parsed.hasSignatureKey
-        do {
-            _ = try await readPublicKey()
-            hasSignatureKey = true
-        } catch CardError.unexpectedStatusWord(let sw1, let sw2) where sw1 == 0x6A && sw2 == 0x88 {
-            hasSignatureKey = false
-        } catch CardError.conditionsNotSatisfied {
-            hasSignatureKey = false
+        var attributes: [KeySlot: [UInt8]] = [:]
+        if let value = parsed.algorithmAttributesSignature { attributes[.signature] = value }
+        if let value = parsed.algorithmAttributesAuthentication { attributes[.authentication] = value }
+
+        // Detect an existing key per slot by attempting a read. 6A88 ("referenced
+        // data not found") means the slot is empty, which is the only reliable
+        // signal — a fingerprint object may be present-but-zero.
+        var occupied: Set<KeySlot> = []
+        for slot in KeySlot.allCases {
+            do {
+                _ = try await readPublicKey(slot: slot)
+                occupied.insert(slot)
+            } catch CardError.unexpectedStatusWord(let sw1, let sw2) where sw1 == 0x6A && sw2 == 0x88 {
+                continue
+            } catch CardError.conditionsNotSatisfied {
+                continue
+            }
         }
 
         let counter = parsed.signatureCounter
-        let fingerprintsAreZero = (parsed.fingerprintSignature?.allSatisfy { $0 == 0 } ?? true)
-            && (parsed.combinedFingerprints?.allSatisfy { $0 == 0 } ?? true)
 
         return CardInventory(
             openPGPVersion: parsed.openPGPVersion ?? "unknown",
             manufacturer: parsed.manufacturer.map { String(format: "0x%04X", $0) },
             serial: parsed.serial.map { String(format: "%08X", $0) },
-            algorithmAttributes: parsed.algorithmAttributesSignature,
+            algorithmAttributes: attributes,
             pwStatusBytes: parsed.pwStatusBytes,
-            hasSignatureKey: hasSignatureKey,
+            occupiedSlots: occupied,
             signatureCounter: counter,
-            isFactoryFresh: !hasSignatureKey && fingerprintsAreZero && (counter ?? 0) == 0
+            isFactoryFresh: occupied.isEmpty && (counter ?? 0) == 0
         )
     }
 
@@ -208,17 +221,20 @@ public final class OpenPGPCard: SignerCard {
         )
     }
 
-    /// Applies the mandatory policy and verifies both writes by reading back.
+    /// Applies the mandatory policy to both signing-capable slots.
     ///
     /// The Admin PIN is required because `PUT DATA` of these objects is protected.
     public func applyPolicy(adminPIN: [UInt8]) async throws {
         try await verify(pin: adminPIN, reference: .admin, operation: .verifyAdminPIN)
 
-        try await putData(
-            tag: OpenPGPDataObject.uifSignature,
-            value: OpenPGPTouchPolicy.fixedEncoded,
-            operation: .applyPolicy
-        )
+        // Touch required for every use, and not relaxable later, on both slots.
+        for slot in KeySlot.allCases {
+            try await putData(
+                tag: KeySlotObjects.forSlot(slot).uif,
+                value: OpenPGPTouchPolicy.fixedEncoded,
+                operation: .applyPolicy
+            )
+        }
         try await putData(
             tag: OpenPGPDataObject.pwStatusBytes,
             value: PWStatusBytes.encode(),
@@ -226,7 +242,9 @@ public final class OpenPGPCard: SignerCard {
         )
     }
 
-    public func importSignatureKey(
+    public func importKey(
+        slot: KeySlot,
+        algorithm: KeyAlgorithm,
         privateKey: SensitiveBytes,
         fingerprint: [UInt8],
         creationTime: Date,
@@ -239,27 +257,28 @@ public final class OpenPGPCard: SignerCard {
         var raw = privateKey.materializedCopy()
         defer { wipe(&raw) }
 
-        // The signature slot must be empty: PUT DATA of a private key is rejected
+        let objects = KeySlotObjects.forSlot(slot)
+
+        // The addressed slot must be empty: PUT DATA of a private key is rejected
         // on an occupied slot, and the ceremony treats that as a hard failure
         // rather than trying to work around it.
-        let extendedHeaderList = KeyImportTemplate.extendedHeaderList(privateKey: raw)
         try await putData(
             tag: OpenPGPDataObject.extendedHeaderList,
-            value: extendedHeaderList,
+            value: KeyImportTemplate.extendedHeaderList(privateKey: raw, slot: slot),
             addressing: (0x3F, 0xFF),
             ins: 0xDB,
             operation: .importKey
         )
 
         try await putData(
-            tag: OpenPGPDataObject.algorithmAttributesSignature,
-            value: KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes,
+            tag: objects.algorithmAttributes,
+            value: KeyImportTemplate.algorithmAttributes(for: algorithm),
             operation: .setAlgorithmAttributes
         )
 
         try await putData(
-            tag: OpenPGPDataObject.fingerprintSignature,
-            value: KeyImportTemplate.signatureFingerprint(fingerprint),
+            tag: objects.fingerprint,
+            value: KeyImportTemplate.paddedFingerprint(fingerprint),
             operation: .importKey
         )
 
@@ -268,7 +287,7 @@ public final class OpenPGPCard: SignerCard {
         // the fingerprint and the read-back comparison are the real checks.
         do {
             try await putData(
-                tag: OpenPGPDataObject.creationTimeSignature,
+                tag: objects.timestamp,
                 value: KeyImportTemplate.creationTime(creationTime),
                 operation: .importKey
             )
@@ -280,10 +299,6 @@ public final class OpenPGPCard: SignerCard {
                 throw error
             }
         }
-    }
-
-    public func readSignaturePublicKey() async throws -> [UInt8] {
-        try await readPublicKey()
     }
 
     public func signatureCounter() async throws -> UInt32 {

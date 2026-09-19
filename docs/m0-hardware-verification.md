@@ -129,7 +129,82 @@ is unavailable, so the transport polls `slotNames`.
 cryptographic one. Failure to find the key is a visible error, and NFC remains a
 fully functional alternative path.
 
-## 5. Free-personal-team NFC entitlement
+## 5. Ed25519 support and the authentication-slot import template
+
+**Assumption in code** (`YubikeyKit/OpenPGPDataObjects.swift`,
+`KeyImportTemplate.eddsaEd25519AlgorithmAttributes` and
+`KeySlotObjects.forSlot(.authentication)`):
+
+- The applet supports Ed25519 (EdDSA) at all, and the applet version reported by
+  `GET DATA 0x6E` distinguishes it.
+- Algorithm attributes for the authentication slot (`0xC3`) are
+  `16 | 2B 06 01 04 01 DA 47 0F 01 | 00`, i.e. EdDSA with the Ed25519 OID
+  `1.3.6.1.4.1.11591.15.1` that GnuPG writes.
+- Key import uses the same Extended Header List shape as secp256k1 but with CRT
+  `0xA4`, and the 32-byte secret is the Ed25519 **seed** (not the clamped
+  scalar).
+- `GENERATE ASYMMETRIC KEY PAIR` with CRT `0xA4` returns the raw 32-byte point in
+  `7F49`/`86`, with **no** `0x40` prefix.
+
+**How to verify.** On a desktop with the key attached:
+
+```sh
+# 1. Does the applet accept Ed25519 at all? Does GnuPG agree on the OID?
+gpg --card-edit            # admin, key-attr -> choose Ed25519 for the auth slot
+gpg --card-status | grep -i curve
+
+# 2. What does our import put on the wire, and what comes back?
+cd ios/Packages/YubikeyKit && swift test --filter testAuthenticationSlotImportTemplateUsesCRT_A4
+cd ios/Packages/YubikeyKit && swift test --filter testEd25519ImportIntoAuthenticationSlot
+
+# 3. Read the public key back through our own APDU path and compare it with the
+#    expected value from the independent oracle:
+tools/derive/.venv/bin/python tools/derive/derive.py --algorithm ed25519 \
+  --mnemonic "<the ceremony's 24 words>"
+```
+
+If the OID is wrong, the import fails visibly (`6A80` → `keyImportRejected`). If
+the read-back encoding carries a `0x40` prefix, the read-back comparison fails
+and the ceremony voids itself. If Ed25519 is unsupported entirely, the import is
+rejected and the operator is told which algorithm failed.
+
+**Fallback if the applet cannot hold Ed25519.** Provision secp256k1 only and use
+a second YubiKey for Ed25519 — where, being that card's signature slot, the key
+would also be counter-audited. Every other behaviour in v0.1 is preserved.
+
+**Why it is safe to be wrong.** Every failure mode above is a visible rejection
+or a read-back mismatch, never a silently different key: the same argument that
+covers item 1 applies, and the read-back step compares *both* keys.
+
+## 6. Ed25519 fingerprint object (0xC9)
+
+**Assumption in code.** The 20-byte fingerprint written for the authentication
+slot is the four-byte SLIP-0010 fingerprint (first four bytes of
+`HASH160(0x00 || pubkey)`) zero-padded to 20, mirroring what is done for
+secp256k1's `0xC7`.
+
+**How to verify.** After an import: `gpg --card-status` and compare the reported
+fingerprint against the value in the app's provisioning record.
+
+**Why it is safe to be wrong.** The fingerprint is descriptive metadata here; the
+security argument rests on the algorithm attributes and the public-key read-back,
+both of which are verified in-ceremony.
+
+## 7. Ed25519 in `crypto-hdkey`
+
+**Assumption in code** (`VaultKit/UR/URTypes.swift`). A BCR-2020-007 `hdkey`
+carries an Ed25519 key as 32 bytes of raw public key in `key-data`, with the
+curve implied by that length plus `use-info` (SLIP-44 coin type 501). There is no
+explicit curve field in the spec, so this is a convention.
+
+**How to verify.** Scan the Ed25519 pairing code into the intended wallet and
+confirm it imports a key matching the app's displayed public key.
+
+**Why it is safe to be wrong.** A wallet that cannot interpret the code rejects
+it; it cannot import a *different* key, because the key bytes are the payload and
+the operator compares the resulting public key against the app's screen.
+
+## 8. Free-personal-team NFC entitlement
 
 **Assumption**: a free Apple personal team can sign an app carrying
 `com.apple.developer.nfc.readersession.formats`. If it cannot:

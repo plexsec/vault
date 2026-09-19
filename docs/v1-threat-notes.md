@@ -9,6 +9,7 @@ mitigated — so that no reader mistakes a v2 design intent for a shipped contro
 | design.md section | v0.1 status |
 |---|---|
 | §4.2 steps 2–9 (provisioning) | implemented |
+| §4.3 two-algorithm key model | implemented — secp256k1 (signature slot) + Ed25519 (authentication slot); see deviation 6 |
 | §4.2 step 10 (small-value test transaction) | **not possible** — needs signing (v0.2) |
 | §5 signing flow, `eth-sign-request`/`eth-signature` | **not implemented** (v0.2) |
 | §5.2 rule 4 (counter-delta audit) | **not implemented** — the baseline is recorded, but nothing decrements it yet |
@@ -20,8 +21,7 @@ The consequence to be explicit about: **the scheme's central claim — that a
 tampered iPhone cannot cause the Desktop to broadcast a different transaction — is
 not yet testable with this code**, because neither the signing exchange nor the
 Desktop verifier exists. What v0.1 does establish is that the key on the card is
-the key derived from the mnemonic, verified by read-back and by an independent
-implementation.
+the key derived from the mnemonic, verified by read-back.
 
 ## Deviations from the design, with rationale
 
@@ -38,15 +38,14 @@ would be unverifiable, which is worse than not claiming it.
 
 **Consequence, stated plainly.** The "backdoored RNG" node of the §9.4 attack tree
 is no longer mitigated. A tampered app or OS RNG could produce a mnemonic of its
-own choosing, and the independent cross-check would still pass, because it
-compares addresses (derived from whatever mnemonic was shown) rather than entropy
-provenance. §9.5 now records this as **Medium** residual risk, raised from Low.
+own choosing, and nothing in v0.1 catches this: the independent cross-check that
+would at least have compared addresses was removed (amendment 8). §9.5 records
+this as **Medium** residual risk.
 
 **Compensating controls that do exist.** Reproducible-build verification; the
 entropy commitment (8 hex digits of SHA-256 of the entropy) which binds the
-recorded mnemonic to the value the app says it generated; a factory-reset,
-airplane-mode device; and the independent address cross-check, which at least
-proves the card holds the key that the displayed mnemonic implies.
+recorded mnemonic to the value the app says it generated; and a factory-reset,
+airplane-mode device.
 
 **Path back.** A future version can make dice authoritative by specifying the
 function (for example Coldcard-style rejection sampling over rolls, or a tagged
@@ -103,12 +102,43 @@ interoperability limitation, not a defect in the export.
 be hash-verified. The app persists no secrets, so the worst case of an expired or
 deleted install is re-doing the pairing.
 
+### 6. One key per algorithm; the counter covers secp256k1 only
+
+**Change.** §4.3. A ceremony now writes two keys from one mnemonic: secp256k1
+into the signature slot and Ed25519 into the authentication slot, at fixed
+algorithm-scoped paths (`m/44'/0'/0'/0/0`, `m/44'/501'/0'/0'`).
+
+**Why.** The applet has two signing-capable slots, so allocating slots per chain
+would cover two chains; allocating per algorithm covers the practical chain
+landscape with the same card. The user-visible cost is address reuse across
+chains of the same algorithm, which is accepted and stated in §4.3.
+
+**Consequence, stated plainly.** The OpenPGP signature counter belongs to the
+**signature** slot. Ed25519 has to live in the authentication slot, whose
+`INTERNAL AUTHENTICATE` does not increment it. So the §5.2 rule 3/4 audit — the
+control that turns "extra touch" social engineering into a detectable event —
+covers secp256k1 chains and **not** Ed25519 chains. PIN and touch still gate
+every Ed25519 signature, and the tampered-display defence (§9.3) is unaffected,
+because that rests on the Desktop verifying what it asked for, not on the
+counter.
+
+**Compensating controls that do exist.** Touch policy `Fixed` is written to the
+authentication slot (UIF `0xD8`) as well as the signature slot, so an Ed25519
+signature still requires a physical touch; PW1 status `0x00` still forces a PIN
+per signature; the report states the limitation on every ceremony; and the
+one-touch-per-transaction rule is unchanged.
+
+**Path back.** There is none on this hardware: the counter is a property of the
+slot, not of the algorithm. Restoring a counter-audited Ed25519 key means a
+second YubiKey, where Ed25519 would occupy that card's signature slot. That
+option is documented rather than implemented.
+
 ## Residual risk register for v0.1
 
 | Risk | v0.1 mitigation | Residual |
 |---|---|---|
-| Backdoored/faulty entropy source | **None** (see deviation 1); entropy commitment + address cross-check bind the record | **Medium** |
-| Tampered app at generation time | Reproducible-build hash; independent cross-check of the derived address; factory-reset offline device | **Medium** — bounded, not removed |
+| Backdoored/faulty entropy source | **None** (see deviation 1); the entropy commitment binds the record | **Medium** |
+| Tampered app at generation time | Reproducible-build hash; read-back comparison; factory-reset offline device | **Medium** — the independent cross-check that bounded it was removed |
 | Wrong key silently provisioned onto the card | Mandatory read-back comparison of the card's public key against the derived key, which voids and wipes on mismatch | **Low** |
 | Malicious card (counterfeit) | Read-back mismatch; report records serial/applet and the operator writes down the fingerprint | **Low** |
 | Fake card accepted by the app | Release build contains no simulation, asserted mechanically by `tools/audit-release.sh` on every verification run | **Low** |
@@ -117,6 +147,7 @@ deleted install is re-doing the pairing.
 | App update introduces a malicious card simulation | Simulation is DEBUG-only and compiled out of Release; the exclusion is a build setting, and the audit re-checks the built product | **Low** |
 | User error: wrong PIN entered three times | PIN rules enforced before touching the card; the Admin-PIN lockout warning is shown on the reset and PIN screens | **Medium** — user error is not removable |
 | Protocol assumption wrong (import template, `0xC4`, `0xCE`) | Fails visibly: rejection status words or a read-back mismatch; all four documented in `m0-hardware-verification.md` | **Low** |
+| Extra touch on the **Ed25519** key is not detectable by a counter | PIN + touch still required; touch policy `Fixed` written to UIF `0xD8`; one-touch-per-transaction rule; Desktop verification of what was signed (v0.2) | **Medium** — accepted in exchange for chain coverage (deviation 6) |
 | Loss of availability | Mnemonic recovery verified by the restore path; two steel plates | **Low** (operational) |
 
 ## UI defects found and fixed by automation
@@ -145,8 +176,8 @@ it: the defect was only visible by tapping the actual screen.
 
 ## What would raise confidence most, in order
 
-1. A third-party audit focused on the generation flow, the import template and the
-   UR encoder (§11 v0.5 in the design).
+1. A third-party audit focused on the generation flow, the two import templates
+   (secp256k1 and Ed25519) and the UR encoder (§11 v0.5 in the design).
 2. The M0 hardware verification pass (`docs/m0-hardware-verification.md`).
 3. Implementing the signing flow and the Desktop verifier, which is what makes the
    scheme's central claim testable at all.

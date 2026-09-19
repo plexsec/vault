@@ -5,10 +5,12 @@ signer, plus the supporting tooling to verify it. The design is in
 [`design.md`](design.md); this file explains what actually exists.
 
 **v0.1 does not sign anything.** It resets a YubiKey, generates or restores a
-BIP39 mnemonic, derives one secp256k1 key, imports it into the OpenPGP applet,
-verifies the import by reading the public key back, cross-checks the address with
-an independent implementation, and exports the public key for a desktop wallet.
-The signing flow (§5 of the design) is v0.2.
+BIP39 mnemonic, derives **two** keys from it — ECDSA secp256k1 and Ed25519 — and
+imports them into the OpenPGP applet's signature and authentication slots. It
+verifies each import by reading the public key back and exports both public keys
+for a desktop wallet. One key per
+*algorithm* means every secp256k1 chain shares one key and every Ed25519 chain
+shares the other. The signing flow (§5 of the design) is v0.2.
 
 ## What is here
 
@@ -17,10 +19,10 @@ design.md                     the design specification (amended; see docs/design
 ios/
   project.yml                 XcodeGen source of truth; PlexVault.xcodeproj is generated and committed
   PlexVault/                  the SwiftUI app
-  Packages/VaultKit/          pure logic: crypto, BIP39/BIP32, addresses, BC-UR, ceremony state machine
+  Packages/VaultKit/          pure logic: crypto (secp256k1 + Ed25519), BIP39, BIP32, SLIP-0010, addresses, BC-UR, ceremony state machine
   Packages/YubikeyKit/        ISO 7816 / OpenPGP APDU layer + NFC, USB-C and simulated transports
 tools/
-  derive/                     independent Python oracle for the §4.2 step 6b cross-check
+  derive/                     independent Python oracle for the differential-testing fixtures
   verify.sh                   every off-hardware check in one command
   audit-release.sh            mechanical release checks (no simulated card, no networking, no persistence)
   hash-app.sh                 unsigned reproducible-build hashing + toolchain record
@@ -39,8 +41,8 @@ docs/
 tools/verify.sh
 
 # individual pieces
-cd ios/Packages/VaultKit  && swift test      # 81 tests: crypto, BIP39/BIP32, addresses, BC-UR, ceremony
-cd ios/Packages/YubikeyKit && swift test     # 27 tests: APDU codec, OpenPGP card, transports, end-to-end
+cd ios/Packages/VaultKit  && swift test      # 93 tests: crypto (RFC 8032 + SLIP-0010), BIP39/BIP32, addresses, BC-UR, ceremony
+cd ios/Packages/YubikeyKit && swift test     # 31 tests: APDU codec, both OpenPGP slots, transports, end-to-end
 cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 6 UI tests
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest
@@ -58,11 +60,13 @@ ceremony be exercised with no hardware present.
 ## Where the confidence comes from
 
 1. **Published test vectors.** BIP32 vectors 1–5 (including the invalid-key
-   rejection vector), the official BIP39 Trezor vectors, EIP-55, BIP-173 bech32,
-   SHA-2/HMAC RFC vectors, and the BCR-2020-007 `hdkey` CBOR+UR golden strings.
+   rejection vector), the official BIP39 Trezor vectors, the SLIP-0010 Ed25519
+   vectors, RFC 8032 §7.1 Ed25519 vectors, EIP-55, BIP-173 bech32, SHA-2/HMAC RFC
+   vectors, and the BCR-2020-007 `hdkey` CBOR+UR golden strings.
 2. **Differential testing.** A second implementation in a different language with
-   its own crypto (`tools/derive`) must agree on every derived address, and a
-   committed fixture asserts it stays current.
+   its own crypto (`tools/derive`) must agree on every derived value — EVM
+   address, Bitcoin address and Ed25519 public key — and a committed fixture
+   asserts it stays current.
 3. **Differential hash fixtures.** 1,224 digests over 306 input lengths chosen to
    straddle every block boundary — this is what caught a Keccak padding bug.
 4. **A release audit that is itself tested.** `tools/audit-release.sh` fails on a
@@ -83,3 +87,7 @@ ceremony be exercised with no hardware present.
 * Dice entropy is non-authoritative in v0.1, which raises the backdoored-RNG
   residual risk to Medium — recorded in §9.5 of the design and in
   [`docs/v1-threat-notes.md`](docs/v1-threat-notes.md).
+* The Ed25519 key sits in the authentication slot, which has no hardware
+  signature counter, so the counter audit covers secp256k1 chains only. PIN and
+  touch still gate every Ed25519 signature; the trade is recorded in §4.3, §9.5
+  and [`docs/v1-threat-notes.md`](docs/v1-threat-notes.md).

@@ -6,7 +6,7 @@ import XCTest
 /// automation rather than by eye. Two behaviours are locked in here because both
 /// were wrong at some point:
 ///
-/// 1. Selecting a mode (or transport, or chain) must be a real tappable control.
+/// 1. Selecting a mode (or transport) must be a real tappable control.
 ///    An earlier version used `Picker(.inline)`, which iOS 26 renders as a wheel
 ///    whose default is already selected — so tapping "Generate a new wallet" did
 ///    nothing and the screen looked broken.
@@ -94,7 +94,7 @@ final class SetupFlowUITests: XCTestCase {
         XCTAssertFalse(restore.isSelected)
     }
 
-    func testTransportAndChainRowsAreSelectable() {
+    func testTransportRowIsSelectableAndChainPickerIsGone() {
         let app = launch()
 
         let usbC = app.buttons["choice-USB-C"]
@@ -103,11 +103,12 @@ final class SetupFlowUITests: XCTestCase {
         tap(usbC, in: app)
         XCTAssertTrue(usbC.isSelected)
 
-        let bitcoin = app.buttons["choice-Bitcoin (native segwit)"]
-        XCTAssertTrue(bitcoin.exists)
-        tap(bitcoin, in: app)
-        XCTAssertTrue(bitcoin.isSelected)
-        XCTAssertFalse(app.buttons["choice-Ethereum (EVM)"].isSelected)
+        // There is no chain picker any more: one ceremony always writes both
+        // algorithms. Asserted by identifier count rather than by a negative
+        // `.exists` lookup, which XCTest reports as a snapshot error even when the
+        // element is legitimately absent.
+        XCTAssertEqual(app.buttons.matching(identifier: "choice-Bitcoin (native segwit)").count, 0)
+        XCTAssertEqual(app.buttons.matching(identifier: "choice-Ethereum (EVM)").count, 0)
     }
 
     /// The gate: the ceremony must not start until the posture checks are ticked,

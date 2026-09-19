@@ -75,21 +75,24 @@ struct ReportBody: View {
         if !report.diceRolls.isEmpty {
             rows.append(("Dice rolls (non-authoritative)", report.diceRolls.map(String.init).joined()))
         }
-        if let chain = report.chain { rows.append(("Chain", chain.displayName)) }
-        if let path = report.derivationPath { rows.append(("Path", path)) }
-        if let address = report.address { rows.append(("Address", address)) }
-        if let key = report.publicKeyHex { rows.append(("Public key", key)) }
-        if let fingerprint = report.publicKeyFingerprintHex { rows.append(("Key fingerprint", fingerprint)) }
         if let serial = report.cardSerial { rows.append(("YubiKey serial", serial)) }
         if let version = report.cardOpenPGPVersion { rows.append(("OpenPGP applet", version)) }
-        if let counter = report.counterBaseline { rows.append(("Counter baseline", "\(counter)")) }
-        rows.append(("Read-back verified", report.readBackVerified ? "yes" : "NO"))
-        if let check = report.independentCheck {
-            rows.append(("Independent check", check.matched ? "MATCH" : "MISMATCH"))
-            rows.append(("Checked with", check.source))
-            rows.append(("Address entered", check.expectedAddress))
+        rows.append(("Read-back verified (both keys)", report.readBackVerified ? "yes" : "NO"))
+
+        for record in report.keys {
+            let label = record.keyAlgorithm?.displayName ?? record.algorithm
+            rows.append(("\(label) slot", record.slot))
+            rows.append(("\(label) path", record.path))
+            if let evm = record.evmAddress { rows.append(("\(label) EVM address", evm)) }
+            if let btc = record.bitcoinAddress { rows.append(("\(label) Bitcoin address", btc)) }
+            if record.evmAddress == nil { rows.append(("\(label) public key", record.publicKeyHex ?? "-")) }
+            rows.append(("\(label) fingerprint", record.fingerprintHex ?? "-"))
+            rows.append(("\(label) read-back verified", record.readBackVerified ? "yes" : "NO"))
+            if let type = record.pairingURType { rows.append(("\(label) pairing UR type", type)) }
         }
-        if let type = report.pairingURType { rows.append(("Pairing UR type", type)) }
+
+        if let counter = report.counterBaseline { rows.append(("Counter baseline (secp256k1)", "\(counter)")) }
+        rows.append(("Ed25519 counter", "none — authentication slot is not counted"))
         rows.append(("Chain code exported", report.pairingIncludedChainCode ? "yes" : "no"))
         return rows
     }
@@ -125,10 +128,9 @@ struct ChecklistView: View {
             ("YubiKey reset (applet terminated and re-activated)", report?.cardOpenPGPVersion != nil),
             ("Touch policy fixed and PW1 status 0x00 written", report != nil),
             ("Entropy commitment recorded", report?.entropyCommitmentHex != nil),
-            ("Mnemonic transcribed and back-fill check passed", report?.derivationPath != nil),
-            ("Public key read back from YubiKey matches the derived key", report?.readBackVerified == true),
-            ("Independent address cross-check passed", report?.independentCheck?.matched == true),
-            ("Signature counter baseline is 0", report?.counterBaseline == 0),
+            ("Mnemonic transcribed and back-fill check passed", !(report?.keys.isEmpty ?? true)),
+            ("Both public keys read back from YubiKey match the derived keys", report?.readBackVerified == true),
+            ("Signature counter baseline is 0 (secp256k1)", report?.counterBaseline == 0),
         ]
     }
 

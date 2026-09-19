@@ -3,12 +3,24 @@ import XCTest
 
 /// Drives the §4.2 ceremony against the scripted card, asserting both the happy
 /// path and that every hard gate actually refuses to be skipped.
+///
+/// One ceremony now provisions **two** keys from one mnemonic: secp256k1 into the
+/// signature slot, Ed25519 into the authentication slot. The per-key steps are
+/// therefore checked for both keys, including the failure paths.
 final class ProvisioningCeremonyTests: XCTestCase {
 
     /// All-zero 32-byte entropy produces "abandon x23 + art" (the 24-word form;
-    /// "abandon x11 + about" is the 12-word form). The expected address below was
-    /// produced by tools/derive and is cross-checked in
-    /// testZeroEntropyAddressMatchesIndependentOracle.
+    /// "abandon x11 + about" is the 12-word form). The expected identities below
+    /// were produced by tools/derive and are cross-checked in
+    /// testDifferentialDerivationVectors.
+    private enum Expected {
+        static let evmAddress = "0x1CDE9225FfE472d7426a0e18A3407635F9fA8FDb"
+        static let bitcoinAddress = "bc1qrrhfau8tacy745fsdcmvsjtdehkx2xhlge55vyd"
+        static let ed25519PublicKey = "20c821b6510834ae1c47084c6f61fd97864d5f12d731f95f4b06fe477b1efb45"
+        static let secp256k1Fingerprint = "c774f787"
+        static let ed25519Fingerprint = "2d945750"
+    }
+
     private func makeCeremony(
         card: MockSignerCard = MockSignerCard(),
         entropy: [UInt8] = [UInt8](repeating: 0, count: 32),
@@ -24,16 +36,15 @@ final class ProvisioningCeremonyTests: XCTestCase {
     }
 
     struct WalkResult {
-        let summary: DerivedKeySummary
+        let keys: DerivedKeys
         let mnemonic: [String]
     }
 
-    /// Walks steps 1-8 (preflight through derivation). Returns the derived key
-    /// summary and the mnemonic, because the mnemonic step is deliberately
-    /// unreachable once derivation has happened.
+    /// Walks steps 1-8 (preflight through derivation). Returns the derived keys
+    /// and the mnemonic, because the mnemonic step is deliberately unreachable
+    /// once derivation has happened.
     private func runThroughDerivation(
         _ ceremony: ProvisioningCeremony,
-        chain: SigningChain = .ethereum,
         mode: CeremonyMode = .freshGeneration,
         restoredWords: [String]? = nil
     ) async throws -> WalkResult {
@@ -56,28 +67,25 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(words.count, 24, "the mnemonic must be populated at the mnemonic step")
         let challenge = try ceremony.transcriptionChallenge()
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
-        let summary = try ceremony.deriveKey(for: chain)
+        let keys = try ceremony.deriveKeys()
         try ceremony.advance()
-        return WalkResult(summary: summary, mnemonic: words)
+        return WalkResult(keys: keys, mnemonic: words)
     }
 
-    /// Steps 9-14: import, read-back, independent check, pairing, counter.
+    /// Steps 9-13: import, read-back, pairing, counter.
     private func completeCeremony(
         _ ceremony: ProvisioningCeremony,
         style: URTypeStyle = .keystoneLegacy,
         policy: PairingPolicy = .singleKeyOnly
     ) async throws -> CeremonyReport {
-        try await ceremony.importKey()                 // -> readBackCheck
+        try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()                         // -> independentCheck
-        let address = ceremony.derivedKey!.address
-        _ = try ceremony.submitIndependentCheck(address: address, source: "tools/derive (Python)")
-        try ceremony.advance()                         // -> pairingExport
-        _ = try ceremony.buildPairingUR(style: style, policy: policy)
+        try ceremony.advance()
+        _ = try ceremony.buildPairingURs(style: style, policy: policy)
         ceremony.confirmPairingAddressMatches(true)
-        try ceremony.advance()                         // -> counterBaseline
+        try ceremony.advance()
         _ = try await ceremony.readCounterBaseline()
-        try ceremony.advance()                         // -> teardown
+        try ceremony.advance()
         return ceremony.finish()
     }
 
@@ -87,48 +95,61 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         let walk = try await runThroughDerivation(ceremony)
+        let keys = walk.keys
 
-        XCTAssertEqual(walk.summary.chain, .ethereum)
-        XCTAssertEqual(walk.summary.address, "0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb")
-        XCTAssertEqual(walk.summary.path.description, "m/44'/60'/0'/0/0")
+        // Both algorithms are derived from the one mnemonic, at their fixed paths.
+        XCTAssertEqual(keys.secp256k1.path.description, "m/44'/0'/0'/0/0")
+        XCTAssertEqual(keys.ed25519.path.description, "m/44'/501'/0'/0'")
+        XCTAssertEqual(keys.secp256k1.slot, .signature)
+        XCTAssertEqual(keys.ed25519.slot, .authentication)
 
-        try await ceremony.importKey()
-        XCTAssertEqual(card.storedPrivateKey?.count, 32)
-        XCTAssertEqual(card.storedFingerprint, Array(try Hex.decode(walk.summary.fingerprintHex)))
+        // One secp256k1 key, two address encodings.
+        XCTAssertEqual(keys.secp256k1.evmAddress, Expected.evmAddress)
+        XCTAssertEqual(keys.secp256k1.identity, Expected.evmAddress)
+        XCTAssertEqual(keys.secp256k1.bitcoinAddress, Expected.bitcoinAddress)
+        XCTAssertEqual(keys.secp256k1.fingerprintHex, Expected.secp256k1Fingerprint)
 
+        // Ed25519 identity is the public key itself; no chain-specific address.
+        XCTAssertEqual(keys.ed25519.identity, Expected.ed25519PublicKey)
+        XCTAssertNil(keys.ed25519.evmAddress)
+        XCTAssertNil(keys.ed25519.bitcoinAddress)
+        XCTAssertEqual(keys.ed25519.fingerprintHex, Expected.ed25519Fingerprint)
+        XCTAssertEqual(keys.ed25519.publicKey.count, 32)
+        XCTAssertEqual(keys.secp256k1.publicKey.count, 33)
+
+        try await ceremony.importKeys()
+        XCTAssertEqual(card.storedPrivateKey(.signature)?.count, 32)
+        XCTAssertEqual(card.storedPrivateKey(.authentication)?.count, 32)
+        XCTAssertEqual(card.storedFingerprint(.signature), Array(try Hex.decode(Expected.secp256k1Fingerprint)))
+        XCTAssertEqual(card.storedFingerprint(.authentication), Array(try Hex.decode(Expected.ed25519Fingerprint)))
+
+        // Both read-backs, kept on screen until the operator advances.
         let readBack = try await ceremony.verifyReadBack()
-        XCTAssertTrue(readBack.matches)
-        XCTAssertEqual(readBack.cardPublicKeyHex, walk.summary.publicKeyHex)
-        XCTAssertEqual(readBack.addressFromCardKey, walk.summary.address)
-
-        // The read-back output stays on screen until the operator advances.
+        XCTAssertEqual(readBack[.secp256k1]?.matches, true)
+        XCTAssertEqual(readBack[.ed25519]?.matches, true)
+        XCTAssertEqual(readBack[.secp256k1]?.identityFromCardKey, Expected.evmAddress)
+        XCTAssertEqual(readBack[.ed25519]?.identityFromCardKey, Expected.ed25519PublicKey)
         XCTAssertEqual(ceremony.step, .readBackCheck)
         try ceremony.advance()
-        XCTAssertEqual(ceremony.step, .independentCheck)
-
-        let check = try ceremony.submitIndependentCheck(
-            address: "  0xF278CF59F82EDCF871D630F28ECC8056F25C1CDB ",
-            source: "tools/derive (Python)"
-        )
-        try ceremony.advance()
-        XCTAssertTrue(check.matched, "comparison must be case-insensitive and whitespace tolerant")
-
         XCTAssertEqual(ceremony.step, .pairingExport)
 
-        // Pairing cannot complete without a pairing code ...
+        // Pairing cannot complete without the codes ...
         XCTAssertThrowsError(try ceremony.advance()) { error in
             XCTAssertEqual(
                 error as? CeremonyError,
-                .stepIncomplete(step: .pairingExport, detail: "the pairing code has not been produced yet")
+                .stepIncomplete(step: .pairingExport, detail: "the pairing codes have not been produced yet")
             )
         }
 
-        let ur = try ceremony.buildPairingUR(style: .keystoneLegacy)
-        XCTAssertEqual(ur.type, "crypto-hdkey")
-        XCTAssertNoThrow(try UR(urString: ur.string))
+        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy)
+        XCTAssertEqual(urs.count, 2)
+        for (_, ur) in urs {
+            XCTAssertEqual(ur.type, "crypto-hdkey")
+            XCTAssertNoThrow(try UR(urString: ur.string))
+        }
 
-        // ... and, with the code on screen, not until the operator has compared
-        // the address their wallet shows with the one in this ceremony.
+        // ... and, with the codes on screen, not until the operator has compared
+        // the addresses their wallet shows with the ones in this ceremony.
         XCTAssertThrowsError(try ceremony.advance()) { error in
             XCTAssertEqual(error as? CeremonyError, .pairingAddressNotConfirmed)
         }
@@ -145,54 +166,59 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertNotNil(report.completedAt)
         XCTAssertTrue(report.readBackVerified)
         XCTAssertEqual(report.counterBaseline, 0)
-        XCTAssertEqual(report.address, walk.summary.address)
-        XCTAssertEqual(report.pairingURType, "crypto-hdkey")
+        XCTAssertEqual(report.keys.count, 2)
+        XCTAssertEqual(report.key(.secp256k1)?.identity, Expected.evmAddress)
+        XCTAssertEqual(report.key(.ed25519)?.identity, Expected.ed25519PublicKey)
+        XCTAssertEqual(report.key(.secp256k1)?.pairingURType, "crypto-hdkey")
         XCTAssertFalse(report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.isFinished)
+        // The Ed25519 slot has no counter, which the report must state.
+        XCTAssertTrue(report.warnings.contains { $0.contains("no hardware signature counter") })
 
-        // The card call sequence must match design.md §4.2 exactly.
+        // The card call sequence must match design.md §4.2 exactly, with both
+        // slots written in a fixed order.
         XCTAssertEqual(card.calls, [
             .inventory, .reset, .inventory, .setPINs,
             .applyPolicy(adminPIN: Array("87654321".utf8)), .inventory,
-            .importSignatureKey(fingerprint: walk.summary.fingerprintHex),
-            .readSignaturePublicKey, .signatureCounter,
+            .importKey(slot: .signature, algorithm: .secp256k1, fingerprint: Expected.secp256k1Fingerprint),
+            .importKey(slot: .authentication, algorithm: .ed25519, fingerprint: Expected.ed25519Fingerprint),
+            .readPublicKey(slot: .signature),
+            .readPublicKey(slot: .authentication),
+            .signatureCounter,
         ])
     }
 
-    func testBitcoinChainHappyPath() async throws {
+    /// The two keys must be independent: the same mnemonic at one path must not
+    /// produce the same key material for both algorithms.
+    func testBothAlgorithmsDeriveDistinctKeys() async throws {
         let ceremony = makeCeremony()
-        let walk = try await runThroughDerivation(ceremony, chain: .bitcoin)
-        XCTAssertTrue(walk.summary.address.hasPrefix("bc1q"))
-        XCTAssertEqual(walk.summary.path.description, "m/84'/0'/0'/0/0")
-        XCTAssertTrue(BitcoinAddress.isValidP2WPKH(walk.summary.address))
-
-        let report = try await completeCeremony(ceremony)
-        XCTAssertEqual(report.chain, .bitcoin)
-        XCTAssertTrue(report.warnings.isEmpty, "clean run should produce no warnings")
+        let keys = try await runThroughDerivation(ceremony).keys
+        XCTAssertNotEqual(keys.secp256k1.publicKey, keys.ed25519.publicKey)
+        XCTAssertNotEqual(keys.secp256k1.publicKeyHex, keys.ed25519.publicKeyHex)
     }
 
-    /// design.md §8.2: recovery onto a new card must reproduce the same key.
-    func testRestoreReproducesSamePublicKey() async throws {
+    /// design.md §8.2: recovery onto a new card must reproduce both keys.
+    func testRestoreReproducesBothKeys() async throws {
         let generated = makeCeremony()
         let generatedWalk = try await runThroughDerivation(generated)
         let words = generatedWalk.mnemonic
-        let original = generatedWalk.summary
+        let original = generatedWalk.keys
 
         let restoreCard = MockSignerCard()
         let restored = makeCeremony(card: restoreCard)
-        let walk = try await runThroughDerivation(
-            restored,
-            mode: .restoreFromMnemonic,
-            restoredWords: words
-        )
-        let recovered = walk.summary
+        let walk = try await runThroughDerivation(restored, mode: .restoreFromMnemonic, restoredWords: words)
+        let recovered = walk.keys
 
-        XCTAssertEqual(recovered.publicKeyHex, original.publicKeyHex)
-        XCTAssertEqual(recovered.address, original.address)
-        XCTAssertEqual(recovered.fingerprintHex, original.fingerprintHex)
+        for algorithm in KeyAlgorithm.allCases {
+            XCTAssertEqual(recovered[algorithm].publicKeyHex, original[algorithm].publicKeyHex)
+            XCTAssertEqual(recovered[algorithm].identity, original[algorithm].identity)
+            XCTAssertEqual(recovered[algorithm].fingerprintHex, original[algorithm].fingerprintHex)
+        }
+        XCTAssertEqual(recovered.secp256k1.bitcoinAddress, original.secp256k1.bitcoinAddress)
 
         let report = try await completeCeremony(restored)
-        XCTAssertEqual(report.address, original.address)
+        XCTAssertEqual(report.key(.secp256k1)?.identity, original.secp256k1.identity)
+        XCTAssertEqual(report.key(.ed25519)?.identity, original.ed25519.identity)
     }
 
     func testRestoreRejectsInvalidMnemonic() async throws {
@@ -250,16 +276,14 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.generateEntropy()
         // Without advancing, the mnemonic step is not even due yet, so derivation
         // is refused by the ordering gate.
-        XCTAssertThrowsError(try ceremony.deriveKey(for: .ethereum))
+        XCTAssertThrowsError(try ceremony.deriveKeys())
         try ceremony.advance()
-        // The transcription gate fires next, which is the stronger guarantee; the
-        // `mnemonicNotConfirmed` guard is defence-in-depth behind it.
         let words = try ceremony.mnemonicForDisplay()
         XCTAssertEqual(words.count, 24)
         // The ordering gate fires first (the mnemonic step is still due), which is
         // the stronger guarantee; the `mnemonicNotConfirmed` guard is
         // defence-in-depth behind it.
-        XCTAssertThrowsError(try ceremony.deriveKey(for: .ethereum)) { error in
+        XCTAssertThrowsError(try ceremony.deriveKeys()) { error in
             XCTAssertEqual(error as? CeremonyError, .stepOutOfOrder(expected: .mnemonic, actual: .derivation))
         }
     }
@@ -289,9 +313,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard(inventory: CardInventory(
             openPGPVersion: "3.4",
             serial: "12345678",
-            algorithmAttributes: [0x13, 0x2B, 0x81, 0x04, 0x00, 0x22],
+            algorithmAttributes: [.signature: [0x13, 0x2B, 0x81, 0x04, 0x00, 0x22]],
             pwStatusBytes: [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F],
-            hasSignatureKey: true,
+            occupiedSlots: [.signature],
             signatureCounter: 7,
             isFactoryFresh: false
         ))
@@ -300,7 +324,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let inventory = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        XCTAssertTrue(inventory.hasSignatureKey)
+        XCTAssertTrue(inventory.holdsKey(in: .signature))
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("not factory-fresh") })
 
         // Refuses to erase a working signer without an explicit acknowledgement.
@@ -315,6 +339,26 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         XCTAssertEqual(card.resetCount, 1)
         XCTAssertEqual(ceremony.step, .pinProvisioning)
+    }
+
+    /// A key in the authentication slot alone must also trip the destructive gate.
+    func testOccupiedAuthenticationSlotAlsoRequiresAcknowledgement() async throws {
+        let card = MockSignerCard(inventory: CardInventory(
+            openPGPVersion: "3.4",
+            serial: "12345678",
+            occupiedSlots: [.authentication],
+            signatureCounter: 0,
+            isFactoryFresh: false
+        ))
+        let ceremony = makeCeremony(card: card)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        await XCTAssertThrowsErrorAsync {
+            try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+        } verify: { error in
+            XCTAssertEqual(error as? CeremonyError, .destructiveResetNotAcknowledged)
+        }
     }
 
     func testUnsupportedOpenPGPVersionWarns() async throws {
@@ -333,78 +377,55 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
     // MARK: Mandatory verification failures
 
-    func testReadBackMismatchVoidsTheProcedureAndWipesSecrets() async throws {
+    func testSecp256k1ReadBackMismatchVoidsTheProcedureAndWipesSecrets() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
+        try await ceremony.importKeys()
 
         // A counterfeit or tampered card returning a different public key.
-        card.storedPublicKeyOverride = Array(try Hex.decode(
+        card.storedPublicKeyOverride[.signature] = Array(try Hex.decode(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         ))
 
         await XCTAssertThrowsErrorAsync { try await ceremony.verifyReadBack() } verify: { error in
-            guard case .readBackMismatch = (error as? CeremonyError) else {
+            guard case .readBackMismatch(let algorithm, _, _) = (error as? CeremonyError) else {
                 return XCTFail("expected readBackMismatch, got \(error)")
             }
+            XCTAssertEqual(algorithm, .secp256k1)
         }
         XCTAssertEqual(ceremony.step, .cardInventory, "must return to card inspection")
-        XCTAssertNil(ceremony.derivedKey, "derived key must be wiped")
+        XCTAssertNil(ceremony.derivedKeys, "derived keys must be wiped")
         XCTAssertFalse(ceremony.report.readBackVerified)
     }
 
-    func testIndependentCheckMismatchStopsTheCeremony() async throws {
-        let ceremony = makeCeremony()
+    /// The Ed25519 key gets the same treatment: a mismatch there is just as fatal.
+    func testEd25519ReadBackMismatchVoidsTheProcedure() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
-        _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()
+        try await ceremony.importKeys()
 
-        XCTAssertThrowsError(try ceremony.submitIndependentCheck(
-            address: "0x0000000000000000000000000000000000000000",
-            source: "tools/derive"
-        )) { error in
-            XCTAssertEqual(error as? CeremonyError, .independentCheckFailed)
+        card.storedPublicKeyOverride[.authentication] = [UInt8](repeating: 0xAB, count: 32)
+
+        await XCTAssertThrowsErrorAsync { try await ceremony.verifyReadBack() } verify: { error in
+            guard case .readBackMismatch(let algorithm, _, _) = (error as? CeremonyError) else {
+                return XCTFail("expected readBackMismatch, got \(error)")
+            }
+            XCTAssertEqual(algorithm, .ed25519)
         }
         XCTAssertEqual(ceremony.step, .cardInventory)
-        XCTAssertEqual(ceremony.report.independentCheck?.matched, false)
-    }
-
-    func testBitcoinIndependentCheckComparison() async throws {
-        let ceremony = makeCeremony()
-        let walk = try await runThroughDerivation(ceremony, chain: .bitcoin)
-        try await ceremony.importKey()
-        _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()
-        // Uppercase bech32 is valid and must compare equal.
-        _ = try ceremony.submitIndependentCheck(address: walk.summary.address.uppercased(), source: "Coldcard")
-        try ceremony.advance()
-        XCTAssertEqual(ceremony.step, .pairingExport)
-    }
-
-    func testPairingRequiresIndependentCheckFirst() async throws {
-        let ceremony = makeCeremony()
-        _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
-        _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()
-        // Ordering gate: the independent-check step is still due.
-        XCTAssertThrowsError(try ceremony.buildPairingUR(style: .v2)) { error in
-            XCTAssertEqual(error as? CeremonyError, .stepOutOfOrder(expected: .independentCheck, actual: .pairingExport))
-        }
+        XCTAssertNil(ceremony.derivedKeys)
     }
 
     func testNonZeroCounterBaselineStopsTheCeremony() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
+        let keys = try await runThroughDerivation(ceremony).keys
+        try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        _ = try ceremony.submitIndependentCheck(address: ceremony.derivedKey!.address, source: "tools/derive")
-        try ceremony.advance()
-        _ = try ceremony.buildPairingUR(style: .keystoneLegacy)
+        _ = try ceremony.buildPairingURs(style: .keystoneLegacy)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
 
@@ -454,35 +475,41 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
     // MARK: Pairing policy
 
-    func testDefaultPairingPolicyOmitsChainCode() async throws {
+    func testDefaultPairingPolicyOmitsChainCodeForBothKeys() async throws {
         let ceremony = makeCeremony()
         let walk = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
+        try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        _ = try ceremony.submitIndependentCheck(address: walk.summary.address, source: "tools/derive")
-        try ceremony.advance()
 
-        let ur = try ceremony.buildPairingUR(style: .keystoneLegacy, policy: .singleKeyOnly)
+        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, policy: .singleKeyOnly)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
-        let key = try HDKey(ur: ur)
-        XCTAssertNil(key.chainCode, "chain code must be omitted so no unsignable children are offered")
-        XCTAssertEqual(key.keyData, walk.summary.publicKeyCompressed)
-        XCTAssertEqual(key.origin?.components, walk.summary.path.components)
-        XCTAssertEqual(key.useInfo?.type, 60)
+
+        let secp256k1 = try HDKey(ur: try XCTUnwrap(urs[.secp256k1]))
+        XCTAssertNil(secp256k1.chainCode, "chain code must be omitted so no unsignable children are offered")
+        XCTAssertEqual(secp256k1.keyData, walk.keys.secp256k1.publicKey)
+        XCTAssertEqual(secp256k1.origin?.components, walk.keys.secp256k1.path.components)
+        XCTAssertEqual(secp256k1.useInfo?.type, 0)
+        XCTAssertFalse(secp256k1.isEd25519)
+
+        let ed25519 = try HDKey(ur: try XCTUnwrap(urs[.ed25519]))
+        XCTAssertNil(ed25519.chainCode)
+        XCTAssertEqual(ed25519.keyData, walk.keys.ed25519.publicKey)
+        XCTAssertEqual(ed25519.origin?.components, walk.keys.ed25519.path.components)
+        XCTAssertEqual(ed25519.useInfo?.type, 501)
+        XCTAssertTrue(ed25519.isEd25519)
+
         XCTAssertFalse(ceremony.report.pairingIncludedChainCode)
     }
 
     func testUnacknowledgedChainCodeExportIsRefused() async throws {
         let ceremony = makeCeremony()
-        _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
+        let keys = try await runThroughDerivation(ceremony).keys
+        try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        _ = try ceremony.submitIndependentCheck(address: ceremony.derivedKey!.address, source: "tools/derive")
-        try ceremony.advance()
-        XCTAssertThrowsError(try ceremony.buildPairingUR(
+        XCTAssertThrowsError(try ceremony.buildPairingURs(
             style: .v2,
             policy: .includeChainCode(acknowledgedUnsignableChildren: false)
         )) { error in
@@ -493,19 +520,18 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAcknowledgedChainCodeExportCarriesWarning() async throws {
         let ceremony = makeCeremony()
         let walk = try await runThroughDerivation(ceremony)
-        try await ceremony.importKey()
+        try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        _ = try ceremony.submitIndependentCheck(address: walk.summary.address, source: "tools/derive")
-        try ceremony.advance()
 
-        let ur = try ceremony.buildPairingUR(
+        let urs = try ceremony.buildPairingURs(
             style: .v2,
             policy: .includeChainCode(acknowledgedUnsignableChildren: true)
         )
         try ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
-        XCTAssertNotNil(try HDKey(ur: ur).chainCode)
+        XCTAssertNotNil(try HDKey(ur: try XCTUnwrap(urs[.secp256k1])).chainCode)
+        XCTAssertNotNil(try HDKey(ur: try XCTUnwrap(urs[.ed25519])).chainCode)
         XCTAssertTrue(ceremony.report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("cannot sign") })
     }
@@ -518,7 +544,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let walk = try await runThroughDerivation(ceremony)
         let mnemonic = walk.mnemonic
         let report = try await completeCeremony(ceremony)
-        let privateKeyHex = card.storedPrivateKey.map { Hex.encode($0) }
+        let secp256k1PrivateKey = card.storedPrivateKey(.signature).map { Hex.encode($0) }
+        let ed25519PrivateKey = card.storedPrivateKey(.authentication).map { Hex.encode($0) }
 
         let text = report.printableLines().joined(separator: "\n")
         let json = String(decoding: try JSONEncoder().encode(report), as: UTF8.self)
@@ -531,9 +558,16 @@ final class ProvisioningCeremonyTests: XCTestCase {
             let leaked = Self.tokens(document).intersection(mnemonicWords)
             XCTAssertTrue(leaked.isEmpty, "\(label) leaked mnemonic words: \(leaked.sorted())")
         }
-        if let privateKeyHex {
-            XCTAssertFalse(text.contains(privateKeyHex), "report leaked the private key")
-            XCTAssertFalse(json.contains(privateKeyHex), "encoded report leaked the private key")
+        for (label, document) in [("printout", text), ("encoded report", json)] {
+            if let secp256k1PrivateKey {
+                XCTAssertFalse(document.contains(secp256k1PrivateKey), "\(label) leaked the secp256k1 private key")
+            }
+            if let ed25519PrivateKey {
+                // The Ed25519 secret is the derivation seed; the public key is a
+                // different value and legitimately appears.
+                XCTAssertNotEqual(ed25519PrivateKey, walk.keys.ed25519.identity)
+                XCTAssertFalse(document.contains(ed25519PrivateKey), "\(label) leaked the Ed25519 seed")
+            }
         }
         // The mnemonic phrase itself must never appear as a contiguous string.
         XCTAssertFalse(text.contains(mnemonic.joined(separator: " ")))
@@ -545,12 +579,13 @@ final class ProvisioningCeremonyTests: XCTestCase {
             .map(String.init))
     }
 
-    func testWipeClearsMnemonicAndDerivedKey() async throws {
+    func testWipeClearsMnemonicKeysAndPairing() async throws {
         let ceremony = makeCeremony()
         _ = try await runThroughDerivation(ceremony)
-        XCTAssertNotNil(ceremony.derivedKey)
+        XCTAssertNotNil(ceremony.derivedKeys)
         ceremony.wipe()
-        XCTAssertNil(ceremony.derivedKey)
+        XCTAssertNil(ceremony.derivedKeys)
+        XCTAssertTrue(ceremony.pairingURs.isEmpty)
         XCTAssertThrowsError(try ceremony.mnemonicForDisplay())
     }
 
@@ -651,9 +686,11 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await runThroughDerivation(ceremony)
         let report = try await completeCeremony(ceremony)
         let text = report.printableLines().joined(separator: "\n")
-        for expected in ["entropy commitment:", "path:", "address:", "key fingerprint:",
-                         "yubikey serial:", "openpgp applet:", "signature counter baseline:",
-                         "read-back verified: yes", "independent check: MATCH"] {
+        for expected in ["entropy commitment:", "path:", "key fingerprint:",
+                         "yubikey serial:", "openpgp applet:", "read-back verified: yes",
+                         "[secp256k1]", "[ed25519]",
+                         "evm address:", "bitcoin address:", "identity:",
+                         "signature counter baseline", "no hardware signature counter"] {
             XCTAssertTrue(text.contains(expected), "printout missing: \(expected)")
         }
     }

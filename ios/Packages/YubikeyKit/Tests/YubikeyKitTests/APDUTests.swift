@@ -58,10 +58,16 @@ final class APDUTests: XCTestCase {
     }
 
     func testReadPublicKeyAPDUBytes() {
-        let apdu = CommandAPDU(cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
-                               data: TLV.encodeTag(OpenPGPDataObject.controlReferenceTemplateSignature),
-                               expectedLength: 0)
-        XCTAssertEqual(apdu.hex, "0047810001b600")
+        // The CRT in the command data addresses the slot: B6 signature, A4 auth.
+        let signature = CommandAPDU(cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
+                                    data: TLV.encodeTag(OpenPGPDataObject.controlReferenceTemplateSignature),
+                                    expectedLength: 0)
+        XCTAssertEqual(signature.hex, "0047810001b600")
+
+        let authentication = CommandAPDU(cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
+                                         data: TLV.encodeTag(OpenPGPDataObject.controlReferenceTemplateAuthentication),
+                                         expectedLength: 0)
+        XCTAssertEqual(authentication.hex, "0047810001a400")
     }
 
     func testUIFAndPWStatusAPDUBytes() {
@@ -71,6 +77,11 @@ final class APDUTests: XCTestCase {
         XCTAssertEqual(uif.hex, "00da00d602022000")
         XCTAssertEqual(OpenPGPTouchPolicy.fixedEncoded, [0x02, 0x20])
 
+        // The authentication slot uses the 0xD8 UIF object.
+        let authenticationUIF = CommandAPDU(cla: 0x00, ins: 0xDA, p1: 0x00, p2: 0xD8,
+                                            data: OpenPGPTouchPolicy.fixedEncoded, expectedLength: 0)
+        XCTAssertEqual(authenticationUIF.hex, "00da00d802022000")
+
         let pwStatus = CommandAPDU(cla: 0x00, ins: 0xDA, p1: 0x00, p2: 0xC4,
                                    data: PWStatusBytes.encode(), expectedLength: 0)
         XCTAssertEqual(pwStatus.hex, "00da00c40700" + "007f007f007f" + "00")
@@ -78,13 +89,13 @@ final class APDUTests: XCTestCase {
     }
 
     func testKeyImportAPDUHeaderAndTemplateStructure() {
-        let scalar = [UInt8](repeating: 0x11, count: 32)
-        let template = KeyImportTemplate.extendedHeaderList(privateKey: scalar)
+        let secret = [UInt8](repeating: 0x11, count: 32)
+        let template = KeyImportTemplate.extendedHeaderList(privateKey: secret, slot: .signature)
 
-        // 4D | len | B6 | len | 7F48 | len | 5F48 | 00 20 | scalar
+        // 4D | len | B6 | len | 7F48 | len | 5F48 | 00 20 | secret
         XCTAssertEqual(Array(template.prefix(6)), [0x4D, 0x2A, 0xB6, 0x28, 0x7F, 0x48])
         XCTAssertEqual(Array(template.suffix(34).prefix(2)), [0x00, 0x20])
-        XCTAssertEqual(Array(template.suffix(32)), scalar)
+        XCTAssertEqual(Array(template.suffix(32)), secret)
         XCTAssertEqual(template.count, 44)
 
         // The full PUT DATA header is 00 DB 3F FF 2C
@@ -92,7 +103,21 @@ final class APDUTests: XCTestCase {
         XCTAssertEqual(Array(apdu.bytes.prefix(5)), [0x00, 0xDB, 0x3F, 0xFF, 0x2C])
 
         // And the template must round-trip through the real TLV parser.
-        XCTAssertEqual(MockYubikeyTransport.extractPrivateKey(template), scalar)
+        XCTAssertEqual(MockYubikeyTransport.extractImport(template)?.slot, .signature)
+        XCTAssertEqual(MockYubikeyTransport.extractImport(template)?.secret, secret)
+    }
+
+    /// The authentication slot uses CRT 0xA4; everything else about the template
+    /// is identical, which is exactly what makes a slot mix-up easy to miss.
+    func testAuthenticationSlotImportTemplateUsesCRT_A4() {
+        let secret = [UInt8](repeating: 0x22, count: 32)
+        let template = KeyImportTemplate.extendedHeaderList(privateKey: secret, slot: .authentication)
+
+        XCTAssertEqual(Array(template.prefix(6)), [0x4D, 0x2A, 0xA4, 0x28, 0x7F, 0x48])
+        XCTAssertEqual(template.count, 44)
+        let extracted = MockYubikeyTransport.extractImport(template)
+        XCTAssertEqual(extracted?.slot, .authentication)
+        XCTAssertEqual(extracted?.secret, secret)
     }
 
     func testAlgorithmAttributesBytes() {
@@ -101,6 +126,26 @@ final class APDUTests: XCTestCase {
             KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes,
             [0x13, 0x2B, 0x81, 0x04, 0x00, 0x22, 0x00]
         )
+        // 0x16 EdDSA || OID 1.3.6.1.4.1.11591.15.1 (Ed25519) || 0x00
+        XCTAssertEqual(
+            KeyImportTemplate.eddsaEd25519AlgorithmAttributes,
+            [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01, 0x00]
+        )
+        XCTAssertEqual(KeyImportTemplate.algorithmAttributes(for: .secp256k1),
+                       KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes)
+        XCTAssertEqual(KeyImportTemplate.algorithmAttributes(for: .ed25519),
+                       KeyImportTemplate.eddsaEd25519AlgorithmAttributes)
+    }
+
+    func testSlotObjectTags() {
+        XCTAssertEqual(KeySlotObjects.forSlot(.signature).controlReference, 0x00B6)
+        XCTAssertEqual(KeySlotObjects.forSlot(.signature).algorithmAttributes, 0x00C1)
+        XCTAssertEqual(KeySlotObjects.forSlot(.signature).fingerprint, 0x00C7)
+        XCTAssertEqual(KeySlotObjects.forSlot(.signature).uif, 0x00D6)
+        XCTAssertEqual(KeySlotObjects.forSlot(.authentication).controlReference, 0x00A4)
+        XCTAssertEqual(KeySlotObjects.forSlot(.authentication).algorithmAttributes, 0x00C3)
+        XCTAssertEqual(KeySlotObjects.forSlot(.authentication).fingerprint, 0x00C9)
+        XCTAssertEqual(KeySlotObjects.forSlot(.authentication).uif, 0x00D8)
     }
 
     func testCreationTimeEncoding() {
@@ -185,7 +230,7 @@ final class APDUTests: XCTestCase {
 
         XCTAssertEqual(inventory.openPGPVersion, "3.4")
         XCTAssertEqual(inventory.serial, "DEADBEEF")
-        XCTAssertFalse(inventory.hasSignatureKey)
+        XCTAssertFalse(inventory.holdsKey(in: .signature))
         XCTAssertEqual(inventory.signatureCounter, 0)
         XCTAssertTrue(inventory.isFactoryFresh)
         XCTAssertTrue(inventory.likelySupportsSecp256k1)
@@ -243,7 +288,7 @@ final class APDUTests: XCTestCase {
         try await card.open()
 
         var inventory = try await card.inventory()
-        XCTAssertFalse(inventory.hasSignatureKey)
+        XCTAssertFalse(inventory.holdsKey(in: .signature))
 
         // Wrong Admin PIN reports the remaining attempts.
         await XCTAssertThrowsErrorAsync {
@@ -258,38 +303,118 @@ final class APDUTests: XCTestCase {
 
         inventory = try await card.inventory()
         XCTAssertEqual(PWStatusBytes.pw1RequiresPin(inventory.pwStatusBytes), true)
-        XCTAssertEqual(transport.currentUIF, [0x02, 0x20])
+        XCTAssertEqual(transport.currentUIF(.signature), [0x02, 0x20])
+        XCTAssertEqual(transport.currentUIF(.authentication), [0x02, 0x20])
 
         // No key yet.
-        await XCTAssertThrowsErrorAsync { try await card.readSignaturePublicKey() }
+        await XCTAssertThrowsErrorAsync { try await card.readPublicKey(slot: .signature) }
 
         let entropy = ScriptedEntropySource(repeating: 0x2A, count: 32)
         let privateKey = try entropy.randomBytes(count: 32)
-        try await card.importSignatureKey(
+        try await card.importKey(
+            slot: .signature,
+            algorithm: .secp256k1,
             privateKey: privateKey,
             fingerprint: [UInt8](repeating: 0xAB, count: 20),
             creationTime: Date(timeIntervalSince1970: 1_700_000_000),
             adminPIN: Array("87654321".utf8)
         )
 
-        let readBack = try await card.readSignaturePublicKey()
+        let readBack = try await card.readPublicKey(slot: .signature)
         let expected = try Secp256k1.publicKey(fromPrivateKey: privateKey.materializedCopy())
         XCTAssertEqual(readBack, expected)
-        XCTAssertEqual(transport.currentFingerprint, [UInt8](repeating: 0xAB, count: 20))
+        XCTAssertEqual(transport.currentFingerprint(.signature), [UInt8](repeating: 0xAB, count: 20))
         let counter = try await card.signatureCounter()
         XCTAssertEqual(counter, 0)
 
         // A second import onto the occupied slot must be refused, not silently
         // overwrite the key the user just provisioned.
         await XCTAssertThrowsErrorAsync {
-            try await card.importSignatureKey(
+            try await card.importKey(
+                slot: .signature,
+                algorithm: .secp256k1,
                 privateKey: privateKey,
                 fingerprint: [UInt8](repeating: 0xAB, count: 20),
                 creationTime: Date(),
                 adminPIN: Array("87654321".utf8)
             )
         } verify: { error in
+            // The real card answers 6A80 on an occupied slot.
             XCTAssertEqual(error as? CardError, .keyImportRejected)
+        }
+    }
+
+    /// The Ed25519 path end to end: import a 32-byte seed into the
+    /// authentication slot, read it back, and check the two slots stay separate.
+    func testEd25519ImportIntoAuthenticationSlot() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await card.applyPolicy(adminPIN: Array("87654321".utf8))
+
+        // Before import, the authentication slot is empty.
+        await XCTAssertThrowsErrorAsync { try await card.readPublicKey(slot: .authentication) }
+
+        let seed = try ScriptedEntropySource(repeating: 0x5A, count: 32).randomBytes(count: 32)
+        try await card.importKey(
+            slot: .authentication,
+            algorithm: .ed25519,
+            privateKey: seed,
+            fingerprint: [UInt8](repeating: 0xCD, count: 20),
+            creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            adminPIN: Array("87654321".utf8)
+        )
+
+        let readBack = try await card.readPublicKey(slot: .authentication)
+        XCTAssertEqual(readBack.count, 32)
+        XCTAssertEqual(readBack, try Ed25519.publicKey(fromSeed: seed.materializedCopy()))
+        XCTAssertEqual(transport.currentFingerprint(.authentication), [UInt8](repeating: 0xCD, count: 20))
+
+        // Writing secp256k1 into the signature slot must not disturb it.
+        let scalar = try ScriptedEntropySource(repeating: 0x11, count: 32).randomBytes(count: 32)
+        try await card.importKey(
+            slot: .signature,
+            algorithm: .secp256k1,
+            privateKey: scalar,
+            fingerprint: [UInt8](repeating: 0xEF, count: 20),
+            creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            adminPIN: Array("87654321".utf8)
+        )
+        // `XCTAssertEqual` takes autoclosures, which cannot await; hoist first.
+        let authenticationAfter = try await card.readPublicKey(slot: .authentication)
+        let signatureAfter = try await card.readPublicKey(slot: .signature)
+        XCTAssertEqual(authenticationAfter, readBack)
+        XCTAssertEqual(signatureAfter, try Secp256k1.publicKey(fromPrivateKey: scalar.materializedCopy()))
+
+        // Both slots now report occupied.
+        let inventory = try await card.inventory()
+        XCTAssertTrue(inventory.holdsKey(in: .signature))
+        XCTAssertTrue(inventory.holdsKey(in: .authentication))
+        XCTAssertFalse(inventory.isFactoryFresh)
+        XCTAssertEqual(inventory.algorithmAttributes[.signature],
+                       KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes)
+        XCTAssertEqual(inventory.algorithmAttributes[.authentication],
+                       KeyImportTemplate.eddsaEd25519AlgorithmAttributes)
+    }
+
+    /// The EdDSA algorithm attributes must not be accepted for the signature
+    /// slot, nor the ECDSA ones for the authentication slot.
+    func testMismatchedAlgorithmAttributesAreRejected() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+
+        // Write the EdDSA attributes into the signature slot directly.
+        await XCTAssertThrowsErrorAsync {
+            try await card.putData(
+                tag: OpenPGPDataObject.algorithmAttributesSignature,
+                value: KeyImportTemplate.eddsaEd25519AlgorithmAttributes,
+                operation: .setAlgorithmAttributes
+            )
         }
     }
 
@@ -323,14 +448,26 @@ final class APDUTests: XCTestCase {
             try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
             try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
             try await card.applyPolicy(adminPIN: Array("87654321".utf8))
-            let key = try ScriptedEntropySource(repeating: 0x33, count: 32).randomBytes(count: 32)
-            try await card.importSignatureKey(
-                privateKey: key,
+            let scalar = try ScriptedEntropySource(repeating: 0x33, count: 32).randomBytes(count: 32)
+            try await card.importKey(
+                slot: .signature,
+                algorithm: .secp256k1,
+                privateKey: scalar,
                 fingerprint: [UInt8](repeating: 1, count: 20),
                 creationTime: Date(timeIntervalSince1970: 0),
                 adminPIN: Array("87654321".utf8)
             )
-            _ = try await card.readSignaturePublicKey()
+            let seed = try ScriptedEntropySource(repeating: 0x44, count: 32).randomBytes(count: 32)
+            try await card.importKey(
+                slot: .authentication,
+                algorithm: .ed25519,
+                privateKey: seed,
+                fingerprint: [UInt8](repeating: 2, count: 20),
+                creationTime: Date(timeIntervalSince1970: 0),
+                adminPIN: Array("87654321".utf8)
+            )
+            _ = try await card.readPublicKey(slot: .signature)
+            _ = try await card.readPublicKey(slot: .authentication)
             _ = try await card.signatureCounter()
             return (transport as? MockYubikeyTransport)?.receivedAPDUs ?? []
         }

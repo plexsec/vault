@@ -71,7 +71,7 @@ final class BIP32Tests: XCTestCase {
     /// and the parsed public key must match the key we started from.
     func testSerialisedKeysRoundTripThroughValidator() throws {
         let master = try ExtendedPrivateKey.master(seed: seed(fromHex: String(repeating: "5a", count: 64)))
-        let node = try master.derived(.evmDefault)
+        let node = try master.derived(.secp256k1Default)
 
         let xprv = try node.serialized(version: .mainnet)
         let parsedPrivate = try ExtendedKeyPayload.decode(xprv)
@@ -119,8 +119,11 @@ final class BIP32Tests: XCTestCase {
         XCTAssertThrowsError(try ExtendedKeyPayload.parse(Array(payload.dropLast(1))))
     }
 
-    /// Differential agreement with the independent Python implementation across
-    /// six mnemonics, four paths and both coins.
+    /// Differential agreement with the independent Python implementation.
+    ///
+    /// The fixture now carries both algorithms, so a Swift-side bug in the
+    /// secp256k1 key, either of its two address encodings, or the Ed25519 key
+    /// shows up as a disagreement with a separate implementation.
     func testDifferentialDerivationVectors() throws {
         guard let root = try FixtureLoader.json("derivation_vectors", extension: "json") as? [String: Any],
               let vectors = root["vectors"] as? [[String: Any]]
@@ -129,38 +132,92 @@ final class BIP32Tests: XCTestCase {
         }
         XCTAssertEqual(vectors.count, 48)
 
+        var checkedSecp256k1 = 0
+        var checkedEd25519 = 0
+
         for vector in vectors {
             let seedHex = vector["seed"] as! String
             let pathString = vector["path"] as! String
-            let coin = vector["coin"] as! String
+            let algorithm = vector["algorithm"] as! String
+            let path = try DerivationPath(pathString)
+            let seed = seed(fromHex: seedHex)
 
-            let master = try ExtendedPrivateKey.master(seed: seed(fromHex: seedHex))
-            let node = try master.derived(try DerivationPath(pathString))
-            let publicKey = try node.publicKey()
+            switch algorithm {
+            case "secp256k1":
+                let node = try ExtendedPrivateKey.master(seed: seed).derived(path)
+                let publicKey = try node.publicKey()
 
-            XCTAssertEqual(
-                publicKey.hexString,
-                vector["public_key_compressed"] as? String,
-                "pubkey \(coin) \(pathString)"
-            )
-            XCTAssertEqual(
-                Hex.encode(node.chainCode),
-                vector["chain_code"] as? String,
-                "chain code \(coin) \(pathString)"
-            )
-            XCTAssertEqual(
-                Hex.encode(node.parentFingerprint),
-                vector["parent_fingerprint"] as? String,
-                "parent fingerprint \(coin) \(pathString)"
-            )
+                XCTAssertEqual(
+                    publicKey.hexString,
+                    vector["public_key"] as? String,
+                    "pubkey \(pathString)"
+                )
+                XCTAssertEqual(
+                    Hex.encode(node.chainCode),
+                    vector["chain_code"] as? String,
+                    "chain code \(pathString)"
+                )
+                XCTAssertEqual(
+                    Hex.encode(node.parentFingerprint),
+                    vector["parent_fingerprint"] as? String,
+                    "parent fingerprint \(pathString)"
+                )
+                XCTAssertEqual(
+                    Hex.encode(try node.fingerprint()),
+                    vector["fingerprint"] as? String,
+                    "fingerprint \(pathString)"
+                )
+                XCTAssertEqual(
+                    try EVMAddress.checksummed(fromPublicKey: publicKey),
+                    vector["evm_address"] as? String,
+                    "evm address \(pathString)"
+                )
+                XCTAssertEqual(
+                    try BitcoinAddress.p2wpkh(publicKeyCompressed: publicKey),
+                    vector["bitcoin_address"] as? String,
+                    "bitcoin address \(pathString)"
+                )
+                checkedSecp256k1 += 1
 
-            let address: String
-            switch coin {
-            case "eth": address = try EVMAddress.checksummed(fromPublicKey: publicKey)
-            default: address = try BitcoinAddress.p2wpkh(publicKeyCompressed: publicKey)
+            case "ed25519":
+                let node = try ExtendedPrivateKeyEd25519.master(seed: seed).derived(path)
+                var raw = node.key.materializedCopy()
+                defer { wipe(&raw) }
+
+                XCTAssertEqual(
+                    raw.hexString,
+                    vector["private_key"] as? String,
+                    "ed25519 seed \(pathString)"
+                )
+                XCTAssertEqual(
+                    node.chainCode.hexString,
+                    vector["chain_code"] as? String,
+                    "ed25519 chain code \(pathString)"
+                )
+                XCTAssertEqual(
+                    node.parentFingerprint.hexString,
+                    vector["parent_fingerprint"] as? String,
+                    "ed25519 parent fingerprint \(pathString)"
+                )
+                XCTAssertEqual(
+                    try node.fingerprint().hexString,
+                    vector["fingerprint"] as? String,
+                    "ed25519 fingerprint \(pathString)"
+                )
+                XCTAssertEqual(
+                    try node.publicKey().hexString,
+                    vector["public_key"] as? String,
+                    "ed25519 pubkey \(pathString)"
+                )
+                checkedEd25519 += 1
+
+            default:
+                XCTFail("unknown algorithm in fixture: \(algorithm)")
             }
-            XCTAssertEqual(address, vector["address"] as? String, "address \(coin) \(pathString)")
         }
+
+        XCTAssertEqual(checkedSecp256k1, 30)
+        XCTAssertEqual(checkedEd25519, 18)
     }
 
     func testDerivationPathParsing() throws {
@@ -174,7 +231,10 @@ final class BIP32Tests: XCTestCase {
             [.hardened(44), .hardened(60), .hardened(0), .normal(0), .normal(0)]
         )
         XCTAssertEqual(try DerivationPath("m/44'/60'/0'/0/0").description, "m/44'/60'/0'/0/0")
-        XCTAssertEqual(DerivationPath.evmDefault.indices, [0x8000_002C, 0x8000_003C, 0x8000_0000, 0, 0])
+        XCTAssertEqual(DerivationPath.secp256k1Default.indices, [0x8000_002C, 0x8000_0000, 0x8000_0000, 0, 0])
+        XCTAssertEqual(DerivationPath.secp256k1Default.description, "m/44'/0'/0'/0/0")
+        XCTAssertEqual(DerivationPath.ed25519Default.description, "m/44'/501'/0'/0'")
+        XCTAssertTrue(DerivationPath.ed25519Default.components.allSatisfy(\.isHardened))
 
         XCTAssertThrowsError(try DerivationPath("44'/60'"))
         XCTAssertThrowsError(try DerivationPath("m/2147483648"))   // >= 2^31

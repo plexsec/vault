@@ -66,6 +66,47 @@ public enum OpenPGPDataObject {
     public static let signatureCounter: UInt16 = 0x0093
 }
 
+/// The OpenPGP data objects that belong to one key slot.
+///
+/// Tag numbering for the per-key objects differs between OpenPGP card 2.x and
+/// 3.x, which is why every write is verified by reading the object back. These
+/// are the 3.4 tags the rest of this codebase already uses for the signature
+/// slot, extended to the authentication slot.
+public struct KeySlotObjects {
+    public let slot: KeySlot
+    /// Control reference template used by key import and public-key read-back.
+    public let controlReference: UInt16
+    public let algorithmAttributes: UInt16
+    public let fingerprint: UInt16
+    /// Per-key timestamp. design.md §4.2 step 6 names 0xCE for the signature
+    /// slot; see `OpenPGPDataObject.creationTimeSignature` for the caveat.
+    public let timestamp: UInt16
+    public let uif: UInt16
+
+    public static func forSlot(_ slot: KeySlot) -> KeySlotObjects {
+        switch slot {
+        case .signature:
+            return KeySlotObjects(
+                slot: slot,
+                controlReference: OpenPGPDataObject.controlReferenceTemplateSignature,
+                algorithmAttributes: OpenPGPDataObject.algorithmAttributesSignature,
+                fingerprint: OpenPGPDataObject.fingerprintSignature,
+                timestamp: OpenPGPDataObject.creationTimeSignature,
+                uif: OpenPGPDataObject.uifSignature
+            )
+        case .authentication:
+            return KeySlotObjects(
+                slot: slot,
+                controlReference: OpenPGPDataObject.controlReferenceTemplateAuthentication,
+                algorithmAttributes: OpenPGPDataObject.algorithmAttributesAuthentication,
+                fingerprint: OpenPGPDataObject.fingerprintAuthentication,
+                timestamp: OpenPGPDataObject.timestampAuthentication,
+                uif: OpenPGPDataObject.uifAuthentication
+            )
+        }
+    }
+}
+
 /// OpenPGP card password references (`P2` of VERIFY / CHANGE REFERENCE DATA).
 public enum OpenPGPPinReference: UInt8 {
     case user = 0x81          // PW1, mode 81: valid for one signature
@@ -102,6 +143,7 @@ public struct OpenPGPApplicationData: Equatable {
     public var serial: UInt32?
     public var extendedCapabilities: [UInt8]?
     public var algorithmAttributesSignature: [UInt8]?
+    public var algorithmAttributesAuthentication: [UInt8]?
     public var pwStatusBytes: [UInt8]?
     public var fingerprintSignature: [UInt8]?
     public var combinedFingerprints: [UInt8]?
@@ -125,6 +167,7 @@ public struct OpenPGPApplicationData: Equatable {
         result.historicalBytes = TLVParser.find(OpenPGPDataObject.historicalBytes, in: objects)?.value
         result.extendedCapabilities = TLVParser.find(OpenPGPDataObject.extendedCapabilities, in: objects)?.value
         result.algorithmAttributesSignature = TLVParser.find(OpenPGPDataObject.algorithmAttributesSignature, in: objects)?.value
+        result.algorithmAttributesAuthentication = TLVParser.find(OpenPGPDataObject.algorithmAttributesAuthentication, in: objects)?.value
         result.pwStatusBytes = TLVParser.find(OpenPGPDataObject.pwStatusBytes, in: objects)?.value
         result.fingerprintSignature = TLVParser.find(OpenPGPDataObject.fingerprintSignature, in: objects)?.value
         result.combinedFingerprints = TLVParser.find(OpenPGPDataObject.fingerprintsCombined, in: objects)?.value
@@ -155,37 +198,29 @@ public struct OpenPGPApplicationData: Equatable {
 
         return result
     }
-
-    /// True when no signature key has been loaded (no fingerprint object, or an
-    /// all-zero one).
-    public var hasSignatureKey: Bool {
-        if let fingerprint = fingerprintSignature {
-            return fingerprint.contains { $0 != 0 }
-        }
-        if let combined = combinedFingerprints, combined.count >= 20 {
-            return combined.prefix(20).contains { $0 != 0 }
-        }
-        return true // unknown: assume a key may be present, which is the safe default
-    }
 }
 
 /// The Extended Header List that `PUT DATA 3F FF` carries for key import.
 ///
-/// Layout (OpenPGP card spec §4.4.1.1, "key import"):
+/// Layout (OpenPGP card spec 4.4.1.1, "key import"):
 ///
 ///     PUT DATA  P1P2 = 3F FF
-///     data = 4D | B6 | 7F48 | 5F48 | <2-byte length> <32-byte scalar>
+///     data = 4D | <CRT> | 7F48 | 5F48 | <2-byte length> <secret>
 ///
-/// The secp256k1 private key is a single CRT component, encoded with the same
-/// 2-byte length prefix the spec uses for the RSA components. This exact byte
-/// layout is one of the two items milestone M0 confirms against a hardware APDU
-/// trace; a malformed template cannot produce a wrong key silently, because the
-/// ceremony's read-back step compares the card's public key with the derived one.
+/// `<CRT>` selects the slot: 0xB6 for the signature slot, 0xA4 for the
+/// authentication slot. The secret is a single component encoded with the same
+/// 2-byte length prefix the spec uses for RSA components: the secp256k1 scalar,
+/// or the 32-byte Ed25519 seed.
+///
+/// This exact byte layout is one of the items milestone M0 confirms against a
+/// hardware APDU trace; a malformed template cannot produce a wrong key
+/// silently, because the ceremony's read-back step compares the card's public
+/// key with the derived one.
 public enum KeyImportTemplate {
-    public static func extendedHeaderList(privateKey: [UInt8]) -> [UInt8] {
-        precondition(privateKey.count == 32, "secp256k1 scalars are 32 bytes")
+    public static func extendedHeaderList(privateKey: [UInt8], slot: KeySlot) -> [UInt8] {
+        precondition(privateKey.count == 32, "secp256k1 scalars and Ed25519 seeds are 32 bytes")
 
-        // 5F48: one component = 2-byte length prefix + scalar
+        // 5F48: one component = 2-byte length prefix + secret
         var component: [UInt8] = [UInt8((privateKey.count >> 8) & 0xFF), UInt8(privateKey.count & 0xFF)]
         component.append(contentsOf: privateKey)
         let privateKeyTLV = TLV(tag: OpenPGPDataObject.privateKey, value: component)
@@ -193,8 +228,9 @@ public enum KeyImportTemplate {
         // 7F48: private key template wrapping the key material
         let templateTLV = TLV(tag: OpenPGPDataObject.privateKeyTemplate, value: privateKeyTLV.encoded)
 
-        // B6: control reference template for the digital signature slot
-        let crtTLV = TLV(tag: OpenPGPDataObject.controlReferenceTemplateSignature, value: templateTLV.encoded)
+        // CRT: control reference template for the addressed slot
+        let crt = KeySlotObjects.forSlot(slot).controlReference
+        let crtTLV = TLV(tag: crt, value: templateTLV.encoded)
 
         // 4D: extended header list
         return TLV(tag: OpenPGPDataObject.extendedHeaderList, value: crtTLV.encoded).encoded
@@ -208,8 +244,28 @@ public enum KeyImportTemplate {
         0x00,                   // no format byte for ECDSA
     ]
 
-    /// Fingerprint written for the signature key: 20 bytes.
-    public static func signatureFingerprint(_ fingerprint: [UInt8]) -> [UInt8] {
+    /// Algorithm attributes for EdDSA over Ed25519: `0x16` (EdDSA) followed by
+    /// the OID 1.3.6.1.4.1.11591.15.1 that GnuPG uses for Ed25519.
+    ///
+    /// RFC 8410's `id-Ed25519` (1.3.101.112) is the other candidate; which one
+    /// the applet expects is an M0 hardware-verification item, and a wrong OID
+    /// fails visibly at the import or read-back step.
+    public static let eddsaEd25519AlgorithmAttributes: [UInt8] = [
+        0x16,                   // algorithm id: EdDSA
+        0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01, // OID 1.3.6.1.4.1.11591.15.1
+        0x00,                   // no format byte
+    ]
+
+    public static func algorithmAttributes(for algorithm: KeyAlgorithm) -> [UInt8] {
+        switch algorithm {
+        case .secp256k1: return ecdsaSecp256k1AlgorithmAttributes
+        case .ed25519: return eddsaEd25519AlgorithmAttributes
+        }
+    }
+
+    /// Fingerprint written for a key: 20 bytes, zero-padded from the four-byte
+    /// derivation fingerprint.
+    public static func paddedFingerprint(_ fingerprint: [UInt8]) -> [UInt8] {
         precondition(fingerprint.count <= 20)
         var out = fingerprint
         while out.count < 20 { out.append(0) }

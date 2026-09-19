@@ -2,7 +2,7 @@ import Foundation
 import VaultKit
 import YubikeyKit
 
-/// A simulated OpenPGP card.
+/// A simulated OpenPGP card with both signing-capable slots.
 ///
 /// Two distinct purposes, both important:
 ///
@@ -14,8 +14,9 @@ import YubikeyKit
 ///
 /// It is deliberately NOT a stub that returns success for everything: it
 /// enforces PIN verification, refuses `PUT DATA` on an occupied slot, returns
-/// `6A88` when no key is present, and can be told to inject transport failures.
-/// A mock that always succeeds would give false confidence in the ceremony.
+/// `6A88` when no key is present, checks that the algorithm attributes match the
+/// key that was imported, and can be told to inject transport failures. A mock
+/// that always succeeds would give false confidence in the ceremony.
 public final class MockYubikeyTransport: YubikeyTransport {
     public enum InjectedFailure: Equatable {
         case none
@@ -24,6 +25,17 @@ public final class MockYubikeyTransport: YubikeyTransport {
         case chainedResponse
         /// Respond with `6Cxx` once, to exercise the Le correction path.
         case wrongLeOnce
+    }
+
+    /// Per-slot key material and metadata.
+    private struct SlotState {
+        var privateKey: [UInt8]?
+        var algorithm: KeyAlgorithm?
+        var algorithmAttributes: [UInt8]?
+        var fingerprint: [UInt8] = [UInt8](repeating: 0, count: 20)
+        var uif: [UInt8] = [0x00, 0x20]
+
+        var isOccupied: Bool { privateKey != nil }
     }
 
     public let transportName: String
@@ -37,21 +49,18 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private var pw3Verified = false
     private var userRetriesRemaining = 3
     private var adminRetriesRemaining = 3
-    private var signatureKey: [UInt8]?
-    private var fingerprint: [UInt8] = [UInt8](repeating: 0, count: 20)
-    private var algorithmAttributes: [UInt8]?
+    private var slots: [KeySlot: SlotState] = [.signature: SlotState(), .authentication: SlotState()]
     private var pwStatus: [UInt8] = [0x00, 0x00, 0x7F, 0x00, 0x7F, 0x00, 0x7F]
-    private var uifSignature: [UInt8] = [0x00, 0x20]
     public private(set) var signatureCounter: UInt32 = 0
     private let serial: UInt32
     private let openPGPVersion: String
 
     /// Every APDU received, for trace assertions.
     public private(set) var receivedAPDUs: [String] = []
-    /// When set, `GENERATE ASYMMETRIC KEY PAIR` returns this key instead of the
-    /// one corresponding to the imported scalar — i.e. a counterfeit or tampered
-    /// card that does not hold the key it claims to.
-    public var storedPublicKeyOverride: [UInt8]?
+    /// When set for a slot, `GENERATE ASYMMETRIC KEY PAIR` returns this key
+    /// instead of the one corresponding to the imported secret — i.e. a
+    /// counterfeit or tampered card that does not hold the key it claims to.
+    public var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
     public var injectedFailure: InjectedFailure = .none
     private var didInjectOnce = false
     private var pendingChainedData: [UInt8]?
@@ -162,14 +171,22 @@ public final class MockYubikeyTransport: YubikeyTransport {
             ]
             let inner = TLV(tag: OpenPGPDataObject.signatureCounter, value: counter).encoded
             return ResponseAPDU(data: TLV(tag: 0x007A, value: inner).encoded, status: .success)
-        case OpenPGPDataObject.algorithmAttributesSignature:
-            guard let algorithmAttributes else { return status(0x6A, 0x88) }
-            return ResponseAPDU(data: algorithmAttributes, status: .success)
+        case OpenPGPDataObject.algorithmAttributesSignature, OpenPGPDataObject.algorithmAttributesAuthentication:
+            guard let slot = Self.slot(forAlgorithmAttributesTag: tag),
+                  let attributes = slots[slot]?.algorithmAttributes
+            else { return status(0x6A, 0x88) }
+            return ResponseAPDU(data: attributes, status: .success)
         case OpenPGPDataObject.pwStatusBytes:
             return ResponseAPDU(data: pwStatus, status: .success)
-        case OpenPGPDataObject.uifSignature:
-            return ResponseAPDU(data: uifSignature, status: .success)
-        case OpenPGPDataObject.fingerprintSignature:
+        case OpenPGPDataObject.uifSignature, OpenPGPDataObject.uifAuthentication:
+            guard let slot = Self.slot(forUIFTag: tag), let uif = slots[slot]?.uif else {
+                return status(0x6A, 0x88)
+            }
+            return ResponseAPDU(data: uif, status: .success)
+        case OpenPGPDataObject.fingerprintSignature, OpenPGPDataObject.fingerprintAuthentication:
+            guard let slot = Self.slot(forFingerprintTag: tag), let fingerprint = slots[slot]?.fingerprint else {
+                return status(0x6A, 0x88)
+            }
             return ResponseAPDU(data: fingerprint, status: .success)
         default:
             return status(0x6A, 0x88)
@@ -177,7 +194,6 @@ public final class MockYubikeyTransport: YubikeyTransport {
     }
 
     private func applicationRelatedData() -> [UInt8] {
-        // AID: RID(5) | PIX prefix(3) | version(2) | manufacturer(2) | serial(4) | RFU(2)
         // AID layout: RID(5) | PIX "01"(1) | version(2) | manufacturer(2) | serial(4) | RFU(2)
         var aid = OpenPGPCard.openPGPAID          // 6 bytes: D2 76 00 01 24 01
         let versionParts = openPGPVersion.split(separator: ".").compactMap { UInt8($0) }
@@ -190,11 +206,16 @@ public final class MockYubikeyTransport: YubikeyTransport {
         aid.append(contentsOf: [0x00, 0x00])      // RFU
 
         var discretionary = TLV(tag: OpenPGPDataObject.extendedCapabilities, value: [0x7F]).encoded
-        if let algorithmAttributes {
-            discretionary += TLV(tag: OpenPGPDataObject.algorithmAttributesSignature, value: algorithmAttributes).encoded
+        for slot in KeySlot.allCases {
+            let objects = KeySlotObjects.forSlot(slot)
+            if let attributes = slots[slot]?.algorithmAttributes {
+                discretionary += TLV(tag: objects.algorithmAttributes, value: attributes).encoded
+            }
+            if let fingerprint = slots[slot]?.fingerprint {
+                discretionary += TLV(tag: objects.fingerprint, value: fingerprint).encoded
+            }
         }
         discretionary += TLV(tag: OpenPGPDataObject.pwStatusBytes, value: pwStatus).encoded
-        discretionary += TLV(tag: OpenPGPDataObject.fingerprintSignature, value: fingerprint).encoded
 
         var contents = TLV(tag: OpenPGPDataObject.applicationIdentifier, value: aid).encoded
         contents += TLV(tag: OpenPGPDataObject.historicalBytes, value: [0x00, 0x73, 0x00, 0x00]).encoded
@@ -207,30 +228,46 @@ public final class MockYubikeyTransport: YubikeyTransport {
         if let error = try requireSelected() { return error }
         guard pw3Verified else { return status(0x69, 0x82) }
 
-        // Key import: P1P2 = 3F FF
+        // Key import: P1P2 = 3F FF. The CRT inside the header selects the slot.
         if command.p1 == 0x3F, command.p2 == 0xFF {
-            guard signatureKey == nil else { return status(0x6A, 0x80) }
-            guard let scalar = Self.extractPrivateKey(command.data) else { return status(0x6A, 0x80) }
-            guard Secp256k1.isValidPrivateKey(scalar) else { return status(0x6A, 0x80) }
-            signatureKey = scalar
+            guard let (slot, secret) = Self.extractImport(command.data) else { return status(0x6A, 0x80) }
+            guard slots[slot]?.isOccupied == false else { return status(0x6A, 0x80) }
+
+            // The key must be valid for its slot's algorithm. The slot is fixed,
+            // so which algorithm arrives here is determined by the CRT tag.
+            let algorithm: KeyAlgorithm = slot == .signature ? .secp256k1 : .ed25519
+            switch algorithm {
+            case .secp256k1:
+                guard Secp256k1.isValidPrivateKey(secret) else { return status(0x6A, 0x80) }
+            case .ed25519:
+                guard secret.count == 32 else { return status(0x6A, 0x80) }
+            }
+            slots[slot]?.privateKey = secret
+            slots[slot]?.algorithm = algorithm
             return status(0x90, 0x00)
         }
 
         let tag = UInt16(command.p1) << 8 | UInt16(command.p2)
         switch tag {
-        case OpenPGPDataObject.algorithmAttributesSignature:
-            guard command.data.first == 0x13 else { return status(0x6A, 0x80) }
-            algorithmAttributes = command.data
-        case OpenPGPDataObject.fingerprintSignature:
+        case OpenPGPDataObject.algorithmAttributesSignature, OpenPGPDataObject.algorithmAttributesAuthentication:
+            guard let slot = Self.slot(forAlgorithmAttributesTag: tag) else { return status(0x6A, 0x88) }
+            // The attributes must match the algorithm whose key was just written,
+            // so a slot/algorithm mix-up fails here rather than silently.
+            let expectedFirst: UInt8 = slot == .signature ? 0x13 : 0x16
+            guard command.data.first == expectedFirst else { return status(0x6A, 0x80) }
+            slots[slot]?.algorithmAttributes = command.data
+        case OpenPGPDataObject.fingerprintSignature, OpenPGPDataObject.fingerprintAuthentication:
+            guard let slot = Self.slot(forFingerprintTag: tag) else { return status(0x6A, 0x88) }
             guard command.data.count == 20 else { return status(0x6A, 0x80) }
-            fingerprint = command.data
+            slots[slot]?.fingerprint = command.data
         case OpenPGPDataObject.pwStatusBytes:
             guard command.data.count == 7 else { return status(0x6A, 0x80) }
             pwStatus = command.data
-        case OpenPGPDataObject.uifSignature:
-            uifSignature = command.data
-        case OpenPGPDataObject.creationTimeSignature:
-            // The simulation accepts the tag design.md specifies.
+        case OpenPGPDataObject.uifSignature, OpenPGPDataObject.uifAuthentication:
+            guard let slot = Self.slot(forUIFTag: tag) else { return status(0x6A, 0x88) }
+            slots[slot]?.uif = command.data
+        case OpenPGPDataObject.creationTimeSignature, OpenPGPDataObject.timestampAuthentication:
+            // The simulation accepts the tags design.md specifies.
             break
         default:
             return status(0x6A, 0x88)
@@ -238,19 +275,50 @@ public final class MockYubikeyTransport: YubikeyTransport {
         return status(0x90, 0x00)
     }
 
-    /// Walks 4D -> B6 -> 7F48 -> 5F48 and returns the scalar.
-    public static func extractPrivateKey(_ data: [UInt8]) -> [UInt8]? {
+    private static func slot(forAlgorithmAttributesTag tag: UInt16) -> KeySlot? {
+        switch tag {
+        case OpenPGPDataObject.algorithmAttributesSignature: return .signature
+        case OpenPGPDataObject.algorithmAttributesAuthentication: return .authentication
+        default: return nil
+        }
+    }
+
+    private static func slot(forFingerprintTag tag: UInt16) -> KeySlot? {
+        switch tag {
+        case OpenPGPDataObject.fingerprintSignature: return .signature
+        case OpenPGPDataObject.fingerprintAuthentication: return .authentication
+        default: return nil
+        }
+    }
+
+    private static func slot(forUIFTag tag: UInt16) -> KeySlot? {
+        switch tag {
+        case OpenPGPDataObject.uifSignature: return .signature
+        case OpenPGPDataObject.uifAuthentication: return .authentication
+        default: return nil
+        }
+    }
+
+    /// Walks `4D -> <CRT> -> 7F48 -> 5F48` and returns the slot and secret.
+    public static func extractImport(_ data: [UInt8]) -> (slot: KeySlot, secret: [UInt8])? {
         guard let objects = try? TLVParser.parse(data),
-              let header = TLVParser.find(OpenPGPDataObject.extendedHeaderList, in: objects),
-              let crt = TLVParser.find(OpenPGPDataObject.controlReferenceTemplateSignature, in: [header]),
-              let template = TLVParser.find(OpenPGPDataObject.privateKeyTemplate, in: [crt]),
+              let header = TLVParser.find(OpenPGPDataObject.extendedHeaderList, in: objects)
+        else { return nil }
+
+        let crt = KeySlot.allCases.first { slot in
+            TLVParser.find(KeySlotObjects.forSlot(slot).controlReference, in: [header]) != nil
+        }
+        guard let slot = crt,
+              let crtTLV = TLVParser.find(KeySlotObjects.forSlot(slot).controlReference, in: [header]),
+              let template = TLVParser.find(OpenPGPDataObject.privateKeyTemplate, in: [crtTLV]),
               let key = TLVParser.find(OpenPGPDataObject.privateKey, in: [template]),
               key.value.count >= 2
         else { return nil }
+
         // First two bytes are the component length prefix.
         let declaredLength = Int(key.value[0]) << 8 | Int(key.value[1])
         guard declaredLength == 32, key.value.count == 34 else { return nil }
-        return Array(key.value[2...])
+        return (slot, Array(key.value[2...]))
     }
 
     private func verify(_ command: CommandAPDU) -> ResponseAPDU {
@@ -301,8 +369,28 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     private func readPublicKey(_ command: CommandAPDU) throws -> ResponseAPDU {
         if let error = try requireSelected() { return error }
-        guard let signatureKey else { return status(0x6A, 0x88) }
-        let publicKey = try storedPublicKeyOverride ?? Secp256k1.publicKey(fromPrivateKey: signatureKey)
+
+        // The CRT arrives as the command data. It is a bare tag (no length), so
+        // compare bytes rather than parsing it as a TLV.
+        let requested = command.data
+        guard let slot = KeySlot.allCases.first(where: {
+            TLV.encodeTag(KeySlotObjects.forSlot($0).controlReference) == requested
+        }) else { return status(0x6A, 0x88) }
+
+        guard let state = slots[slot], let secret = state.privateKey, let algorithm = state.algorithm else {
+            return status(0x6A, 0x88)
+        }
+
+        let publicKey: [UInt8]
+        if let override = storedPublicKeyOverride[slot] {
+            publicKey = override
+        } else {
+            switch algorithm {
+            case .secp256k1: publicKey = try Secp256k1.publicKey(fromPrivateKey: secret)
+            case .ed25519: publicKey = try Ed25519.publicKey(fromSeed: secret)
+            }
+        }
+
         let point = TLV(tag: OpenPGPDataObject.ecdsaPublicPoint, value: publicKey).encoded
         let template = TLV(tag: OpenPGPDataObject.publicKeyTemplate, value: point).encoded
         return ResponseAPDU(data: template, status: .success)
@@ -315,11 +403,8 @@ public final class MockYubikeyTransport: YubikeyTransport {
         pw3Verified = false
         userRetriesRemaining = 3
         adminRetriesRemaining = 3
-        signatureKey = nil
-        fingerprint = [UInt8](repeating: 0, count: 20)
-        algorithmAttributes = nil
+        slots = [.signature: SlotState(), .authentication: SlotState()]
         pwStatus = [0x00, 0x00, 0x7F, 0x00, 0x7F, 0x00, 0x7F]
-        uifSignature = [0x00, 0x20]
         signatureCounter = 0
         isSelected = false
     }
@@ -333,9 +418,10 @@ public final class MockYubikeyTransport: YubikeyTransport {
     }
 
     public var currentPWStatus: [UInt8] { pwStatus }
-    public var currentUIF: [UInt8] { uifSignature }
-    public var currentFingerprint: [UInt8] { fingerprint }
-    public var hasKey: Bool { signatureKey != nil }
+    public func currentUIF(_ slot: KeySlot) -> [UInt8] { slots[slot]?.uif ?? [] }
+    public func currentFingerprint(_ slot: KeySlot) -> [UInt8] { slots[slot]?.fingerprint ?? [] }
+    public func hasKey(in slot: KeySlot) -> Bool { slots[slot]?.isOccupied ?? false }
+    public func storedPrivateKey(_ slot: KeySlot) -> [UInt8]? { slots[slot]?.privateKey }
 
     private func status(_ sw1: UInt8, _ sw2: UInt8) -> ResponseAPDU {
         ResponseAPDU(data: [], status: StatusWord(sw1: sw1, sw2: sw2))

@@ -2,6 +2,37 @@ import SwiftUI
 import VaultKit
 import YubikeyKit
 
+/// One algorithm's block inside a multi-key step.
+///
+/// The ceremony now produces two keys at once, so every step that used to show
+/// "the key" shows two of these instead, labelled with the algorithm and the
+/// slot it lands in.
+struct KeySection: View {
+    let title: String
+    var subtitle: String?
+    var identities: [(String, String)] = []
+    var rows: [(String, String)] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold))
+                if let subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            ForEach(Array(identities.enumerated()), id: \.offset) { _, entry in
+                AddressDisplay(label: entry.0, value: entry.1)
+            }
+            if !rows.isEmpty { KeyValueRows(rows: rows) }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 // MARK: - Step 2: card inventory
 
 struct InventoryStepView: View {
@@ -11,9 +42,9 @@ struct InventoryStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Read the card before changing anything. This records the applet version, the serial number and the signature-counter baseline in your provisioning record.",
-            caution: viewModel.inventory?.hasSignatureKey == true
-                ? "This YubiKey already holds a signature key. Continuing will erase it."
+            why: "Read the card before changing anything. This records the applet version, the serial number, which key slots are already occupied, and the signature-counter baseline in your provisioning record.",
+            caution: viewModel.cardHoldsAnyKey
+                ? "This YubiKey already holds a key. Continuing will erase it."
                 : nil,
             actionTitle: hasInventory ? "Continue" : "Read YubiKey",
             isBusy: viewModel.busy,
@@ -30,7 +61,7 @@ struct InventoryStepView: View {
 
                 if !inventory.likelySupportsSecp256k1 {
                     Label(
-                        "This applet version may not support secp256k1. YubiKey firmware 5.2.3 or newer is required.",
+                        "This applet version may not support secp256k1 or Ed25519. YubiKey firmware 5.2.3 or newer is required.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.footnote)
@@ -58,14 +89,14 @@ struct ResetStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Terminates and re-activates the OpenPGP applet, which clears all keys, resets the PINs to their factory defaults and sets the signature counter back to zero.",
-            caution: "This erases everything already on the OpenPGP applet. Three wrong Admin PIN entries also make this card unusable for provisioning, so check the PIN before confirming.",
+            why: "Terminates and re-activates the OpenPGP applet, which clears the keys in every slot, resets the PINs to their factory defaults and sets the signature counter back to zero.",
+            caution: "This erases everything already on the OpenPGP applet, in both the signature and authentication slots. Three wrong Admin PIN entries also make this card unusable for provisioning, so check the PIN before confirming.",
             actionTitle: "Reset applet",
             isBusy: viewModel.busy,
             isEnabled: viewModel.resetAdminPIN.count >= 8,
             action: { confirmReset = true }
         ) {
-            if viewModel.inventory?.hasSignatureKey == true {
+            if viewModel.cardHoldsAnyKey {
                 Toggle(
                     "I understand this erases the existing key on this YubiKey",
                     isOn: $viewModel.acknowledgeDestructiveReset
@@ -149,17 +180,21 @@ struct PolicyStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Writes two permanent policies: the signature key requires a physical touch for every use and cannot be relaxed later, and the User PIN must be re-entered for every signature.",
+            why: "Writes two permanent policies to both signing-capable slots: the key requires a physical touch for every use and cannot be relaxed later, and the User PIN must be re-entered for every signature.",
             caution: "These policies are the basis of the whole scheme's security. If the read-back check after this step reports a discrepancy, stop.",
             actionTitle: "Apply policy",
             isBusy: viewModel.busy,
             action: { Task { await viewModel.applyPolicy() } }
         ) {
             KeyValueRows(rows: [
-                ("Touch policy (UIF 0xD6)", "Fixed — 02"),
+                ("Signature slot touch policy (UIF 0xD6)", "Fixed — 02"),
+                ("Authentication slot touch policy (UIF 0xD8)", "Fixed — 02"),
                 ("PW1 status (0xC4[0])", "0x00 — PIN required per signature"),
-                ("Expected APDU", "00 DA 00 D6 02 02 20"),
+                ("Expected APDUs", "00 DA 00 D6 02 02 20, 00 DA 00 D8 02 02 20"),
             ])
+            Text("Touch policy is written to the authentication slot too, even though that key's signatures are not counted by the hardware counter.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -174,7 +209,7 @@ struct EntropyStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "The 24 words are generated from 256 bits produced by the iOS system CSPRNG (SecRandomCopyBytes). The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
+            why: "The 24 words are generated from 256 bits produced by the iOS system CSPRNG (SecRandomCopyBytes). One mnemonic backs up both signing keys. The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
             actionTitle: hasCommitment ? "Reveal the mnemonic" : "Generate entropy",
             isEnabled: !hasCommitment || commitmentRecorded,
             action: {
@@ -249,7 +284,7 @@ struct MnemonicStepView: View {
 
     private var restoreView: some View {
         StepScaffold(
-            why: "Enter the existing 24-word mnemonic. It is checked against the BIP39 checksum before any key is derived, and it stays in memory only for this ceremony.",
+            why: "Enter the existing 24-word mnemonic. It is checked against the BIP39 checksum before any key is derived, and it stays in memory only for this ceremony. The same words re-derive both the secp256k1 and the Ed25519 key.",
             caution: "The words enter this app's memory. Only do this on a device you trust, and never on an online computer.",
             actionTitle: "Check and accept mnemonic",
             isEnabled: !viewModel.restoreWords.split(whereSeparator: \.isWhitespace).isEmpty,
@@ -269,7 +304,7 @@ struct MnemonicStepView: View {
 
     private var generateView: some View {
         StepScaffold(
-            why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; the YubiKey can be replaced, the words cannot.",
+            why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; the YubiKey can be replaced, the words cannot. This one mnemonic restores both keys.",
             caution: viewModel.screenIsCaptured
                 ? "Screen recording or mirroring is active. The words cannot be shown."
                 : "No cameras, no screenshots. The words hide themselves again after \(CeremonyViewModel.revealWindowSeconds) seconds.",
@@ -364,32 +399,47 @@ struct DerivationStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Derives the signing key for \(viewModel.chain.displayName) at \(viewModel.chain.defaultPath.description). The key itself stays in memory until it is imported into the YubiKey.",
-            actionTitle: viewModel.derivedKey == nil ? "Derive key" : "Continue",
+            why: "Derives both signing keys from the one mnemonic: secp256k1 at \(DerivationPath.secp256k1Default.description) via BIP32, and Ed25519 at \(DerivationPath.ed25519Default.description) via SLIP-0010. The private keys stay in memory until they are imported into the YubiKey.",
+            actionTitle: viewModel.derivedKeys == nil ? "Derive keys" : "Continue",
             action: {
-                if viewModel.derivedKey == nil {
-                    viewModel.deriveKey()
+                if viewModel.derivedKeys == nil {
+                    viewModel.deriveKeys()
                 } else {
                     viewModel.advance()
                 }
             }
         ) {
-            if let key = viewModel.derivedKey {
-                AddressDisplay(label: "Address", value: key.address)
-                KeyValueRows(rows: [
-                    ("Path", key.path.description),
-                    ("Public key (compressed)", key.publicKeyHex),
-                    ("Key fingerprint", key.fingerprintHex),
-                    ("Parent fingerprint", key.parentFingerprintHex),
-                    ("Master fingerprint", key.masterFingerprintHex),
-                ])
-                Text("This address is what you will verify against an independent tool in two steps' time.")
+            if let keys = viewModel.derivedKeys {
+                ForEach(keys.all, id: \.algorithm) { key in
+                    KeySection(
+                        title: key.algorithm.displayName,
+                        subtitle: key.slot.displayName,
+                        identities: identityRows(for: key),
+                        rows: [
+                            ("Path", key.path.description),
+                            ("Public key", key.publicKeyHex),
+                            ("Key fingerprint", key.fingerprintHex),
+                            ("Parent fingerprint", key.parentFingerprintHex),
+                            ("Master fingerprint", key.masterFingerprintHex),
+                        ]
+                    )
+                }
+                Text("These are the values the read-back check verifies against the YubiKey after import.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Deriving takes a moment: PBKDF2 with 2048 iterations, then four hardened derivation steps.")
+                Text("Deriving takes a moment: PBKDF2 with 2048 iterations, then BIP32 for secp256k1 and SLIP-0010 for Ed25519.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// secp256k1 yields two addresses from one key; Ed25519's identity is the key.
+    private func identityRows(for key: DerivedKeySummary) -> [(String, String)] {
+        var rows: [(String, String)] = []
+        if let evm = key.evmAddress { rows.append(("EVM address", evm)) }
+        if let btc = key.bitcoinAddress { rows.append(("Bitcoin address", btc)) }
+        if rows.isEmpty { rows.append(("Identity (public key)", key.identity)) }
+        return rows
     }
 }
 
@@ -400,20 +450,30 @@ struct ImportStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Writes the private key into the YubiKey's signature slot, along with the secp256k1 algorithm attributes, the key fingerprint and the creation time. This is the only step that puts key material on the card.",
+            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — along with each key's algorithm attributes, fingerprint and creation time. This is the only step that puts key material on the card.",
             caution: "Do not remove the YubiKey during this step.",
-            actionTitle: "Import key into YubiKey",
+            actionTitle: "Import keys into YubiKey",
             isBusy: viewModel.busy,
-            action: { Task { await viewModel.importKey() } }
+            action: { Task { await viewModel.importKeys() } }
         ) {
-            if let key = viewModel.derivedKey {
-                KeyValueRows(rows: [
-                    ("Slot", "Signature (CRT B6)"),
-                    ("Algorithm", "ECDSA secp256k1 (1.3.132.0.10)"),
-                    ("Key", key.publicKeyHex),
-                    ("Fingerprint", key.fingerprintHex),
-                    ("Import APDU", "00 DB 3F FF 2C 4D …"),
-                ])
+            if let keys = viewModel.derivedKeys {
+                ForEach(keys.all, id: \.algorithm) { key in
+                    KeySection(
+                        title: key.algorithm.displayName,
+                        subtitle: key.slot == .signature
+                            ? "\(key.slot.displayName) (CRT B6) — counted by the hardware signature counter"
+                            : "\(key.slot.displayName) (CRT A4) — no hardware signature counter",
+                        rows: [
+                            ("Algorithm", key.algorithm == .secp256k1
+                                ? "ECDSA secp256k1 (1.3.132.0.10)"
+                                : "EdDSA Ed25519 (1.3.6.1.4.1.11591.15.1)"),
+                            ("Key", key.publicKeyHex),
+                            ("Fingerprint", key.fingerprintHex),
+                        ]
+                    )
+                }
+                Text("Both keys are written in one pass; the card must accept each before the ceremony continues.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -426,123 +486,103 @@ struct ReadBackStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Reads the public key back out of the YubiKey and compares it byte-for-byte against the key derived on this device. This is the mandatory check that the card holds the key you think it does.",
-            actionTitle: viewModel.readBack == nil ? "Verify read-back" : "Continue",
+            why: "Reads each public key back out of the YubiKey and compares it byte-for-byte against the key derived on this device. This is the mandatory check that the card holds the keys you think it does; a mismatch on either key voids the whole procedure.",
+            actionTitle: viewModel.readBack.isEmpty ? "Verify read-back" : "Continue",
             isBusy: viewModel.busy,
             action: {
-                if viewModel.readBack == nil {
+                if viewModel.readBack.isEmpty {
                     Task { await viewModel.verifyReadBack() }
                 } else {
                     viewModel.advance()
                 }
             }
         ) {
-            if let result = viewModel.readBack {
-                KeyValueRows(rows: [
-                    ("Matches derived key", result.matches ? "yes" : "NO"),
-                    ("Key from YubiKey", result.cardPublicKeyHex),
-                    ("Derived key", result.derivedPublicKeyHex),
-                    ("Address from YubiKey key", result.addressFromCardKey),
-                ])
-                if result.matches {
-                    Label("The YubiKey holds exactly the derived key.", systemImage: "checkmark.seal.fill")
+            if !viewModel.readBack.isEmpty {
+                ForEach(KeyAlgorithm.allCases, id: \.self) { algorithm in
+                    if let result = viewModel.readBack[algorithm] {
+                        KeySection(
+                            title: algorithm.displayName,
+                            subtitle: result.slot.displayName,
+                            rows: [
+                                ("Matches derived key", result.matches ? "yes" : "NO"),
+                                ("Key from YubiKey", result.cardPublicKeyHex),
+                                ("Derived key", result.derivedPublicKeyHex),
+                                ("Identity from YubiKey key", result.identityFromCardKey),
+                            ]
+                        )
+                    }
+                }
+                if viewModel.allReadBacksSucceeded {
+                    Label("The YubiKey holds exactly the derived keys.", systemImage: "checkmark.seal.fill")
                         .font(.footnote)
                         .foregroundStyle(.green)
                 }
             } else {
-                Text("No PIN is required for this read. The card returns its public key, which is public data.")
+                Text("No PIN is required for this read. The card returns public keys, which are public data.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
 }
 
-// MARK: - Step 11: independent cross-check
-
-struct IndependentCheckStepView: View {
-    @Bindable var viewModel: CeremonyViewModel
-
-    var body: some View {
-        StepScaffold(
-            why: "Enter the same address as derived by a different tool on a different device — tools/derive from this repository, an offline BIP39 site, a Coldcard or a SeedSigner. This is the check that catches a tampered iPhone or a wrong wordlist.",
-            actionTitle: viewModel.independentCheck?.matched == true ? "Continue" : "Compare addresses",
-            isEnabled: viewModel.independentCheck?.matched == true
-                || !viewModel.independentAddress.trimmingCharacters(in: .whitespaces).isEmpty,
-            action: {
-                if viewModel.independentCheck?.matched == true {
-                    viewModel.advance()
-                } else {
-                    viewModel.submitIndependentCheck()
-                }
-            }
-        ) {
-            if let key = viewModel.derivedKey {
-                AddressDisplay(label: "Address from this device", value: key.address)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Address from the independent tool").font(.subheadline.weight(.medium))
-                TextField("0x… or bc1…", text: $viewModel.independentAddress)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .font(.system(.body, design: .monospaced))
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Which tool?").font(.subheadline.weight(.medium))
-                TextField("tool and device", text: $viewModel.independentSource)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            if let check = viewModel.independentCheck, !check.matched {
-                Text("Mismatch. Do not proceed: restart the ceremony on a different device.")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-            }
-        }
-    }
-}
-
-// MARK: - Step 12: pairing
+// MARK: - Step 11: pairing
 
 struct PairingStepView: View {
     @Bindable var viewModel: CeremonyViewModel
     @State private var showAdvanced = false
 
+    private var prepared: Bool { viewModel.pairingPrepared }
+
     var body: some View {
         StepScaffold(
-            why: "Scan this code with your desktop wallet's QR hardware-wallet import. It carries the public key, the derivation path and the master fingerprint — never the private key.",
-            actionTitle: viewModel.pairingURString == nil ? "Prepare pairing code" : "Continue",
-            isEnabled: viewModel.pairingURString == nil
-                ? (!viewModel.pairingIncludesChainCode || viewModel.acknowledgeChainCodeWarning)
-                : viewModel.pairingAddressConfirmed,
-            secondaryTitle: viewModel.pairingURString == nil ? nil : "Regenerate with current settings",
-            secondaryAction: viewModel.pairingURString == nil ? nil : { viewModel.buildPairingUR() },
+            why: "Scan both codes with your desktop wallet's QR hardware-wallet import. Each carries one public key, its derivation path and the master fingerprint — never a private key.",
+            actionTitle: prepared ? "Continue" : "Prepare pairing codes",
+            isEnabled: prepared
+                ? viewModel.pairingAddressConfirmed
+                : (!viewModel.pairingIncludesChainCode || viewModel.acknowledgeChainCodeWarning),
+            secondaryTitle: prepared ? "Regenerate with current settings" : nil,
+            secondaryAction: prepared ? { viewModel.buildPairingURs() } : nil,
             action: {
-                if viewModel.pairingURString == nil {
-                    viewModel.buildPairingUR()
-                } else {
+                if prepared {
                     viewModel.advance()
+                } else {
+                    viewModel.buildPairingURs()
                 }
             }
         ) {
-            if let urString = viewModel.pairingURString, let ur = try? UR(urString: urString) {
-                AnimatedURView(ur: ur)
-                Text("Type: \(ur.type)")
-                    .font(.caption).foregroundStyle(.secondary)
+            if prepared, let keys = viewModel.derivedKeys {
+                ForEach(keys.all, id: \.algorithm) { key in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(key.algorithm.displayName).font(.subheadline.weight(.semibold))
+                        if let urString = viewModel.pairingURStrings[key.algorithm],
+                           let ur = try? UR(urString: urString) {
+                            AnimatedURView(ur: ur)
+                            Text("Type: \(ur.type)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let evm = key.evmAddress {
+                            AddressDisplay(label: "Address your wallet must show (EVM)", value: evm)
+                        }
+                        if let btc = key.bitcoinAddress {
+                            AddressDisplay(label: "Address your wallet must show (Bitcoin)", value: btc)
+                        }
+                        if key.evmAddress == nil {
+                            AddressDisplay(label: "Public key your wallet must show", value: key.identity)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
             }
 
-            if let key = viewModel.derivedKey {
-                AddressDisplay(label: "Address your wallet must show", value: key.address)
-            }
-
-            Toggle("I confirmed my desktop wallet shows this exact address", isOn: Binding(
+            Toggle("I confirmed my desktop wallet shows these exact values", isOn: Binding(
                 get: { viewModel.pairingAddressConfirmed },
                 set: { viewModel.setPairingAddressConfirmed($0) }
             ))
             .font(.footnote)
-            .disabled(viewModel.pairingURString == nil)
+            .disabled(!prepared)
 
             DisclosureGroup("Advanced: wire format and chain code", isExpanded: $showAdvanced) {
                 Picker("UR type", selection: $viewModel.pairingStyle) {
@@ -557,9 +597,9 @@ struct PairingStepView: View {
 
                 if viewModel.pairingIncludesChainCode {
                     Text("""
-                    A chain code lets a wallet derive further addresses. This YubiKey holds \
-                    one key and can only sign for the address above, so derived addresses \
-                    would receive funds you could not spend from this device.
+                    A chain code lets a wallet derive further addresses. Each YubiKey slot holds \
+                    one key and can only sign for the values above, so derived addresses would \
+                    receive funds you could not spend from this device.
                     """)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -572,7 +612,7 @@ struct PairingStepView: View {
     }
 }
 
-// MARK: - Step 13: counter baseline
+// MARK: - Step 12: counter baseline
 
 struct CounterStepView: View {
     @Bindable var viewModel: CeremonyViewModel
@@ -591,9 +631,19 @@ struct CounterStepView: View {
             }
         ) {
             if let counter = viewModel.counterBaseline {
-                KeyValueRows(rows: [("Signature counter", "\(counter)")])
+                KeyValueRows(rows: [
+                    ("Signature counter (secp256k1 / signature slot)", "\(counter)"),
+                    ("Ed25519 / authentication slot", "no hardware counter"),
+                ])
                 Label("Baseline recorded.", systemImage: "checkmark.seal.fill")
                     .font(.footnote).foregroundStyle(.green)
+                Text("""
+                Only the signature slot increments a hardware counter. The Ed25519 key lives in \
+                the authentication slot, so the counter audit covers your secp256k1 chains only. \
+                Ed25519 signatures are still gated by the PIN and a physical touch.
+                """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else {
                 Text("No PIN is needed to read the counter, and it exposes no secrets.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -602,14 +652,14 @@ struct CounterStepView: View {
     }
 }
 
-// MARK: - Step 14: teardown
+// MARK: - Step 13: teardown
 
 struct TeardownStepView: View {
     @Bindable var viewModel: CeremonyViewModel
 
     var body: some View {
         StepScaffold(
-            why: "Clears the mnemonic, seed and private key from memory and produces the provisioning record you keep with the steel plate. The app requires a restart before another ceremony.",
+            why: "Clears the mnemonic, seed and private keys from memory and produces the provisioning record you keep with the steel plate. The app requires a restart before another ceremony.",
             actionTitle: "Wipe secrets and finish",
             action: { viewModel.finish() }
         ) {

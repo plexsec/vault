@@ -46,6 +46,11 @@ The reference toolchain for v0.1:
 * libsecp256k1 is vendored at a pinned release (`v0.8.0`) with the tarball's
   SHA-256 recorded in `Sources/Csecp256k1/VENDORED.txt`, and no configuration
   header is generated.
+* TweetNaCl is vendored at the pinned `20140427` release, byte-identical to
+  upstream and recorded by MD5 in `Sources/Ced25519/VENDORED.txt`. The
+  project's own `vault_ed25519.c` shim is the only additional source in that
+  target, and `tweetnacl.c` is compiled exactly once (from the shim), so the
+  vendored bytes stay verifiable.
 * The BC-UR sources are ported at a pinned upstream commit, recorded in each
   file's header, with the licence alongside them.
 * `PlexVault.xcodeproj` is committed, so a build never depends on the XcodeGen

@@ -9,7 +9,7 @@ import VaultKit
 /// down 24 words and cross-checking an address — minutes at least. A single
 /// session cannot span the ceremony, and VERIFY state does not survive a session
 /// boundary, which is why the protected writes re-verify the Admin PIN
-/// themselves (`applyPolicy`, `importSignatureKey`).
+/// themselves (`applyPolicy`, `importKey`).
 ///
 /// For USB-C the extra open/close is cheap; for the simulated transport it is a
 /// no-op. The important property is that the ceremony code cannot accidentally
@@ -73,14 +73,18 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.applyPolicy(adminPIN: adminPIN) }
     }
 
-    public func importSignatureKey(
+    public func importKey(
+        slot: KeySlot,
+        algorithm: KeyAlgorithm,
         privateKey: SensitiveBytes,
         fingerprint: [UInt8],
         creationTime: Date,
         adminPIN: [UInt8]
     ) async throws {
         try await withSession {
-            try await $0.importSignatureKey(
+            try await $0.importKey(
+                slot: slot,
+                algorithm: algorithm,
                 privateKey: privateKey,
                 fingerprint: fingerprint,
                 creationTime: creationTime,
@@ -89,8 +93,8 @@ public final class TransportSessionCard: SignerCard {
         }
     }
 
-    public func readSignaturePublicKey() async throws -> [UInt8] {
-        try await withSession { try await $0.readSignaturePublicKey() }
+    public func readPublicKey(slot: KeySlot) async throws -> [UInt8] {
+        try await withSession { try await $0.readPublicKey(slot: slot) }
     }
 
     public func signatureCounter() async throws -> UInt32 {

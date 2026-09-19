@@ -175,10 +175,18 @@ public struct URKeyPath: Equatable {
 ///
 /// Only the fields this app produces or consumes are modelled; unknown keys are
 /// preserved so a round trip does not silently drop data.
+///
+/// Two algorithms are carried by this one type. The curve is discriminated by
+/// the length of `key-data` (33 bytes = compressed secp256k1 point, 32 bytes =
+/// raw Ed25519 point) and reinforced by `use-info` (SLIP-44 coin type 0 vs 501).
+/// BCR-2020-007 defines no explicit curve field, so this is the convention this
+/// project relies on; it is listed as an interop item in
+/// docs/m0-hardware-verification.md.
 public struct HDKey: Equatable {
     public var isMaster: Bool
     public var isPrivate: Bool
-    /// 33 bytes: compressed SEC1 public key, or `0x00 || ser256(k)` when private.
+    /// 33 bytes: compressed SEC1 public key (secp256k1), or 32 bytes: raw
+    /// Ed25519 public key, or `0x00 || ser256(k)` when private.
     public var keyData: [UInt8]
     /// Present only when further children may be derived *from this key*.
     public var chainCode: [UInt8]?
@@ -220,7 +228,10 @@ public struct HDKey: Equatable {
     }
 
     public func validate() throws {
-        guard keyData.count == 33 else { throw ValidationError.invalidKeyDataLength(keyData.count) }
+        // 33 = compressed secp256k1 point; 32 = raw Ed25519 point.
+        guard keyData.count == 33 || keyData.count == 32 else {
+            throw ValidationError.invalidKeyDataLength(keyData.count)
+        }
         if let chainCode, chainCode.count != 32 {
             throw ValidationError.invalidChainCodeLength(chainCode.count)
         }
@@ -232,6 +243,10 @@ public struct HDKey: Equatable {
             throw ValidationError.missingChainCodeForMaster
         }
     }
+
+    /// True when `key-data` is a raw 32-byte Ed25519 point rather than a
+    /// 33-byte compressed secp256k1 point.
+    public var isEd25519: Bool { keyData.count == 32 }
 
     func cbor(style: URTypeStyle) -> CBOR {
         var entries: [CBORMapEntry] = []

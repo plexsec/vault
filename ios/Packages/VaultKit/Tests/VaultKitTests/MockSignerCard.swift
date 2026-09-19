@@ -4,6 +4,10 @@ import Foundation
 /// Scripted YubiKey used by the ceremony tests. Records every call so tests can
 /// assert the exact APDU-level sequence the ceremony produced, and can be told
 /// to fail at a chosen point.
+///
+/// It models both signing-capable slots independently, so a ceremony that writes
+/// the wrong key into a slot (or reads the wrong slot back) fails here rather
+/// than passing silently.
 final class MockSignerCard: SignerCard {
 
     enum Call: Equatable {
@@ -11,8 +15,8 @@ final class MockSignerCard: SignerCard {
         case reset
         case setPINs
         case applyPolicy(adminPIN: [UInt8])
-        case importSignatureKey(fingerprint: String)
-        case readSignaturePublicKey
+        case importKey(slot: KeySlot, algorithm: KeyAlgorithm, fingerprint: String)
+        case readPublicKey(slot: KeySlot)
         case signatureCounter
         case putDataObject(tag: UInt16)
         case getDataObject(tag: UInt16)
@@ -35,10 +39,10 @@ final class MockSignerCard: SignerCard {
 
     // Card state
     var inventoryResult: CardInventory
-    var storedPublicKeyOverride: [UInt8]?
+    var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
     var counterValue: UInt32
-    private(set) var storedPrivateKey: [UInt8]?
-    private(set) var storedFingerprint: [UInt8]?
+    private(set) var storedPrivateKeys: [KeySlot: [UInt8]] = [:]
+    private(set) var storedFingerprints: [KeySlot: [UInt8]] = [:]
     private(set) var storedCreationTime: Date?
     private(set) var dataObjects: [UInt16: [UInt8]] = [:]
     private(set) var appliedPolicy = false
@@ -59,12 +63,16 @@ final class MockSignerCard: SignerCard {
         openPGPVersion: "3.4",
         manufacturer: "Yubico",
         serial: "00000000",
-        algorithmAttributes: nil,
         pwStatusBytes: [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F],
-        hasSignatureKey: false,
+        occupiedSlots: [],
         signatureCounter: 0,
         isFactoryFresh: true
     )
+
+    /// Convenience accessors for assertions.
+    func storedPrivateKey(_ slot: KeySlot) -> [UInt8]? { storedPrivateKeys[slot] }
+    func storedFingerprint(_ slot: KeySlot) -> [UInt8]? { storedFingerprints[slot] }
+    func hasKey(in slot: KeySlot) -> Bool { storedPrivateKeys[slot] != nil }
 
     // MARK: SignerCard
 
@@ -74,7 +82,7 @@ final class MockSignerCard: SignerCard {
         var result = inventoryResult
         // A key present in the injected inventory counts as pre-existing until a
         // reset clears it, mirroring a real card that already holds a key.
-        result.hasSignatureKey = storedPrivateKey != nil || inventoryResult.hasSignatureKey
+        result.occupiedSlots.formUnion(storedPrivateKeys.keys)
         result.signatureCounter = counterValue
         return result
     }
@@ -83,10 +91,10 @@ final class MockSignerCard: SignerCard {
         calls.append(.reset)
         if failurePoint == .reset { throw CardError.pinIncorrect(retriesRemaining: 2) }
         resetCount += 1
-        storedPrivateKey = nil
-        storedFingerprint = nil
+        storedPrivateKeys = [:]
+        storedFingerprints = [:]
         dataObjects = [:]
-        inventoryResult.hasSignatureKey = false
+        inventoryResult.occupiedSlots = []
         inventoryResult.isFactoryFresh = true
         counterValue = 0
     }
@@ -102,38 +110,48 @@ final class MockSignerCard: SignerCard {
         calls.append(.applyPolicy(adminPIN: adminPIN))
         if failurePoint == .applyPolicy { throw CardError.unexpectedStatusWord(sw1: 0x6A, sw2: 0x80) }
         appliedPolicy = true
+        // Both signing-capable slots get the touch policy; 0xC4 is global.
         dataObjects[0xD6] = [0x02, 0x20]
+        dataObjects[0xD8] = [0x02, 0x20]
         dataObjects[0xC4] = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
         inventoryResult.pwStatusBytes = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
     }
 
-    func importSignatureKey(
+    func importKey(
+        slot: KeySlot,
+        algorithm: KeyAlgorithm,
         privateKey: SensitiveBytes,
         fingerprint: [UInt8],
         creationTime: Date,
         adminPIN: [UInt8]
     ) async throws {
-        calls.append(.importSignatureKey(fingerprint: fingerprint.hexString))
+        calls.append(.importKey(slot: slot, algorithm: algorithm, fingerprint: fingerprint.hexString))
         // Mirrors a real card: a new session must re-verify the Admin PIN.
         guard adminPIN == lastSetAdminPIN else {
             throw CardError.conditionsNotSatisfied
         }
         if failurePoint == .keyImport { throw CardError.keyImportRejected }
-        if storedPrivateKey != nil { throw CardError.signatureSlotOccupied }
-        let raw = privateKey.materializedCopy()
-        storedPrivateKey = raw
-        storedFingerprint = fingerprint
+        // A real card answers 0x6A80, which the status mapper turns into
+        // keyImportRejected; the mock mirrors that rather than inventing a case.
+        if storedPrivateKeys[slot] != nil { throw CardError.keyImportRejected }
+        storedPrivateKeys[slot] = privateKey.materializedCopy()
+        storedFingerprints[slot] = fingerprint
         storedCreationTime = creationTime
-        inventoryResult.hasSignatureKey = true
+        inventoryResult.occupiedSlots.insert(slot)
         inventoryResult.isFactoryFresh = false
     }
 
-    func readSignaturePublicKey() async throws -> [UInt8] {
-        calls.append(.readSignaturePublicKey)
+    func readPublicKey(slot: KeySlot) async throws -> [UInt8] {
+        calls.append(.readPublicKey(slot: slot))
         if failurePoint == .readPublicKey { throw CardError.conditionsNotSatisfied }
-        if let override = storedPublicKeyOverride { return override }
-        guard let storedPrivateKey else { throw CardError.conditionsNotSatisfied }
-        return try Secp256k1.publicKey(fromPrivateKey: storedPrivateKey)
+        if let override = storedPublicKeyOverride[slot] { return override }
+        guard let secret = storedPrivateKeys[slot] else { throw CardError.conditionsNotSatisfied }
+        switch slot {
+        case .signature:
+            return try Secp256k1.publicKey(fromPrivateKey: secret)
+        case .authentication:
+            return try Ed25519.publicKey(fromSeed: secret)
+        }
     }
 
     func signatureCounter() async throws -> UInt32 {

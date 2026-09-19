@@ -61,6 +61,36 @@ public struct ScriptedEntropySource: EntropySource {
     }
 }
 
+// MARK: - Key slots
+
+/// An OpenPGP key slot.
+///
+/// The card has three (signature, decryption, authentication), but only two can
+/// produce a signature, and only **one** of those — the signature slot — drives
+/// the hardware signature counter that §5.2's audit depends on. That asymmetry
+/// is the whole reason the algorithm-to-slot assignment is fixed rather than
+/// configurable; see `KeyAlgorithm.slot` and design.md §4.3.
+public enum KeySlot: String, CaseIterable, Codable, Sendable, Hashable {
+    /// CRT 0xB6 / algorithm attributes 0xC1 / fingerprint 0xC7 / UIF 0xD6.
+    /// Counted by `GET DATA 0x7A` → `93`.
+    case signature
+    /// CRT 0xA4 / algorithm attributes 0xC3 / fingerprint 0xC9 / UIF 0xD8.
+    /// **No** hardware signature counter: `INTERNAL AUTHENTICATE` is not counted.
+    case authentication
+
+    public var displayName: String {
+        switch self {
+        case .signature: return "Signature slot"
+        case .authentication: return "Authentication slot"
+        }
+    }
+
+    /// Whether operations in this slot increment the OpenPGP signature counter.
+    public var incrementsSignatureCounter: Bool {
+        self == .signature
+    }
+}
+
 // MARK: - Card abstraction
 
 /// Everything the provisioning ceremony needs from a YubiKey.
@@ -74,40 +104,47 @@ public protocol SignerCard: AnyObject {
     func inventory() async throws -> CardInventory
 
     /// `VERIFY PW3` + `TERMINATE DF` + `ACTIVATE FILE`, then re-selects.
+    /// Resets **all** slots.
     func reset(adminPIN: [UInt8]) async throws
 
     /// Sets PW1 (user) and PW3 (admin) via `CHANGE REFERENCE DATA`.
     func setPINs(userPIN: [UInt8], adminPIN: [UInt8]) async throws
 
-    /// Applies the mandatory policy: UIF = Fixed on the signature slot and
-    /// PW1 status 0x00 (PIN required for every signature).
+    /// Applies the mandatory policy: UIF = Fixed on both signing-capable slots
+    /// and PW1 status 0x00 (PIN required for every signature).
     ///
     /// The Admin PIN is required because these are protected data objects, and
     /// implementations must re-verify PW3 in this session before writing.
     func applyPolicy(adminPIN: [UInt8]) async throws
 
-    /// `PUT DATA 3F FF` with the Extended Header List for CRT B6, then the
-    /// algorithm attributes, fingerprint and creation time.
+    /// Writes one key into `slot`: `PUT DATA 3F FF` with the Extended Header
+    /// List for the slot's CRT, then the algorithm attributes, fingerprint and
+    /// creation time.
     ///
     /// The Admin PIN is passed in rather than assumed to still be verified: a
     /// ceremony spans many short-lived NFC sessions, and VERIFY state does not
     /// survive a session boundary. Implementations must re-verify PW3 themselves.
-    func importSignatureKey(
+    func importKey(
+        slot: KeySlot,
+        algorithm: KeyAlgorithm,
         privateKey: SensitiveBytes,
         fingerprint: [UInt8],
         creationTime: Date,
         adminPIN: [UInt8]
     ) async throws
 
-    /// `GENERATE ASYMMETRIC KEY PAIR` (P1 = 0x81) — reads the public key back
-    /// out of the card without a PIN.
-    func readSignaturePublicKey() async throws -> [UInt8]
+    /// `GENERATE ASYMMETRIC KEY PAIR` (P1 = 0x81) for `slot` — reads the public
+    /// key back out of the card without a PIN.
+    func readPublicKey(slot: KeySlot) async throws -> [UInt8]
 
     /// `GET DATA 0x7A` -> security support template `93 03 <counter>`.
+    ///
+    /// This is the **signature** slot's counter; the authentication slot has
+    /// none, which is why the audit covers secp256k1 only.
     func signatureCounter() async throws -> UInt32
 
-    /// Writes a single data object (0xC1 algorithm attributes, 0xC4 PW status,
-    /// 0xD6 UIF, 0xC7 fingerprint, 0xCE creation time).
+    /// Writes a single data object (algorithm attributes, PW status, UIF,
+    /// fingerprint, creation time).
     func putDataObject(_ tag: UInt16, value: [UInt8]) async throws
 
     /// Reads a single data object by tag.
@@ -126,8 +163,6 @@ public enum CardError: Swift.Error, Equatable {
     case signatureFailed
     case unexpectedStatusWord(sw1: UInt8, sw2: UInt8)
     case malformedResponse(String)
-    /// The card already holds a signature key and must be reset first.
-    case signatureSlotOccupied
     case unsupportedFeature(String)
 
     /// User-facing text. Kept here so every surface reports the same wording.
@@ -149,7 +184,7 @@ public enum CardError: Swift.Error, Equatable {
         case .conditionsNotSatisfied:
             return "The YubiKey refused the operation because its preconditions were not met (wrong state, or a PIN step was skipped)."
         case .unsupportedFirmware:
-            return "This YubiKey's OpenPGP applet does not support secp256k1. Firmware 5.2.3 or newer is required."
+            return "This YubiKey's OpenPGP applet does not support the requested algorithm. Firmware 5.2.3 or newer is required."
         case .keyImportRejected:
             return "The YubiKey rejected the private key import."
         case .signatureFailed:
@@ -158,8 +193,6 @@ public enum CardError: Swift.Error, Equatable {
             return String(format: "Unexpected card response %02X%02X.", sw1, sw2)
         case .malformedResponse(let detail):
             return "The card response could not be parsed: \(detail)."
-        case .signatureSlotOccupied:
-            return "This YubiKey already holds a signature key. Reset the OpenPGP applet and start the ceremony again."
         case .unsupportedFeature(let detail):
             return "Unsupported by this YubiKey: \(detail)."
         }
@@ -167,28 +200,28 @@ public enum CardError: Swift.Error, Equatable {
 }
 
 /// What the ceremony learns about the card before touching it.
-public struct CardInventory: Equatable {
+public struct CardInventory: Equatable, Sendable {
     public var openPGPVersion: String
     public var manufacturer: String?
     public var serial: String?
-    /// Raw 0xC1 algorithm attributes, if present.
-    public var algorithmAttributes: [UInt8]?
+    /// Raw algorithm attributes per slot (0xC1 / 0xC3), where present.
+    public var algorithmAttributes: [KeySlot: [UInt8]]
     /// Raw 0xC4 PW status bytes, if present.
     public var pwStatusBytes: [UInt8]?
-    /// True when the card reports an existing signature key.
-    public var hasSignatureKey: Bool
+    /// Slots that already hold a key.
+    public var occupiedSlots: Set<KeySlot>
     /// `GET DATA 0x7A` -> 0x93 counter, if readable without a PIN.
     public var signatureCounter: UInt32?
-    /// True when the card looks factory-fresh (no signature key, no fingerprints).
+    /// True when the card looks factory-fresh (no key in any slot, no counter).
     public var isFactoryFresh: Bool
 
     public init(
         openPGPVersion: String,
         manufacturer: String? = nil,
         serial: String? = nil,
-        algorithmAttributes: [UInt8]? = nil,
+        algorithmAttributes: [KeySlot: [UInt8]] = [:],
         pwStatusBytes: [UInt8]? = nil,
-        hasSignatureKey: Bool = false,
+        occupiedSlots: Set<KeySlot> = [],
         signatureCounter: UInt32? = nil,
         isFactoryFresh: Bool = true
     ) {
@@ -197,10 +230,12 @@ public struct CardInventory: Equatable {
         self.serial = serial
         self.algorithmAttributes = algorithmAttributes
         self.pwStatusBytes = pwStatusBytes
-        self.hasSignatureKey = hasSignatureKey
+        self.occupiedSlots = occupiedSlots
         self.signatureCounter = signatureCounter
         self.isFactoryFresh = isFactoryFresh
     }
+
+    public func holdsKey(in slot: KeySlot) -> Bool { occupiedSlots.contains(slot) }
 
     /// secp256k1 requires OpenPGP 3.4+ applet behaviour, i.e. YubiKey 5 firmware
     /// 5.2.3 or newer. Reported rather than assumed, because the failure mode
@@ -235,7 +270,6 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case derivation
     case keyImport
     case readBackCheck
-    case independentCheck
     case pairingExport
     case counterBaseline
     case teardown
@@ -254,10 +288,9 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .policy: return "Apply touch and PIN policy"
         case .entropy: return "Generate entropy"
         case .mnemonic: return "Write down the mnemonic"
-        case .derivation: return "Derive the signing key"
-        case .keyImport: return "Import key into YubiKey"
-        case .readBackCheck: return "Verify read-back key"
-        case .independentCheck: return "Independent address cross-check"
+        case .derivation: return "Derive the signing keys"
+        case .keyImport: return "Import keys into YubiKey"
+        case .readBackCheck: return "Verify read-back keys"
         case .pairingExport: return "Pair with the desktop wallet"
         case .counterBaseline: return "Record signature counter baseline"
         case .teardown: return "Wipe secrets and finish"
@@ -295,15 +328,14 @@ public enum CeremonyError: Swift.Error, Equatable {
     case transcriptionMismatch(index: Int)
     case invalidPINPolicy(String)
     case diceRollsOutOfRange
-    case keyNotDerived
-    case readBackMismatch(local: String, card: String)
-    case independentCheckNotRun
-    case independentCheckFailed
+    case keysNotDerived
+    case readBackMismatch(algorithm: KeyAlgorithm, local: String, card: String)
     case pairingPolicyNotAcknowledged
     case destructiveResetNotAcknowledged
     case cardNotFactoryFresh
     case counterNotZero(UInt32)
     case unsupportedRecovery(String)
+    case unsupportedAlgorithm(KeyAlgorithm, String)
 
     public var userFacingDescription: String {
         switch self {
@@ -324,13 +356,9 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "Word \(index + 1) does not match. Check the transcription against the screen."
         case .invalidPINPolicy(let detail): return detail
         case .diceRollsOutOfRange: return "Dice rolls must each be between 1 and 6."
-        case .keyNotDerived: return "The signing key has not been derived yet."
-        case .readBackMismatch:
-            return "The public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
-        case .independentCheckNotRun:
-            return "The independent address cross-check has not been completed."
-        case .independentCheckFailed:
-            return "The address from the independent tool does not match. Do not proceed."
+        case .keysNotDerived: return "The signing keys have not been derived yet."
+        case .readBackMismatch(let algorithm, _, _):
+            return "The \(algorithm.displayName) public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
         case .pairingPolicyNotAcknowledged:
             return "Exporting a chain code requires acknowledging that the derived child addresses cannot be signed by this YubiKey."
         case .destructiveResetNotAcknowledged:
@@ -341,6 +369,8 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "The signature counter is \(value), not 0. The card may already have signed something."
         case .unsupportedRecovery(let detail):
             return "Restore is not possible here: \(detail)."
+        case .unsupportedAlgorithm(let algorithm, let detail):
+            return "\(algorithm.displayName) cannot be provisioned on this YubiKey: \(detail)."
         }
     }
 }
