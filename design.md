@@ -226,8 +226,8 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 | Get challenge (entropy) | `00 84 00 00 20` | Hardware RNG; returns 32 random bytes, XORed with the iOS CSPRNG (§4.2 step 4) |
 | Verify signing PIN | `00 20 00 81 Lc <PIN>` | PW1 mode 81 |
 | Sign | `00 2A 9E 9A 20 <32-byte digest> 00` | PSO:COMPUTE DIGITAL SIGNATURE; returns r‖s (64 bytes) |
-| Read public key | `00 47 81 00 01 B6 00` | GENERATE ASYMMETRIC KEY PAIR, P1=0x81 (read mode), signature slot |
-| Read public key (auth slot) | `00 47 81 00 01 A4 00` | Same, addressed at the authentication slot |
+| Read public key | `00 47 81 00 02 B6 00 00` | GENERATE ASYMMETRIC KEY PAIR, P1=0x81 (read mode), signature slot |
+| Read public key (auth slot) | `00 47 81 00 02 A4 00 00` | Same, addressed at the authentication slot |
 | Read counter | `00 CA 00 7A 00` | Security Support Template, contains `93 03 <counter>` |
 | Read application data | `00 CA 00 6E 00` | Includes fingerprints, algorithm attributes, PW status |
 | Import private key | `00 DB 3F FF Lc 4D ...` | PUT DATA Extended Header List; requires Admin PIN |

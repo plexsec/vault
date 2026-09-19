@@ -210,6 +210,41 @@ yields the key. The §9.4 attack tree's "Backdoored RNG" node is updated
 accordingly. The exact per-call response length of `GET CHALLENGE` is an M0
 hardware-verification item (see `docs/m0-hardware-verification.md`).
 
+## 10. Read-back addresses the slot with a TLV CRT, not a bare tag
+
+**Sections:** §6.5.
+
+*Before:* `GENERATE ASYMMETRIC KEY PAIR` (read mode, P1=0x81) addressed the slot
+by sending the Control Reference Template as a **bare tag** (`B6`, Lc=01).
+
+*After:* the CRT is sent as a **TLV with an empty value** (`B6 00` / `A4 00`,
+Lc=02). Real hardware rejected the bare-tag form with `6A80` (wrong data); the
+TLV form reads the public key correctly.
+
+*Why:* a Control Reference Template is a TLV structure, not a bare tag. The
+codebase had assumed the compact form; the first real-device test disproved it.
+
+*Consequence recorded in the spec:* §6.5's read-public-key APDUs now show
+`00 47 81 00 02 B6 00 00` and `00 47 81 00 02 A4 00 00`. This was one of the M0
+hardware-verification assumptions, now resolved in favour of the TLV form.
+
+## 11. Read-back detects non-EC (RSA) keys; firmware floor confirmed
+
+**Sections:** §6.5, §7.2.
+
+*Finding:* a real YubiKey on firmware 5.1.3 (OpenPGP applet 3.3) returned
+"7F49 had no EC point (86)" when the app read the signature slot, because the
+slot held an RSA key — the older applet defaults to RSA and does not support
+secp256k1/Ed25519 at all. This confirms the §4.2 prerequisite that firmware
+5.2.3 (OpenPGP applet 3.4) or newer is required, and that YubiKey firmware is
+not upgradeable.
+
+*Change:* `readPublicKey` now distinguishes the two cases — an RSA key (modulus
+`0x81` present) raises `CardError.unsupportedKeyType`, and the inventory counts
+the slot as occupied so the destructive reset gate still applies. Any other
+missing-EC-point response is reported with an explicit "firmware 5.2.3 or newer
+required" message instead of the cryptic "no EC point (86)".
+
 ## What was deliberately *not* changed
 
 * **§5.2 rule 1 (one transaction, one `PSO:CDS`) and rule 2 (one touch)** are

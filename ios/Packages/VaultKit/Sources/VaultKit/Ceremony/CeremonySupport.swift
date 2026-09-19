@@ -138,6 +138,7 @@ public enum CardError: Swift.Error, Equatable {
     case unexpectedStatusWord(sw1: UInt8, sw2: UInt8)
     case malformedResponse(String)
     case unsupportedFeature(String)
+    case unsupportedKeyType(String)
 
     /// User-facing text. Kept here so every surface reports the same wording.
     public var userFacingDescription: String {
@@ -169,6 +170,8 @@ public enum CardError: Swift.Error, Equatable {
             return "The card response could not be parsed: \(detail)."
         case .unsupportedFeature(let detail):
             return "Unsupported by this YubiKey: \(detail)."
+        case .unsupportedKeyType(let detail):
+            return "This slot holds a key this app does not support: \(detail)."
         }
     }
 }

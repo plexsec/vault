@@ -178,8 +178,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
         // addresses.
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00a40400") }, "no SELECT")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00db3fff") }, "no key import")
-        XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810001b600") }, "no signature-slot read")
-        XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810001a400") }, "no authentication-slot read")
+        XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810002b600") }, "no signature-slot read")
+        XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810002a400") }, "no authentication-slot read")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00ca007a") }, "no counter read")
         // Both UIF objects must have been written.
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00da00d602022000") })

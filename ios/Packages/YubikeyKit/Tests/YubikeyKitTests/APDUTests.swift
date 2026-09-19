@@ -74,16 +74,18 @@ final class APDUTests: XCTestCase {
     }
 
     func testReadPublicKeyAPDUBytes() {
-        // The CRT in the command data addresses the slot: B6 signature, A4 auth.
+        // The CRT in the command data addresses the slot as a TLV with an empty
+        // value: B6 00 (signature), A4 00 (authentication). A bare tag was
+        // rejected by real hardware with 6A80.
         let signature = CommandAPDU(cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
-                                    data: TLV.encodeTag(OpenPGPDataObject.controlReferenceTemplateSignature),
+                                    data: TLV(tag: OpenPGPDataObject.controlReferenceTemplateSignature, value: []).encoded,
                                     expectedLength: 0)
-        XCTAssertEqual(signature.hex, "0047810001b600")
+        XCTAssertEqual(signature.hex, "0047810002b60000")
 
         let authentication = CommandAPDU(cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
-                                         data: TLV.encodeTag(OpenPGPDataObject.controlReferenceTemplateAuthentication),
+                                         data: TLV(tag: OpenPGPDataObject.controlReferenceTemplateAuthentication, value: []).encoded,
                                          expectedLength: 0)
-        XCTAssertEqual(authentication.hex, "0047810001a400")
+        XCTAssertEqual(authentication.hex, "0047810002a40000")
     }
 
     func testUIFAndPWStatusAPDUBytes() {

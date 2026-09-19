@@ -377,11 +377,11 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private func readPublicKey(_ command: CommandAPDU) throws -> ResponseAPDU {
         if let error = try requireSelected() { return error }
 
-        // The CRT arrives as the command data. It is a bare tag (no length), so
-        // compare bytes rather than parsing it as a TLV.
+        // The CRT arrives as the command data, encoded as a TLV with an empty
+        // value (tag || length 0): B6 00 for the signature slot, A4 00 for auth.
         let requested = command.data
         guard let slot = KeySlot.allCases.first(where: {
-            TLV.encodeTag(KeySlotObjects.forSlot($0).controlReference) == requested
+            TLV(tag: KeySlotObjects.forSlot($0).controlReference, value: []).encoded == requested
         }) else { return status(0x6A, 0x88) }
 
         guard let state = slots[slot], let secret = state.privateKey, let algorithm = state.algorithm else {

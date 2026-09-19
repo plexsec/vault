@@ -135,6 +135,10 @@ public final class OpenPGPCard: SignerCard {
     /// `GENERATE ASYMMETRIC KEY PAIR` in read mode (`P1 = 0x81`) returns the
     /// public key in `7F49`, with the EC point in `86`.
     ///
+    /// The slot is addressed by the Control Reference Template sent as a **TLV
+    /// with an empty value** (`B6 00` / `A4 00`). A bare tag (`B6`, Lc=01) was
+    /// rejected by real hardware with `6A80`; this is the resolved form.
+    ///
     /// For Ed25519 the point is the raw 32-byte Edwards point; whether the card
     /// prefixes it with `0x40` is an M0 hardware-verification item, and a
     /// non-matching encoding fails the ceremony's read-back step.
@@ -142,14 +146,21 @@ public final class OpenPGPCard: SignerCard {
         let controlReference = KeySlotObjects.forSlot(slot).controlReference
         let apdu = CommandAPDU(
             cla: 0x00, ins: 0x47, p1: 0x81, p2: 0x00,
-            data: TLV.encodeTag(controlReference),
+            data: TLV(tag: controlReference, value: []).encoded,
             expectedLength: 0
         )
         let response = try await transport.exchange(apdu)
         try Self.check(response, operation: .readPublicKey)
         let objects = try TLVParser.parse(response.data)
         guard let point = TLVParser.find(OpenPGPDataObject.ecdsaPublicPoint, in: objects) else {
-            throw CardError.malformedResponse("public key template 7F49 had no EC point (86)")
+            // A public key template without an EC point is a non-EC key: on
+            // firmware older than 5.2.3 (OpenPGP applet < 3.4) the slots default
+            // to RSA, whose template carries modulus (0x81) and exponent (0x82)
+            // instead of the EC point (0x86).
+            if TLVParser.find(OpenPGPDataObject.rsaModulus, in: objects) != nil {
+                throw CardError.unsupportedKeyType("an RSA key occupies the \(slot.displayName.lowercased())")
+            }
+            throw CardError.malformedResponse("public key template 7F49 had no EC point (86); YubiKey firmware 5.2.3 or newer is required for secp256k1/Ed25519")
         }
         return point.value
     }
@@ -179,6 +190,11 @@ public final class OpenPGPCard: SignerCard {
                 continue
             } catch CardError.conditionsNotSatisfied {
                 continue
+            } catch CardError.unsupportedKeyType {
+                // A non-EC key occupies the slot (RSA on firmware < 5.2.3). It
+                // still counts as occupied so the destructive reset is gated;
+                // the reset replaces it with the EC keys this app provisions.
+                occupied.insert(slot)
             }
         }
 

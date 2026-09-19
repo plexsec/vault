@@ -61,6 +61,11 @@ public enum OpenPGPDataObject {
     public static let privateKey: UInt16 = 0x5F48
     public static let publicKeyTemplate: UInt16 = 0x7F49
     public static let ecdsaPublicPoint: UInt16 = 0x0086
+    // RSA public key components (modulus 0x81, exponent 0x82). Present instead
+    // of the EC point in the public key template on firmware older than 5.2.3
+    // (OpenPGP applet < 3.4), where the signature slot defaults to RSA.
+    public static let rsaModulus: UInt16 = 0x0081
+    public static let rsaExponent: UInt16 = 0x0082
 
     // Security support template contents
     public static let signatureCounter: UInt16 = 0x0093
