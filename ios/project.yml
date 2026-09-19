@@ -74,7 +74,8 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "0.1.0"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        # Personal Apple Development Team for real-device signing.
+        DEVELOPMENT_TEAM: "WSL242UF2M"
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         # Release builds must not contain the DEBUG-only simulated card.
