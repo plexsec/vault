@@ -417,6 +417,13 @@ public final class ProvisioningCeremony {
         report.cardSerial = result.serial
         report.cardOpenPGPVersion = result.openPGPVersion
         cardHeldExistingKey = !result.occupiedSlots.isEmpty
+        for slot in KeySlot.allCases {
+            if let detail = result.probeFailures[slot] {
+                report.warnings.append(
+                    "Could not read the \(slot.displayName.lowercased()) public key during inspection (\(detail)); treating it as unreadable."
+                )
+            }
+        }
         if !result.isFactoryFresh {
             report.warnings.append("YubiKey was not factory-fresh: \(describe(result)).")
         }

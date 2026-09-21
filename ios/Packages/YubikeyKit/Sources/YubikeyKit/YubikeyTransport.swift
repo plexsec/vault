@@ -89,8 +89,6 @@ public enum OpenPGPStatusMapper {
             return .unexpectedStatusWord(sw1: status.sw1, sw2: status.sw2)
         case (0x6D, 0x00):
             return .unsupportedFeature("instruction not supported")
-        case (0x65, 0x81):
-            return .unsupportedFeature("card memory failure")
         default:
             _ = precedingError
             return .unexpectedStatusWord(sw1: status.sw1, sw2: status.sw2)

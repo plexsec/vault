@@ -50,7 +50,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private var userRetriesRemaining = 3
     private var adminRetriesRemaining = 3
     private var slots: [KeySlot: SlotState] = [.signature: SlotState(), .authentication: SlotState()]
-    private var pwStatus: [UInt8] = [0x00, 0x00, 0x7F, 0x00, 0x7F, 0x00, 0x7F]
+    private var pwStatus: [UInt8] = [0x00]
     public private(set) var signatureCounter: UInt32 = 0
     private let serial: UInt32
     private let openPGPVersion: String
@@ -62,6 +62,10 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// counterfeit or tampered card that does not hold the key it claims to.
     public var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
     public var injectedFailure: InjectedFailure = .none
+    /// When set, `GENERATE ASYMMETRIC KEY PAIR` (read) answers with this status
+    /// word instead of the key, simulating an applet that cannot read EC keys
+    /// (e.g. firmware < 5.2.3 answering 6581).
+    public var readPublicKeyStatus: StatusWord?
     /// Random bytes returned by `GET CHALLENGE` (INS 0x84). Defaults to all-zero
     /// so tests and the DEBUG simulated card are reproducible; the app's DEBUG
     /// card overrides it via `-deterministic-entropy`, and a real card always
@@ -268,12 +272,12 @@ public final class MockYubikeyTransport: YubikeyTransport {
             guard command.data.count == 20 else { return status(0x6A, 0x80) }
             slots[slot]?.fingerprint = command.data
         case OpenPGPDataObject.pwStatusBytes:
-            guard command.data.count == 7 else { return status(0x6A, 0x80) }
+            guard command.data.count == 1 else { return status(0x6A, 0x80) }
             pwStatus = command.data
         case OpenPGPDataObject.uifSignature, OpenPGPDataObject.uifAuthentication:
             guard let slot = Self.slot(forUIFTag: tag) else { return status(0x6A, 0x88) }
             slots[slot]?.uif = command.data
-        case OpenPGPDataObject.creationTimeSignature, OpenPGPDataObject.timestampAuthentication:
+        case OpenPGPDataObject.generationTimeSignature, OpenPGPDataObject.generationTimeAuthentication:
             // The simulation accepts the tags design.md specifies.
             break
         default:
@@ -306,26 +310,24 @@ public final class MockYubikeyTransport: YubikeyTransport {
         }
     }
 
-    /// Walks `4D -> <CRT> -> 7F48 -> 5F48` and returns the slot and secret.
+    /// Walks `4D -> <CRT 00> | 7F48 | 5F48` and returns the slot and secret.
     public static func extractImport(_ data: [UInt8]) -> (slot: KeySlot, secret: [UInt8])? {
         guard let objects = try? TLVParser.parse(data),
-              let header = TLVParser.find(OpenPGPDataObject.extendedHeaderList, in: objects)
+              let header = TLVParser.find(OpenPGPDataObject.extendedHeaderList, in: objects),
+              let children = try? TLVParser.parse(header.value)
         else { return nil }
 
-        let crt = KeySlot.allCases.first { slot in
-            TLVParser.find(KeySlotObjects.forSlot(slot).controlReference, in: [header]) != nil
-        }
-        guard let slot = crt,
-              let crtTLV = TLVParser.find(KeySlotObjects.forSlot(slot).controlReference, in: [header]),
-              let template = TLVParser.find(OpenPGPDataObject.privateKeyTemplate, in: [crtTLV]),
-              let key = TLVParser.find(OpenPGPDataObject.privateKey, in: [template]),
-              key.value.count >= 2
+        // The CRT is an empty-value TLV: B6 00 / A4 00.
+        guard let slot = KeySlot.allCases.first(where: { slot in
+            children.contains(TLV(tag: KeySlotObjects.forSlot(slot).controlReference, value: []))
+        }) else { return nil }
+
+        // 5F48 holds the raw 32-byte secret directly.
+        guard let key = TLVParser.find(OpenPGPDataObject.privateKey, in: children),
+              key.value.count == 32
         else { return nil }
 
-        // First two bytes are the component length prefix.
-        let declaredLength = Int(key.value[0]) << 8 | Int(key.value[1])
-        guard declaredLength == 32, key.value.count == 34 else { return nil }
-        return (slot, Array(key.value[2...]))
+        return (slot, key.value)
     }
 
     private func verify(_ command: CommandAPDU) -> ResponseAPDU {
@@ -376,6 +378,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     private func readPublicKey(_ command: CommandAPDU) throws -> ResponseAPDU {
         if let error = try requireSelected() { return error }
+        if let readPublicKeyStatus { return ResponseAPDU(data: [], status: readPublicKeyStatus) }
 
         // The CRT arrives as the command data, encoded as a TLV with an empty
         // value (tag || length 0): B6 00 for the signature slot, A4 00 for auth.
@@ -393,8 +396,13 @@ public final class MockYubikeyTransport: YubikeyTransport {
             publicKey = override
         } else {
             switch algorithm {
-            case .secp256k1: publicKey = try Secp256k1.publicKey(fromPrivateKey: secret)
-            case .ed25519: publicKey = try Ed25519.publicKey(fromSeed: secret)
+            case .secp256k1:
+                // Real cards return the EC point as 65-byte uncompressed
+                // (04 || X || Y); OpenPGPCard.readPublicKey compresses it.
+                let compressed = try Secp256k1.publicKey(fromPrivateKey: secret)
+                publicKey = try Secp256k1.uncompressedPublicKey(fromCompressed: compressed)
+            case .ed25519:
+                publicKey = try Ed25519.publicKey(fromSeed: secret)
             }
         }
 
@@ -418,7 +426,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         userRetriesRemaining = 3
         adminRetriesRemaining = 3
         slots = [.signature: SlotState(), .authentication: SlotState()]
-        pwStatus = [0x00, 0x00, 0x7F, 0x00, 0x7F, 0x00, 0x7F]
+        pwStatus = [0x00]
         signatureCounter = 0
         isSelected = false
     }

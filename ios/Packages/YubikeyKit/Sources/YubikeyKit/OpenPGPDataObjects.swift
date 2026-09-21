@@ -33,19 +33,13 @@ public enum OpenPGPDataObject {
     public static let fingerprintDecryption: UInt16 = 0x00C8
     public static let fingerprintAuthentication: UInt16 = 0x00C9
 
-    // Per-key timestamps (OpenPGP 3.4): 0xCA signature, 0xCB decryption, 0xCC auth.
-    public static let timestampSignature: UInt16 = 0x00CA
-    public static let timestampDecryption: UInt16 = 0x00CB
-    public static let timestampAuthentication: UInt16 = 0x00CC
-    /// Creation time as specified by design.md §4.2 step 6 (`0xCE`).
-    ///
-    /// This tag is NOT independently confirmed against the OpenPGP card spec in
-    /// this codebase; the spec's per-key timestamp object is 0xCA. The write is
-    /// therefore treated as advisory: it is attempted, its read-back is checked,
-    /// and a rejection is recorded as a warning rather than failing the ceremony,
-    /// because the fingerprint and the public-key read-back are what the security
-    /// argument depends on. Resolved against real hardware in milestone M0.
-    public static let creationTimeSignature: UInt16 = 0x00CE
+    // Per-key generation times (OpenPGP card 3.4): 0xCE signature, 0xCF
+    // decryption, 0xD0 authentication, 0xDD attestation. Resolved against real
+    // hardware (YubiKey 5.4.3): 0xCE and 0xD0 are accepted; the earlier guess of
+    // 0xCC (which is actually the "CA fingerprint 3" object) was rejected 6A80.
+    public static let generationTimeSignature: UInt16 = 0x00CE
+    public static let generationTimeDecryption: UInt16 = 0x00CF
+    public static let generationTimeAuthentication: UInt16 = 0x00D0
 
     // Touch policy (User Interaction Flag), per slot
     public static let uifSignature: UInt16 = 0x00D6
@@ -59,6 +53,9 @@ public enum OpenPGPDataObject {
     public static let controlReferenceTemplateAuthentication: UInt16 = 0x00A4
     public static let privateKeyTemplate: UInt16 = 0x7F48
     public static let privateKey: UInt16 = 0x5F48
+    /// EC private-key component inside the 7F48 import template. Tag 0x92 is
+    /// used for both secp256k1 scalars and Ed25519 seeds.
+    public static let ecPrivateKey: UInt16 = 0x0092
     public static let publicKeyTemplate: UInt16 = 0x7F49
     public static let ecdsaPublicPoint: UInt16 = 0x0086
     // RSA public key components (modulus 0x81, exponent 0x82). Present instead
@@ -83,8 +80,7 @@ public struct KeySlotObjects {
     public let controlReference: UInt16
     public let algorithmAttributes: UInt16
     public let fingerprint: UInt16
-    /// Per-key timestamp. design.md §4.2 step 6 names 0xCE for the signature
-    /// slot; see `OpenPGPDataObject.creationTimeSignature` for the caveat.
+    /// Per-key generation time (OpenPGP 3.4): 0xCE signature, 0xD0 authentication.
     public let timestamp: UInt16
     public let uif: UInt16
 
@@ -96,7 +92,7 @@ public struct KeySlotObjects {
                 controlReference: OpenPGPDataObject.controlReferenceTemplateSignature,
                 algorithmAttributes: OpenPGPDataObject.algorithmAttributesSignature,
                 fingerprint: OpenPGPDataObject.fingerprintSignature,
-                timestamp: OpenPGPDataObject.creationTimeSignature,
+                timestamp: OpenPGPDataObject.generationTimeSignature,
                 uif: OpenPGPDataObject.uifSignature
             )
         case .authentication:
@@ -105,7 +101,7 @@ public struct KeySlotObjects {
                 controlReference: OpenPGPDataObject.controlReferenceTemplateAuthentication,
                 algorithmAttributes: OpenPGPDataObject.algorithmAttributesAuthentication,
                 fingerprint: OpenPGPDataObject.fingerprintAuthentication,
-                timestamp: OpenPGPDataObject.timestampAuthentication,
+                timestamp: OpenPGPDataObject.generationTimeAuthentication,
                 uif: OpenPGPDataObject.uifAuthentication
             )
         }
@@ -225,32 +221,37 @@ public enum KeyImportTemplate {
     public static func extendedHeaderList(privateKey: [UInt8], slot: KeySlot) -> [UInt8] {
         precondition(privateKey.count == 32, "secp256k1 scalars and Ed25519 seeds are 32 bytes")
 
-        // 5F48: one component = 2-byte length prefix + secret
-        var component: [UInt8] = [UInt8((privateKey.count >> 8) & 0xFF), UInt8(privateKey.count & 0xFF)]
-        component.append(contentsOf: privateKey)
-        let privateKeyTLV = TLV(tag: OpenPGPDataObject.privateKey, value: component)
+        // Extended header list for EC key import (OpenPGP card spec 4.4.3.9,
+        // matching yubikit's `EcKeyTemplate` / `PrivateKeyTemplate.__bytes__`):
+        //
+        //   4D | len | <CRT 00> | 7F48 | 92 20 | 5F48 | <32-byte secret>
+        //
+        // The CRT is an empty-value TLV (B6 00 / A4 00). 7F48 carries the tag and
+        // length of the single EC private-key component (92 20), and 5F48 carries
+        // its value (the 32-byte scalar or Ed25519 seed). The earlier nesting —
+        // CRT wrapping 7F48 wrapping 5F48 with a 2-byte length prefix — was
+        // rejected by real hardware with 6A80 (`keyImportRejected`).
 
-        // 7F48: private key template wrapping the key material
-        let templateTLV = TLV(tag: OpenPGPDataObject.privateKeyTemplate, value: privateKeyTLV.encoded)
-
-        // CRT: control reference template for the addressed slot
-        let crt = KeySlotObjects.forSlot(slot).controlReference
-        let crtTLV = TLV(tag: crt, value: templateTLV.encoded)
-
-        // 4D: extended header list
-        return TLV(tag: OpenPGPDataObject.extendedHeaderList, value: crtTLV.encoded).encoded
+        let crt = TLV(tag: KeySlotObjects.forSlot(slot).controlReference, value: []).encoded
+        let component = TLV(tag: OpenPGPDataObject.ecPrivateKey, value: privateKey)
+        let componentHeader = Array(component.encoded.prefix(2)) // 92 20
+        let template = TLV(tag: OpenPGPDataObject.privateKeyTemplate, value: componentHeader).encoded
+        let key = TLV(tag: OpenPGPDataObject.privateKey, value: privateKey).encoded
+        return TLV(tag: OpenPGPDataObject.extendedHeaderList, value: crt + template + key).encoded
     }
 
     /// Algorithm attributes for ECDSA over secp256k1: `0x13` (ECDSA) followed by
-    /// the curve OID 1.3.132.0.10 as an ASN.1 DER-encoded object identifier.
+    /// the DER-encoded curve OID 1.3.132.0.10. No trailing format byte (the
+    /// "standard" import format). The earlier bytes carried the secp384r1 OID
+    /// (`...00 22`) plus a trailing `00`, which real hardware rejected with 6A80.
     public static let ecdsaSecp256k1AlgorithmAttributes: [UInt8] = [
         0x13,                   // algorithm id: ECDSA
-        0x2B, 0x81, 0x04, 0x00, 0x22, // OID 1.3.132.0.10 (secp256k1)
-        0x00,                   // no format byte for ECDSA
+        0x2B, 0x81, 0x04, 0x00, 0x0A, // OID 1.3.132.0.10 (secp256k1)
     ]
 
     /// Algorithm attributes for EdDSA over Ed25519: `0x16` (EdDSA) followed by
-    /// the OID 1.3.6.1.4.1.11591.15.1 that GnuPG uses for Ed25519.
+    /// the OID 1.3.6.1.4.1.11591.15.1 that GnuPG uses for Ed25519. No trailing
+    /// format byte.
     ///
     /// RFC 8410's `id-Ed25519` (1.3.101.112) is the other candidate; which one
     /// the applet expects is an M0 hardware-verification item, and a wrong OID
@@ -258,7 +259,6 @@ public enum KeyImportTemplate {
     public static let eddsaEd25519AlgorithmAttributes: [UInt8] = [
         0x16,                   // algorithm id: EdDSA
         0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01, // OID 1.3.6.1.4.1.11591.15.1
-        0x00,                   // no format byte
     ]
 
     public static func algorithmAttributes(for algorithm: KeyAlgorithm) -> [UInt8] {
@@ -289,19 +289,23 @@ public enum KeyImportTemplate {
     }
 }
 
-/// PW status bytes (DO 0xC4): PW1 status, then max lengths for PW1, PW2, PW3.
+/// PW status bytes (DO 0xC4).
+///
+/// On READ the card returns seven bytes: PW1 status, then max length for PW1,
+/// PW2 and PW3 (one byte each), then the remaining-attempts counters for PW1,
+/// PW2 and PW3 (one byte each). On WRITE only the PW1 status byte is accepted —
+/// the max lengths and retry counters are managed by the card (CHANGE REFERENCE
+/// DATA and SET PIN RETRIES respectively), not by PUT DATA of this object.
 public enum PWStatusBytes {
     /// PW1 status 0x00 = the PIN must be re-verified for every signature, which
-    /// is the policy design.md §4.2 step 3 requires.
+    /// is the policy design.md §4.2 step 3 requires. (0x01 = once per session.)
     public static let pinRequiredPerSignature: UInt8 = 0x00
 
-    public static func encode(pw1Status: UInt8 = pinRequiredPerSignature, maxLength: Int = 127) -> [UInt8] {
-        [
-            pw1Status,
-            UInt8((maxLength >> 8) & 0xFF), UInt8(maxLength & 0xFF),
-            UInt8((maxLength >> 8) & 0xFF), UInt8(maxLength & 0xFF),
-            UInt8((maxLength >> 8) & 0xFF), UInt8(maxLength & 0xFF),
-        ]
+    /// The single-byte value `PUT DATA 0xC4` accepts: just the PW1 status byte.
+    /// The previous seven-byte form (status | 2-byte max lengths × 3) was
+    /// rejected by real hardware with 6A80.
+    public static func encode(pw1Status: UInt8 = pinRequiredPerSignature) -> [UInt8] {
+        [pw1Status]
     }
 
     public static func pw1RequiresPin(_ bytes: [UInt8]?) -> Bool? {

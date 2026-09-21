@@ -107,7 +107,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentUIF(.signature), [0x02, 0x20])
         XCTAssertEqual(transport.currentUIF(.authentication), [0x02, 0x20])
         XCTAssertEqual(transport.currentPWStatus.first, 0x00)
-        XCTAssertEqual(transport.currentPWStatus.count, 7)
+        XCTAssertEqual(transport.currentPWStatus.count, 1)
 
         try await ceremony.generateEntropy()
         try ceremony.advance()

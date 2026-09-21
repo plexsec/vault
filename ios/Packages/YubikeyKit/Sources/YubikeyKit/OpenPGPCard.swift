@@ -166,7 +166,15 @@ public final class OpenPGPCard: SignerCard {
             }
             throw CardError.malformedResponse("public key template 7F49 had no EC point (86); YubiKey firmware 5.2.3 or newer is required for secp256k1/Ed25519")
         }
-        return point.value
+        // The card returns secp256k1 points as 65-byte uncompressed (04 || X || Y),
+        // whereas the app derives them as 33-byte compressed. Normalise to
+        // compressed so the read-back comparison is byte-for-byte; Ed25519 points
+        // (32 raw bytes) pass through unchanged.
+        let pointValue = point.value
+        if pointValue.count == Secp256k1.uncompressedPublicKeyLength, pointValue.first == 0x04 {
+            return try Secp256k1.compressedPublicKey(fromUncompressed: pointValue)
+        }
+        return pointValue
     }
 
     // MARK: SignerCard conformance
@@ -186,11 +194,16 @@ public final class OpenPGPCard: SignerCard {
         // data not found") means the slot is empty, which is the only reliable
         // signal — a fingerprint object may be present-but-zero.
         var occupied: Set<KeySlot> = []
+        var probeFailures: [KeySlot: String] = [:]
         for slot in KeySlot.allCases {
             do {
                 _ = try await readPublicKey(slot: slot)
                 occupied.insert(slot)
-            } catch CardError.unexpectedStatusWord(let sw1, let sw2) where sw1 == 0x6A && sw2 == 0x88 {
+            } catch CardError.unexpectedStatusWord(let sw1, let sw2)
+                where (sw1 == 0x6A && sw2 == 0x88) || (sw1 == 0x65 && sw2 == 0x81) {
+                // Empty slot. 6A88 ("referenced data not found") is what most
+                // firmware answers; YubiKey 5.4.x answers 6581 ("memory failure")
+                // for a slot that holds no key. Both mean "nothing here".
                 continue
             } catch CardError.conditionsNotSatisfied {
                 continue
@@ -199,6 +212,15 @@ public final class OpenPGPCard: SignerCard {
                 // still counts as occupied so the destructive reset is gated;
                 // the reset replaces it with the EC keys this app provisions.
                 occupied.insert(slot)
+            } catch let error as CardError {
+                // Any other card-level failure while probing the slot — 6A80
+                // "wrong data", 6D00 "instruction not supported", a 7F49 without
+                // an EC point — must not abort the whole inventory. The
+                // applet-version gate (isDefinitelyUnsupported) decides whether
+                // the card can be provisioned; here we only want occupancy, so
+                // record the failure and keep going so the version and serial are
+                // still reported.
+                probeFailures[slot] = Self.probeFailureDetail(error)
             }
         }
 
@@ -212,8 +234,23 @@ public final class OpenPGPCard: SignerCard {
             pwStatusBytes: parsed.pwStatusBytes,
             occupiedSlots: occupied,
             signatureCounter: counter,
-            isFactoryFresh: occupied.isEmpty && (counter ?? 0) == 0
+            isFactoryFresh: occupied.isEmpty && (counter ?? 0) == 0,
+            probeFailures: probeFailures
         )
+    }
+
+    /// Short human-readable reason for a slot-probe failure, for the inventory.
+    private static func probeFailureDetail(_ error: CardError) -> String {
+        switch error {
+        case .unexpectedStatusWord(let sw1, let sw2):
+            return String(format: "%02X%02X", sw1, sw2)
+        case .unsupportedFeature(let detail):
+            return detail
+        case .malformedResponse(let detail):
+            return detail
+        default:
+            return error.userFacingDescription
+        }
     }
 
     public func reset(adminPIN: [UInt8]) async throws {
@@ -279,6 +316,16 @@ public final class OpenPGPCard: SignerCard {
 
         let objects = KeySlotObjects.forSlot(slot)
 
+        // Algorithm attributes MUST be written before the key: the card needs to
+        // know the curve to interpret the 32-byte key material. The previous
+        // order — import first, attributes second — failed on real hardware with
+        // 6A80 because the slot still carried its default RSA attributes.
+        try await putData(
+            tag: objects.algorithmAttributes,
+            value: KeyImportTemplate.algorithmAttributes(for: algorithm),
+            operation: .setAlgorithmAttributes
+        )
+
         // The addressed slot must be empty: PUT DATA of a private key is rejected
         // on an occupied slot, and the ceremony treats that as a hard failure
         // rather than trying to work around it.
@@ -288,12 +335,6 @@ public final class OpenPGPCard: SignerCard {
             addressing: (0x3F, 0xFF),
             ins: 0xDB,
             operation: .importKey
-        )
-
-        try await putData(
-            tag: objects.algorithmAttributes,
-            value: KeyImportTemplate.algorithmAttributes(for: algorithm),
-            operation: .setAlgorithmAttributes
         )
 
         try await putData(
@@ -313,7 +354,9 @@ public final class OpenPGPCard: SignerCard {
             )
         } catch let error as CardError {
             switch error {
-            case .unexpectedStatusWord, .unsupportedFeature:
+            case .unexpectedStatusWord, .unsupportedFeature, .keyImportRejected:
+                // The generation time is advisory metadata; a card that rejects
+                // it (e.g. an unknown tag) must not fail the ceremony.
                 break
             default:
                 throw error

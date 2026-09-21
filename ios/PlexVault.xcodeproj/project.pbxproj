@@ -250,7 +250,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					2FEC9C37DFAC162F495F7C93 = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = WSL242UF2M;
 						ProvisioningStyle = Automatic;
 					};
 					AE1CED551B747F301C6A14A5 = {
@@ -425,7 +425,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = WSL242UF2M;
 				EXCLUDED_SOURCE_FILE_NAMES = MockYubikeyTransport.swift;
 				INFOPLIST_FILE = PlexVault/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -452,7 +452,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = WSL242UF2M;
 				INFOPLIST_FILE = PlexVault/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -100,19 +100,22 @@ final class APDUTests: XCTestCase {
                                             data: OpenPGPTouchPolicy.fixedEncoded, expectedLength: 0)
         XCTAssertEqual(authenticationUIF.hex, "00da00d802022000")
 
+        // PW status is written as a single byte: the PW1 status (0x00 = PIN
+        // required per signature). Max-length and retry fields are read-only via
+        // this DO and are managed by the card, not by PUT DATA 0xC4.
         let pwStatus = CommandAPDU(cla: 0x00, ins: 0xDA, p1: 0x00, p2: 0xC4,
                                    data: PWStatusBytes.encode(), expectedLength: 0)
-        XCTAssertEqual(pwStatus.hex, "00da00c40700" + "007f007f007f" + "00")
-        XCTAssertEqual(PWStatusBytes.encode().first, PWStatusBytes.pinRequiredPerSignature)
+        XCTAssertEqual(pwStatus.hex, "00da00c4010000")
+        XCTAssertEqual(PWStatusBytes.encode(), [PWStatusBytes.pinRequiredPerSignature])
     }
 
     func testKeyImportAPDUHeaderAndTemplateStructure() {
         let secret = [UInt8](repeating: 0x11, count: 32)
         let template = KeyImportTemplate.extendedHeaderList(privateKey: secret, slot: .signature)
 
-        // 4D | len | B6 | len | 7F48 | len | 5F48 | 00 20 | secret
-        XCTAssertEqual(Array(template.prefix(6)), [0x4D, 0x2A, 0xB6, 0x28, 0x7F, 0x48])
-        XCTAssertEqual(Array(template.suffix(34).prefix(2)), [0x00, 0x20])
+        // 4D | len | B6 00 | 7F48 | 92 20 | 5F48 | secret
+        XCTAssertEqual(Array(template.prefix(6)), [0x4D, 0x2A, 0xB6, 0x00, 0x7F, 0x48])
+        XCTAssertEqual(Array(template.prefix(11)), [0x4D, 0x2A, 0xB6, 0x00, 0x7F, 0x48, 0x02, 0x92, 0x20, 0x5F, 0x48])
         XCTAssertEqual(Array(template.suffix(32)), secret)
         XCTAssertEqual(template.count, 44)
 
@@ -131,7 +134,7 @@ final class APDUTests: XCTestCase {
         let secret = [UInt8](repeating: 0x22, count: 32)
         let template = KeyImportTemplate.extendedHeaderList(privateKey: secret, slot: .authentication)
 
-        XCTAssertEqual(Array(template.prefix(6)), [0x4D, 0x2A, 0xA4, 0x28, 0x7F, 0x48])
+        XCTAssertEqual(Array(template.prefix(6)), [0x4D, 0x2A, 0xA4, 0x00, 0x7F, 0x48])
         XCTAssertEqual(template.count, 44)
         let extracted = MockYubikeyTransport.extractImport(template)
         XCTAssertEqual(extracted?.slot, .authentication)
@@ -139,15 +142,15 @@ final class APDUTests: XCTestCase {
     }
 
     func testAlgorithmAttributesBytes() {
-        // 0x13 ECDSA || OID 1.3.132.0.10 || 0x00
+        // 0x13 ECDSA || OID 1.3.132.0.10 (secp256k1), no trailing format byte.
         XCTAssertEqual(
             KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes,
-            [0x13, 0x2B, 0x81, 0x04, 0x00, 0x22, 0x00]
+            [0x13, 0x2B, 0x81, 0x04, 0x00, 0x0A]
         )
-        // 0x16 EdDSA || OID 1.3.6.1.4.1.11591.15.1 (Ed25519) || 0x00
+        // 0x16 EdDSA || OID 1.3.6.1.4.1.11591.15.1 (Ed25519), no trailing byte.
         XCTAssertEqual(
             KeyImportTemplate.eddsaEd25519AlgorithmAttributes,
-            [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01, 0x00]
+            [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01]
         )
         XCTAssertEqual(KeyImportTemplate.algorithmAttributes(for: .secp256k1),
                        KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes)
@@ -253,6 +256,24 @@ final class APDUTests: XCTestCase {
         XCTAssertTrue(inventory.isFactoryFresh)
         XCTAssertTrue(inventory.likelySupportsSecp256k1)
         XCTAssertEqual(PWStatusBytes.pw1RequiresPin(inventory.pwStatusBytes), true)
+    }
+
+    /// A YubiKey 5.4.x answers 6581 ("memory failure") when the public key of an
+    /// *empty* slot is read — not 6A88 as most firmware does. The inventory must
+    /// treat both as "no key here" rather than aborting with a bare 6581 error.
+    func testInventoryTreatsRead6581AsEmptySlot() async throws {
+        let transport = MockYubikeyTransport(openPGPVersion: "3.4")
+        transport.readPublicKeyStatus = StatusWord(sw1: 0x65, sw2: 0x81)
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+
+        let inventory = try await card.inventory()
+
+        XCTAssertEqual(inventory.openPGPVersion, "3.4")
+        XCTAssertFalse(inventory.holdsKey(in: .signature))
+        XCTAssertFalse(inventory.holdsKey(in: .authentication))
+        XCTAssertTrue(inventory.isFactoryFresh)
+        XCTAssertTrue(inventory.probeFailures.isEmpty)
     }
 
     func testVersionParsingGateForSecp256k1() {

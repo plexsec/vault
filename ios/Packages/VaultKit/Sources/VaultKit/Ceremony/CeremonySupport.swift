@@ -191,6 +191,13 @@ public struct CardInventory: Equatable, Sendable {
     public var signatureCounter: UInt32?
     /// True when the card looks factory-fresh (no key in any slot, no counter).
     public var isFactoryFresh: Bool
+    /// Slots whose public key could not be read during inventory, with the reason
+    /// (status word hex or detail). An empty slot answers 6A88 and is not recorded
+    /// here; this is for cards that answered the key-read with an unexpected
+    /// status — e.g. 6581 on an applet that predates EC support — which must not
+    /// abort the whole inventory. The applet-version gate (`isDefinitelyUnsupported`)
+    /// is what decides whether such a card can be provisioned at all.
+    public var probeFailures: [KeySlot: String]
 
     public init(
         openPGPVersion: String,
@@ -200,7 +207,8 @@ public struct CardInventory: Equatable, Sendable {
         pwStatusBytes: [UInt8]? = nil,
         occupiedSlots: Set<KeySlot> = [],
         signatureCounter: UInt32? = nil,
-        isFactoryFresh: Bool = true
+        isFactoryFresh: Bool = true,
+        probeFailures: [KeySlot: String] = [:]
     ) {
         self.openPGPVersion = openPGPVersion
         self.manufacturer = manufacturer
@@ -210,6 +218,7 @@ public struct CardInventory: Equatable, Sendable {
         self.occupiedSlots = occupiedSlots
         self.signatureCounter = signatureCounter
         self.isFactoryFresh = isFactoryFresh
+        self.probeFailures = probeFailures
     }
 
     public func holdsKey(in slot: KeySlot) -> Bool { occupiedSlots.contains(slot) }

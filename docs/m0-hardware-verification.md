@@ -8,76 +8,83 @@ design; see "why each one is safe to be wrong" below.
 
 ## 1. The `PUT DATA 0x4D` key-import template layout
 
-**Assumption in code** (`YubikeyKit/OpenPGPDataObjects.swift`,
-`KeyImportTemplate.extendedHeaderList`):
+**Assumption in code, now resolved.** `KeyImportTemplate.extendedHeaderList`
+previously produced:
 
 ```
 PUT DATA   P1P2 = 3F FF, INS = 0xDB
-data = 4D | B6 | 7F48 | 5F48 | 00 20 | <32-byte secp256k1 scalar>
+data = 4D | B6 | 7F48 | 5F48 | 00 20 | <32-byte secret>
 ```
 
-i.e. the Extended Header List wraps the signature control reference template
-(`B6`), which wraps the private key template (`7F48`), which wraps the private
-key (`5F48`), whose single ECC component carries a 2-byte length prefix.
+i.e. the control reference template (`B6`) wrapped the private-key template
+(`7F48`), which wrapped the private key (`5F48`), whose single EC component
+carried a 2-byte length prefix.
 
-**How to verify.** On a desktop with the YubiKey attached, capture a known-good
-import and diff it against ours:
+**Observed on hardware.** A YubiKey 5C Nano, firmware 5.4.3, OpenPGP applet 3.4
+rejected that form with `6A80` (`keyImportRejected`). The accepted layout, matching
+yubikit's `EcKeyTemplate` / `PrivateKeyTemplate.__bytes__` (OpenPGP card spec
+4.4.3.9), is:
 
-```sh
-# Option A: ykman prints APDUs at debug level
-ykman --log-level DEBUG openpgp keys set-key ... 2>&1 | grep -A2 'DB 3F FF'
-
-# Option B: GnuPG's keytocard, watched at the APDU layer
-gpg --card-edit            # then: admin, key-attr, keytocard
-# pair with an APDU logger (e.g. `pcscd` tracing, or a CCID shim)
+```
+PUT DATA   P1P2 = 3F FF, INS = 0xDB
+data = 4D | <CRT 00> | 7F48 | 92 20 | 5F48 | <32-byte secret>
 ```
 
-Then compare with what we send:
+* the CRT is an **empty-value** TLV (`B6 00` / `A4 00`), a sibling of the key
+  objects rather than their wrapper;
+* `7F48` carries the **tag and length** of the single EC private-key component
+  (`92 20`);
+* `5F48` carries the raw 32-byte value (secp256k1 scalar or Ed25519 seed), with
+  no length prefix.
 
-```sh
-cd ios/Packages/YubikeyKit && swift test --filter testKeyImportAPDUHeaderAndTemplateStructure
-# prints/asserts: 4D 2A B6 28 7F 48 22 00 20 <scalar>
-```
+Full bytes for a 32-byte secret: `4D 2A B6 00 7F 48 02 92 20 5F 48 20 <secret>`.
 
-A quick end-to-end check that does not need a trace: `gpg --card-status` after
-our import should show the key with our fingerprint, and `gpg --card-edit` →
-`list` should show it as an ECC secp256k1 signing key.
+**Change.** `KeyImportTemplate.extendedHeaderList` now emits the corrected form;
+`testKeyImportAPDUHeaderAndTemplateStructure` and
+`testAuthenticationSlotImportTemplateUsesCRT_A4` pin those bytes, and the mock's
+`extractImport` parses the new structure.
 
-**Why it is safe to be wrong.** The ceremony's next step reads the public key
-back out of the card and compares it byte-for-byte with the locally derived key.
-A wrong template either makes the card reject the import (`6A80`, surfaced as
-`keyImportRejected`) or produces a key that does not match — in which case the
-ceremony wipes everything and voids the procedure. It cannot silently provision a
-different key.
+**Two further findings, both resolved against the same card.**
 
-**Fallback if in-app import proves unreliable.** Move the import to a desktop
-`ykman` / `gpg` step over the same USB-C CCID path and have the app read the key
-back and verify it. Every other behaviour in v0.1 is preserved; only the party
-performing the write changes.
+1. *Algorithm attributes must be written before the key.* The card needs to know
+   the curve to interpret the 32-byte key material. Importing first into a slot
+   that still carries its default RSA attributes (`01 08 00 00 11 00`) is rejected
+   with `6A80`. `OpenPGPCard.importKey` now writes `0xC1`/`0xC3` first, then the
+   key (matching yubikit's `put_key`).
+2. *The secp256k1 OID was wrong.* The code carried `13 2B 81 04 00 22 00`
+   (`1.3.132.0.34` = secp384r1, plus a trailing format byte). The accepted value
+   is `13 2B 81 04 00 0A` (6 bytes, `1.3.132.0.10` = secp256k1, no trailing
+   byte), confirmed `9000` on hardware.
 
-## 2. `0xC4` PW-status length fields
+**Why it was safe to be wrong.** A wrong template is rejected outright (`6A80`) or
+fails the read-back comparison — it cannot silently provision a different key. The
+read-back step (§4.2 step 7) remains the final proof on the device.
 
-**Assumption in code** (`PWStatusBytes.encode`): seven bytes —
-`PW1 status | max PW1 (2) | max PW2 (2) | max PW3 (2)` — with `PW1 status = 0x00`
-and all maxima set to 127.
+## 2. `0xC4` PW-status bytes: write is a single byte, not seven
 
-**How to verify.** After the policy step:
+**Assumption in code, now resolved.** `PWStatusBytes.encode` produced seven bytes
+(`PW1 status | 2-byte max PW1 | 2-byte max PW2 | 2-byte max PW3`) with all maxima
+set to 127.
 
-```sh
-ykman openpgp info     # reports PIN policies: "PIN: verify each use" / retries / max length
-gpg --card-status      # "PIN retry counter" and key attributes
-```
+**Observed on hardware.** A YubiKey 5C Nano, firmware 5.4.3, OpenPGP applet 3.4:
 
-Our app already reads the object back and records a warning if `0xC4[0]` is not
-`0x00`; the report prints that warning, so a wrong write is visible without
-hardware tooling. Confirm the maxima match what `ykman` reports and adjust
-`PWStatusBytes.encode(maxLength:)` if the firmware uses a different maximum.
+* `PUT DATA 0xC4` with the seven-byte value is rejected with `6A80` (wrong data).
+* On read, `GET DATA 0x006E` returns `C4 07 01 7F 7F 7F 03 00 03` — seven bytes, but
+  laid out as `PW1 status | max PW1 | max PW2 | max PW3 | attempts PW1 | attempts PW2 | attempts PW3`
+  (one byte each), not two-byte maxima.
+* The write the card accepts is a **single byte**: the PW1 status (`0x00` = PIN
+  required per signature, `0x01` = once per session). This matches yubikit's
+  `set_signature_pin_policy`, which sends `struct.pack(">B", policy)`. Max lengths
+  and retry counters are managed by the card (`CHANGE REFERENCE DATA` / `SET PIN
+  RETRIES`), not by `PUT DATA 0xC4`.
 
-**Why it is safe to be wrong.** A rejected write surfaces as a status word; a
-wrong maximum only affects the longest PIN the card will accept, and the PIN step
-fails loudly if the PIN will not fit. The property that actually matters —
-`PW1 status = 0x00`, so the PIN is required for every signature — is verified by
-read-back.
+**Change.** `PWStatusBytes.encode()` now returns the single PW1-status byte, and
+the simulated card's stored `0xC4` value is one byte. The read-back check is
+unchanged: the app still warns if `0xC4[0]` is not `0x00`.
+
+**Why it was safe to be wrong.** The write is rejected outright (`6A80`), and the
+only security-relevant bit — `PW1 status = 0x00`, so the PIN is required for every
+signature — is the first byte, which the app reads back and warns on.
 
 ## 3. `0xCE` as the creation-time object
 
@@ -131,20 +138,24 @@ fully functional alternative path.
 
 ## 5. Ed25519 support and the authentication-slot import template
 
-**Assumption in code** (`YubikeyKit/OpenPGPDataObjects.swift`,
+**Assumption in code, now resolved on a YubiKey 5C Nano, firmware 5.4.3, OpenPGP
+applet 3.4** (`YubikeyKit/OpenPGPDataObjects.swift`,
 `KeyImportTemplate.eddsaEd25519AlgorithmAttributes` and
 `KeySlotObjects.forSlot(.authentication)`):
 
-- The applet supports Ed25519 (EdDSA) at all, and the applet version reported by
-  `GET DATA 0x6E` distinguishes it.
+- The applet supports Ed25519 (EdDSA), confirmed by `GET DATA 0x6E` version 3.4.
 - Algorithm attributes for the authentication slot (`0xC3`) are
-  `16 | 2B 06 01 04 01 DA 47 0F 01 | 00`, i.e. EdDSA with the Ed25519 OID
-  `1.3.6.1.4.1.11591.15.1` that GnuPG writes.
+  `16 | 2B 06 01 04 01 DA 47 0F 01` (10 bytes, **no** trailing format byte) — EdDSA
+  with the Ed25519 OID `1.3.6.1.4.1.11591.15.1`. `PUT DATA 0xC3` with this value
+  returns `9000`.
 - Key import uses the same Extended Header List shape as secp256k1 but with CRT
   `0xA4`, and the 32-byte secret is the Ed25519 **seed** (not the clamped
-  scalar).
+  scalar). `PUT DATA 3F FF` returns `9000`.
 - `GENERATE ASYMMETRIC KEY PAIR` with CRT `0xA4` returns the raw 32-byte point in
-  `7F49`/`86`, with **no** `0x40` prefix.
+  `7F49`/`86`, with **no** `0x40` prefix. Confirmed: `7F 49 22 86 20 <32 bytes>`.
+
+The trailing-format-byte `00` and a wrong length on the attributes were what made
+an early manual probe desync the CCID channel; the code never shipped them.
 
 **How to verify.** On a desktop with the key attached:
 
@@ -242,3 +253,35 @@ have been collected — a change confined to `OpenPGPCard.randomBytes`.
 **Why it is safe to be wrong.** A short response is a visible, hard failure (the
 app throws `CardError.malformedResponse`) before any mnemonic is derived; it cannot
 silently produce short entropy. The fallback is a mechanical loop.
+
+## 10. Reading an empty slot's public key returns `6581`, not `6A88`
+
+**Assumption in code, now resolved.** `OpenPGPCard.inventory()` probes each slot
+for occupancy with `GENERATE ASYMMETRIC KEY PAIR` in read mode
+(`00 47 81 00 02 B6 00 00` and `00 47 81 00 02 A4 00 00`) and previously treated
+only `6A88` ("referenced data not found") as "slot empty".
+
+**Observed on hardware.** A YubiKey 5C Nano, firmware 5.4.3, OpenPGP applet 3.4,
+factory-fresh (fingerprints `C5`/`C6` all zero, counter 0, default RSA attributes):
+
+| APDU | Result |
+|---|---|
+| `00 47 81 00 02 B6 00 00` (read signature slot) | `6581` |
+| `00 47 81 00 02 A4 00 00` (read authentication slot) | `6581` |
+| bare-tag form `00 47 81 00 01 B6` | `6A80` (wrong data) |
+
+The card reports `6581` ("memory failure") for a slot that holds no key; the
+`6A88` the code expected was not produced. Both slots were empty, so `6581` is the
+empty-slot answer on 5.4.x, not a memory fault — the same read against a slot that
+*does* hold an EC key still returns `7F49`/`86`.
+
+**Change.** `inventory()` now treats `6581` and `6A88` identically as "no key in
+this slot". Any other unexpected status word is recorded as a `probeFailures`
+warning rather than aborting the inventory, so the version and serial are still
+reported. Pinned by `testInventoryTreatsRead6581AsEmptySlot`.
+
+**Why it was safe to be wrong.** The failure was a hard crash at the inventory
+screen, never a silently wrong key; the read-back comparison (§4.2 step 7) is
+unaffected and still voids the ceremony on any mismatch. The fix only changes how
+an empty slot is recognised before any key exists.
+

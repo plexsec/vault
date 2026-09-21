@@ -95,6 +95,38 @@ public enum Secp256k1 {
         return output
     }
 
+    /// Compresses a 65-byte uncompressed SEC1 key (04 || X || Y) to the 33-byte
+    /// compressed form. The OpenPGP card returns uncompressed points on read-back
+    /// while the app derives compressed ones, so this is the normalisation step.
+    public static func compressedPublicKey(fromUncompressed uncompressed: [UInt8]) throws -> [UInt8] {
+        guard uncompressed.count == uncompressedPublicKeyLength, uncompressed.first == 0x04 else {
+            throw Secp256k1Error.invalidPublicKey
+        }
+        let context = Secp256k1Context.shared.raw
+
+        var publicKey = secp256k1_pubkey()
+        let parsed = uncompressed.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_parse(context, &publicKey, buffer.baseAddress!, uncompressed.count)
+        }
+        guard parsed == 1 else { throw Secp256k1Error.invalidPublicKey }
+
+        var output = [UInt8](repeating: 0, count: compressedPublicKeyLength)
+        var outputLength = output.count
+        let serialized = output.withUnsafeMutableBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_serialize(
+                context,
+                buffer.baseAddress!,
+                &outputLength,
+                &publicKey,
+                UInt32(SECP256K1_EC_COMPRESSED)
+            )
+        }
+        guard serialized == 1, outputLength == compressedPublicKeyLength else {
+            throw Secp256k1Error.invalidPublicKey
+        }
+        return output
+    }
+
     /// `privateKey + tweak (mod n)`. Throws when the tweak is out of range or the
     /// sum is zero, which is exactly the BIP32 "invalid child" condition.
     ///
