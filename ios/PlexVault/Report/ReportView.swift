@@ -89,11 +89,14 @@ struct ReportBody: View {
             rows.append(("\(label) fingerprint", record.fingerprintHex ?? "-"))
             rows.append(("\(label) read-back verified", record.readBackVerified ? "yes" : "NO"))
             if let type = record.pairingURType { rows.append(("\(label) pairing UR type", type)) }
+            if let pairingPath = record.pairingPath {
+                rows.append(("\(label) pairing key path", pairingPath + (record.pairingAccountLevel ? " (account level)" : "")))
+            }
         }
 
         if let counter = report.counterBaseline { rows.append(("Counter baseline (secp256k1)", "\(counter)")) }
         rows.append(("Ed25519 counter", "none — authentication slot is not counted"))
-        rows.append(("Chain code exported", report.pairingIncludedChainCode ? "yes" : "no"))
+        rows.append(("Chain code exported", report.pairingIncludedChainCode ? "yes (required by Keystone/MetaMask)" : "no"))
         return rows
     }
 

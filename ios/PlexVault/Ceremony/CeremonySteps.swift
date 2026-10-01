@@ -547,7 +547,7 @@ struct PairingStepView: View {
             actionTitle: prepared ? "Continue" : "Prepare pairing codes",
             isEnabled: prepared
                 ? viewModel.pairingAddressConfirmed
-                : (!viewModel.pairingIncludesChainCode || viewModel.acknowledgeChainCodeWarning),
+                : viewModel.acknowledgeChainCodeWarning,
             secondaryTitle: prepared ? "Regenerate with current settings" : nil,
             secondaryAction: prepared ? { viewModel.buildPairingURs() } : nil,
             action: {
@@ -558,10 +558,22 @@ struct PairingStepView: View {
                 }
             }
         ) {
+            chainCodeWarning
+
             if prepared, let keys = viewModel.derivedKeys {
                 ForEach(keys.all, id: \.algorithm) { key in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(key.algorithm.displayName).font(.subheadline.weight(.semibold))
+                        HStack {
+                            Text(key.algorithm.displayName).font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 8)
+                            if viewModel.pairingAccountLevel(for: key.algorithm) {
+                                Text("account-level export")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color.orange.opacity(0.2))
+                                    .clipShape(Capsule())
+                            }
+                        }
                         if let urString = viewModel.pairingURStrings[key.algorithm],
                            let ur = try? UR(urString: urString) {
                             AnimatedURView(ur: ur)
@@ -576,6 +588,16 @@ struct PairingStepView: View {
                         }
                         if key.evmAddress == nil {
                             AddressDisplay(label: "Public key your wallet must show", value: key.identity)
+                        }
+                        if key.algorithm == .secp256k1 {
+                            Text("""
+                            The secp256k1 code exports the account-level key so a Keystone/MetaMask \
+                            wallet can derive from it. Its derivation is pinned to the single key on \
+                            this YubiKey: every account the wallet offers is the same address shown \
+                            above. Do not fund any address that differs from it.
+                            """)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                     }
                     .padding(12)
@@ -592,7 +614,7 @@ struct PairingStepView: View {
             .font(.footnote)
             .disabled(!prepared)
 
-            DisclosureGroup("Advanced: wire format and chain code", isExpanded: $showAdvanced) {
+            DisclosureGroup("Advanced: wire format", isExpanded: $showAdvanced) {
                 Picker("UR type", selection: $viewModel.pairingStyle) {
                     ForEach(URTypeStyle.allCases, id: \.self) { style in
                         Text(style.displayName).tag(style)
@@ -600,23 +622,31 @@ struct PairingStepView: View {
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
-
-                Toggle("Export a chain code as well", isOn: $viewModel.pairingIncludesChainCode)
-
-                if viewModel.pairingIncludesChainCode {
-                    Text("""
-                    A chain code lets a wallet derive further addresses. Each YubiKey slot holds \
-                    one key and can only sign for the values above, so derived addresses would \
-                    receive funds you could not spend from this device.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-
-                    Toggle("I understand that derived addresses cannot be signed for", isOn: $viewModel.acknowledgeChainCodeWarning)
-                        .font(.footnote)
-                }
             }
         }
+    }
+
+    /// Always visible, not hidden behind "Advanced": the payload always carries a
+    /// chain code, and the operator must acknowledge that before the codes are
+    /// built. This is the forced warning that pairs with the account-level export.
+    private var chainCodeWarning: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Chain code required by Keystone/MetaMask", systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(PairingPolicy.chainCodeWarning)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle(
+                "I understand that only the address shown here can be signed for",
+                isOn: $viewModel.acknowledgeChainCodeWarning
+            )
+            .font(.footnote)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 

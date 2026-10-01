@@ -101,7 +101,8 @@ public final class CeremonyViewModel {
     public var backfillEntries: [Int: String] = [:]
     public var restoreWords = ""
     public var pairingStyle: URTypeStyle = .keystoneLegacy
-    public var pairingIncludesChainCode = false
+    /// Mandatory acknowledgement of `PairingPolicy.chainCodeWarning`. The pairing
+    /// UR always carries a chain code, so this gates `buildPairingURs`.
     public var acknowledgeChainCodeWarning = false
     public var pairingAddressConfirmed = false
 
@@ -165,6 +166,12 @@ public final class CeremonyViewModel {
     }
 
     public var pairingPrepared: Bool { !pairingURStrings.isEmpty }
+
+    /// True when the exported pairing key is an ancestor of the card's leaf
+    /// (the secp256k1 account-level export).
+    public func pairingAccountLevel(for algorithm: KeyAlgorithm) -> Bool {
+        ceremony?.pairingExports[algorithm]?.isAccountLevel ?? false
+    }
 
     // MARK: Lifecycle
 
@@ -406,10 +413,10 @@ public final class CeremonyViewModel {
 
     public func buildPairingURs() {
         runSync { ceremony in
-            let policy: PairingPolicy = self.pairingIncludesChainCode
-                ? .includeChainCode(acknowledgedUnsignableChildren: self.acknowledgeChainCodeWarning)
-                : .singleKeyOnly
-            let urs = try ceremony.buildPairingURs(style: self.pairingStyle, policy: policy)
+            let urs = try ceremony.buildPairingURs(
+                style: self.pairingStyle,
+                chainCodeAcknowledged: self.acknowledgeChainCodeWarning
+            )
             self.pairingURStrings = urs.mapValues(\.string)
         }
     }

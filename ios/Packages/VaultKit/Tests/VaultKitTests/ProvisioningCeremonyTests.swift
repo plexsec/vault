@@ -77,12 +77,12 @@ final class ProvisioningCeremonyTests: XCTestCase {
     private func completeCeremony(
         _ ceremony: ProvisioningCeremony,
         style: URTypeStyle = .keystoneLegacy,
-        policy: PairingPolicy = .singleKeyOnly
+        chainCodeAcknowledged: Bool = true
     ) async throws -> CeremonyReport {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        _ = try ceremony.buildPairingURs(style: style, policy: policy)
+        _ = try ceremony.buildPairingURs(style: style, chainCodeAcknowledged: chainCodeAcknowledged)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
         _ = try await ceremony.readCounterBaseline()
@@ -142,7 +142,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
             )
         }
 
-        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy)
+        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         XCTAssertEqual(urs.count, 2)
         for (_, ur) in urs {
             XCTAssertEqual(ur.type, "crypto-hdkey")
@@ -171,7 +171,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(report.key(.secp256k1)?.identity, Expected.evmAddress)
         XCTAssertEqual(report.key(.ed25519)?.identity, Expected.ed25519PublicKey)
         XCTAssertEqual(report.key(.secp256k1)?.pairingURType, "crypto-hdkey")
-        XCTAssertFalse(report.pairingIncludedChainCode)
+        XCTAssertTrue(report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.isFinished)
         // The Ed25519 slot has no counter, which the report must state.
         XCTAssertTrue(report.warnings.contains { $0.contains("no hardware signature counter") })
@@ -432,7 +432,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        _ = try ceremony.buildPairingURs(style: .keystoneLegacy)
+        _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
 
@@ -480,67 +480,86 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(card.pinChangeCount, 0, "the card must not be touched for an invalid PIN policy")
     }
 
-    // MARK: Pairing policy
+    // MARK: Pairing export
 
-    func testDefaultPairingPolicyOmitsChainCodeForBothKeys() async throws {
+    /// The pairing export must satisfy Keystone/MetaMask's `CryptoHDKey`:
+    /// a chain code is mandatory (its absence is what makes MetaMask throw
+    /// "Cannot read properties of undefined (reading 'length')"), and the
+    /// secp256k1 key is exported at the BIP44 account level with the children
+    /// path pinned to the card's leaf so no unsignable sibling is offered.
+    func testPairingExportIsKeystoneCompatibleForBothKeys() async throws {
         let ceremony = makeCeremony()
         let walk = try await runThroughDerivation(ceremony)
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
 
-        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, policy: .singleKeyOnly)
+        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
 
+        // secp256k1: account-level key, chain code, children pinned to 0/0.
         let secp256k1 = try HDKey(ur: try XCTUnwrap(urs[.secp256k1]))
-        XCTAssertNil(secp256k1.chainCode, "chain code must be omitted so no unsignable children are offered")
-        XCTAssertEqual(secp256k1.keyData, walk.keys.secp256k1.publicKey)
-        XCTAssertEqual(secp256k1.origin?.components, walk.keys.secp256k1.path.components)
+        XCTAssertNotNil(secp256k1.chainCode, "a crypto-hdkey without a chain code crashes MetaMask")
+        XCTAssertEqual(secp256k1.keyData.count, 33)
+        XCTAssertNotEqual(secp256k1.keyData, walk.keys.secp256k1.publicKey,
+                          "the export is the account key, not the leaf")
+        XCTAssertEqual(secp256k1.origin?.components,
+                       [.hardened(44), .hardened(0), .hardened(0)],
+                       "origin must be the BIP44 account level")
+        XCTAssertEqual(secp256k1.children?.components, [.normal(0), .normal(0)],
+                       "children must pin the derivation to the leaf, with no wildcard")
         XCTAssertEqual(secp256k1.useInfo?.type, 0)
         XCTAssertFalse(secp256k1.isEd25519)
+        // Field 9 is not decorative: MetaMask's `getAccountLabel()` does
+        // `name[0].toUpperCase()` on the keyring name, which is only ever
+        // restored from this field and is otherwise left `undefined` by
+        // `BaseKeyring.deserialize()`.
+        XCTAssertEqual(secp256k1.name, PairingPolicy.deviceName)
 
+        // Ed25519: exported at its own path, also with a chain code.
         let ed25519 = try HDKey(ur: try XCTUnwrap(urs[.ed25519]))
-        XCTAssertNil(ed25519.chainCode)
+        XCTAssertNotNil(ed25519.chainCode)
         XCTAssertEqual(ed25519.keyData, walk.keys.ed25519.publicKey)
         XCTAssertEqual(ed25519.origin?.components, walk.keys.ed25519.path.components)
+        XCTAssertNil(ed25519.children, "SLIP-0010 is all-hardened; there is nothing to derive")
         XCTAssertEqual(ed25519.useInfo?.type, 501)
         XCTAssertTrue(ed25519.isEd25519)
+        XCTAssertEqual(ed25519.name, PairingPolicy.deviceName)
 
-        XCTAssertFalse(ceremony.report.pairingIncludedChainCode)
+        XCTAssertTrue(ceremony.report.pairingIncludedChainCode)
+        XCTAssertTrue(ceremony.report.warnings.contains(PairingPolicy.chainCodeWarning))
+        XCTAssertTrue(ceremony.pairingExports[.secp256k1]?.isAccountLevel == true)
+        XCTAssertEqual(ceremony.report.key(.secp256k1)?.pairingPath, "m/44'/0'/0'")
+        XCTAssertTrue(ceremony.report.key(.secp256k1)?.pairingAccountLevel == true)
     }
 
     func testUnacknowledgedChainCodeExportIsRefused() async throws {
         let ceremony = makeCeremony()
-        let keys = try await runThroughDerivation(ceremony).keys
+        _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        XCTAssertThrowsError(try ceremony.buildPairingURs(
-            style: .v2,
-            policy: .includeChainCode(acknowledgedUnsignableChildren: false)
-        )) { error in
+        XCTAssertThrowsError(try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: false)) { error in
             XCTAssertEqual(error as? CeremonyError, .pairingPolicyNotAcknowledged)
         }
     }
 
-    func testAcknowledgedChainCodeExportCarriesWarning() async throws {
+    /// The chain-code warning must be recorded exactly once even when the pairing
+    /// codes are regenerated (the operator can press "Regenerate").
+    func testChainCodeWarningIsRecordedOnce() async throws {
         let ceremony = makeCeremony()
-        let walk = try await runThroughDerivation(ceremony)
+        _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
 
-        let urs = try ceremony.buildPairingURs(
-            style: .v2,
-            policy: .includeChainCode(acknowledgedUnsignableChildren: true)
+        _ = try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: true)
+        _ = try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: true)
+        XCTAssertEqual(
+            ceremony.report.warnings.filter { $0 == PairingPolicy.chainCodeWarning }.count,
+            1
         )
-        try ceremony.confirmPairingAddressMatches(true)
-        try ceremony.advance()
-        XCTAssertNotNil(try HDKey(ur: try XCTUnwrap(urs[.secp256k1])).chainCode)
-        XCTAssertNotNil(try HDKey(ur: try XCTUnwrap(urs[.ed25519])).chainCode)
-        XCTAssertTrue(ceremony.report.pairingIncludedChainCode)
-        XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("cannot sign") })
     }
 
     // MARK: Secret hygiene

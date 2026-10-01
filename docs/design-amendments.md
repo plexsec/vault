@@ -65,6 +65,10 @@ intuition the documentation has to fight anyway.
 
 ## 4. Pairing export omits the chain code
 
+> **Superseded by amendment 14.** Omitting the chain code is not a compatibility
+> trade-off: it is a hard decode failure in MetaMask. The export now always
+> carries a chain code and pins `children` to the card's leaf.
+
 **Sections:** §6.4 (table and bullets), §10 item 11.
 
 *Before:* §6.4 listed `crypto-hdkey` / `crypto-account` as the pairing export.
@@ -280,6 +284,95 @@ cannot hold secp256k1/Ed25519.
 *Why:* real-device testing on firmware 5.1.2 (OpenPGP applet 2.1) confirmed the
 applet only supports RSA. YubiKey firmware is not upgradeable, so no code change
 can make such a card work; the app must refuse up front rather than fail later.
+
+## 14. Pairing export carries a chain code and exports secp256k1 at the account level
+
+**Sections:** §4.2 step 8, §4.3, §6.4, §7.1, §10 item 11. **Supersedes
+amendment 4.**
+
+*Before:* the pairing export omitted the chain code (CBOR field 4) and exported
+the leaf key at its own path (`m/44'/0'/0'/0/0`).
+
+*After:* every `crypto-hdkey` carries its chain code and a `name` (CBOR field 9,
+`"PlexVault"`). The secp256k1 key is exported at its **BIP44 account level**
+(`m/44'/0'/0'`) with the `children` keypath pinned to the fixed path that reaches
+the card's leaf (`0/0`, no wildcard). Ed25519 is exported at its own path
+(`m/44'/501'/0'/0'`) with its chain code and no `children` — SLIP-0010 is
+all-hardened, so nothing is derivable from an extended public key there anyway.
+
+*Why:* amendment 4 assumed a chain code was optional and that omitting it merely
+limited account discovery. It is mandatory. `@keystonehq/bc-ur-registry`'s
+`CryptoHDKey.getBip32Key()` concatenates the chain code unconditionally:
+
+```ts
+const chainCode = this.getChainCode();   // undefined when field 4 is absent
+return encode(Buffer.concat([version, depthBuffer, parentFingerprint,
+                             indexBuffer, chainCode, key]));
+```
+
+The browser `buffer` polyfill MetaMask bundles reads `.length` of each element in
+`Buffer.concat`, so a `crypto-hdkey` without a chain code fails the scan with
+`TypeError: Cannot read properties of undefined (reading 'length')`. The export
+was therefore not "usable with manual confirmation" — MetaMask could not read it
+at all.
+
+*Consequence recorded in the spec:* the exported secp256k1 key is an **ancestor**
+of the card's key, not the key itself. `children` is pinned to the card's leaf so
+that a wallet which enumerates accounts (MetaMask derives `<origin>/0/*` by
+default) presents the card's one address rather than siblings the card cannot
+sign for. Verified against MetaMask's own `@keystonehq/*` packages: the QR no
+longer throws, and account indices 0..4 all resolve to the card's EVM address.
+Because a chain code is still mathematically present, a wallet that ignores the
+pinned `children` path could derive siblings; the operator must therefore
+acknowledge `PairingPolicy.chainCodeWarning` before the codes are built (a hard
+gate on `buildPairingURs`), and the warning is recorded in the provisioning
+report.
+
+*Not changed:* `crypto-account` / `account-descriptor` is still not emitted, and
+`children` is pinned rather than a wildcard.
+
+### 14a. The `name` field is mandatory in practice, not decorative
+
+Omitting `name` (field 9) is a second hard failure, independent of the chain code.
+MetaMask keys the display name of the QR keyring off it:
+
+* `@keystonehq/base-eth-keyring`'s `__readCryptoHDKey` is the **only** place that
+  ever restores the keyring name:
+  `const name = cryptoHDKey.getName(); if (name !== undefined && name !== "") { this.name = name; }`
+* `BaseKeyring.deserialize()` unconditionally overwrites the `"QR Hardware"`
+  default with the persisted value, which has no `name` for a QR keyring that was
+  added but never paired (the failure mode MetaMask itself patched in
+  metamask-extension#23903). After that, `this.name` is `undefined` unless the
+  scanned `crypto-hdkey` restores it.
+* On confirm, `metamask-controller.js`'s `getAccountLabel()` evaluates
+  `` `${name[0].toUpperCase()}${name.slice(1)} …` `` — i.e. `undefined[0]` — and
+  throws `TypeError: Cannot read properties of undefined (reading '0')` **after**
+  the account list has already shown the correct address.
+* `@metamask/eth-qr-keyring`'s `Device.getName()` (MetaMask Mobile) returns the
+  field as-is, so without it the paired device reports no name at all.
+
+Reproduced against MetaMask's own packages: with the pre-fix export the keyring
+name is `undefined` and the confirm step throws exactly that `TypeError`; with
+`name` present the keyring name is `"PlexVault"` and the label is
+`"PlexVault 1"`. The export therefore always sets field 9
+(`PairingPolicy.deviceName`).
+
+### 14b. Consequence: a wallet enumerating accounts sees repeated addresses
+
+Because `children` is pinned to `0/0`, MetaMask's index substitution is a no-op
+and every page entry derives the same address: `getFirstPage()` returns five
+entries with **one** distinct address. Every one of them is signable, which is
+intentional — but two behaviours follow and must be explained to the operator:
+
+* Re-adding an index adds the same address again (`BaseKeyring.addAccounts` does
+  not deduplicate), so the wallet can end up listing it twice.
+* MetaMask Mobile's `QrKeyring.createAccounts()` refuses a second index with
+  `Failed to create new account`.
+
+The alternative — the wildcard `children = "0/*"` MetaMask expects — would show
+five *distinct* addresses of which only index 0 is signable, which is the
+capability over-advertisement this design forbids (Known Limitations #11). The
+pinned path is kept, and the UI requires the operator to acknowledge it.
 
 ## What was deliberately *not* changed
 

@@ -75,25 +75,47 @@ contradicts the "cold device" intuition for no gain. §5.2 rule 3 is restated as
 "read by a party other than the one that displayed the transaction", which is the
 property that actually matters.
 
-### 4. Pairing export omits the chain code; no `crypto-account`
+### 4. Pairing export carries a chain code; secp256k1 is account-level
 
-**Change.** §6.4.
+**Change.** §6.4. Supersedes the earlier "no chain code" deviation
+(amendment 14).
 
-**Why.** One YubiKey signature slot holds one key (§4.3). Exporting a chain code
-invites a wallet to derive child addresses that this card *cannot sign for*, which
-would let a user send funds to an address they cannot spend from. Emitting
-`crypto-account` / `account-descriptor` has the same problem: an account-level
-descriptor describes derivable children. v0.1 therefore exports a single
-address-level `crypto-hdkey` with no chain code, and offers chain-code export only
-behind an explicit acknowledgement that is recorded in the report.
+**Why.** A chain code is not optional for Keystone/MetaMask. Their
+`CryptoHDKey.getBip32Key()` concatenates it unconditionally, so a `crypto-hdkey`
+without one fails the scan with `TypeError: Cannot read properties of undefined
+(reading 'length')` (the bundled `buffer` polyfill reads `.length` of `undefined`
+in `Buffer.concat`). Omitting it therefore did not trade account discovery for
+safety — it made the code unreadable. v0.1 now exports each key with its chain
+code.
 
-**Consequence for MetaMask.** MetaMask's QR hardware flow is built around the
-Keystone UR family, which keys off an account-level extended public key. With one
-key on the card, MetaMask may import the key but cannot enumerate further
-accounts. The app therefore also shows the address in large monospace type and
-requires the operator to confirm the wallet displays the same address. Automatic
-account discovery is a v0.3 concern (custom Desktop client). This is a genuine
-interoperability limitation, not a defect in the export.
+**The `name` field is also mandatory in practice.** MetaMask derives the keyring's
+display name from `crypto-hdkey` field 9, and `BaseKeyring.deserialize()`
+overwrites the `"QR Hardware"` default with the persisted value — which has no
+`name` for a keyring that was added but never paired. The scanned key is the only
+thing that can restore it, and on confirm `getAccountLabel()` evaluates
+`name[0].toUpperCase()`. An export without field 9 therefore shows the right
+address and then fails with `Cannot read properties of undefined (reading '0')`.
+Reproduced against MetaMask's own packages; the export now always sets field 9.
+
+**How the "unsignable children" hazard is handled.** One YubiKey slot holds one
+key (§4.3), so the secp256k1 key is exported at its BIP44 **account** level
+(`m/44'/0'/0'`) with `children` pinned to the fixed path that reaches the card's
+leaf (`0/0`, no wildcard). MetaMask derives `<origin>/0/*`, which lands on the
+card's key, and the pinned `children` makes every account index resolve to the
+card's address rather than a sibling it cannot sign for. Verified against
+MetaMask's own `@keystonehq/*` packages: the QR scans, and indices 0..4 all show
+the card's EVM address. Because a chain code is still present, the operator must
+acknowledge a warning before the codes are built, and the warning is recorded in
+the report; a wallet that ignores the pinned path could still derive siblings.
+`crypto-account` / `account-descriptor` is still not emitted.
+
+**Consequence to state plainly.** With `children` pinned, MetaMask's index
+substitution is a no-op, so its account picker shows the *same* address five
+times (one distinct address; all signable). Re-adding an index duplicates the
+address, and MetaMask Mobile's `createAccounts()` rejects a second index with
+`Failed to create new account`. The wildcard MetaMask expects would instead show
+five distinct addresses of which only index 0 is signable — the capability
+over-advertisement this design forbids. The pinned path is kept deliberately.
 
 ### 5. Distribution: free personal team
 

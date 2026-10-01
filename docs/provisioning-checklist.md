@@ -66,8 +66,9 @@ step completed rather than trusting the flow.
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
       - [ ] The wallet shows the same Ed25519 public key as the app ✔
-      - [ ] (If you enabled chain-code export) you have accepted that child
-            addresses cannot be signed for by this key
+      - [ ] You have acknowledged that the pairing code carries a chain code
+            (required by Keystone/MetaMask) and that only the address shown can
+            be signed for
 - [ ] **Counter baseline** reads **0** ✔ (secp256k1 / signature slot)
       - [ ] Noted: the Ed25519 key has **no** hardware counter, so the counter
             audit below covers secp256k1 chains only

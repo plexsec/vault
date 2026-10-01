@@ -19,6 +19,14 @@ public struct KeyRecord: Equatable, Codable, Sendable {
     public var readBackVerified: Bool = false
     public var pairingURType: String?
     public var pairingIncludedChainCode: Bool = false
+    /// Origin path written into the pairing UR. For secp256k1 this is the BIP44
+    /// account level (`m/44'/0'/0'`), not `path` above.
+    public var pairingPath: String?
+    /// `key-data` written into the pairing UR (the exported key, which for
+    /// secp256k1 is the account-level key, not the leaf).
+    public var pairingPublicKeyHex: String?
+    /// True when the pairing UR exports an ancestor of the card's leaf key.
+    public var pairingAccountLevel: Bool = false
 
     public var keyAlgorithm: KeyAlgorithm? { KeyAlgorithm(rawValue: algorithm) }
 
@@ -89,7 +97,15 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
             }
             lines.append("read-back verified: \(record.readBackVerified ? "yes" : "no")")
             if let pairingURType = record.pairingURType { lines.append("pairing UR type: \(pairingURType)") }
-            if record.pairingIncludedChainCode { lines.append("pairing included chain code: yes") }
+            if let pairingPath = record.pairingPath {
+                lines.append("pairing key path: \(pairingPath)\(record.pairingAccountLevel ? " (account level)" : "") ")
+            }
+            if let pairingPublicKeyHex = record.pairingPublicKeyHex {
+                lines.append("pairing public key: \(pairingPublicKeyHex)")
+            }
+            if record.pairingIncludedChainCode {
+                lines.append("pairing included chain code: yes (required by Keystone/MetaMask)")
+            }
         }
 
         if let counterBaseline { lines.append("signature counter baseline (secp256k1/signature slot): \(counterBaseline)") }
@@ -105,36 +121,69 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     }()
 }
 
-/// Policy for what the pairing UR is allowed to advertise.
+/// The key material written into one pairing UR (`crypto-hdkey`).
 ///
-/// One YubiKey slot holds exactly one key (design.md §4.3), so neither
-/// address-level key has signable children. Exporting a chain code lets a wallet
-/// derive further addresses the card *cannot sign for* — it would offer accounts
-/// that fail at signing time. The default is therefore to omit the chain code and
-/// publish only the single key; including it requires an explicit acknowledgement.
-public enum PairingPolicy: Equatable, Sendable {
-    /// Single key, no chain code. Safe default.
-    case singleKeyOnly
-    /// Key *with* chain code, so wallets that require one accept the pairing.
-    /// `acknowledgedUnsignableChildren` must be true.
-    case includeChainCode(acknowledgedUnsignableChildren: Bool)
+/// This is deliberately separate from `DerivedKeySummary`: the export is not
+/// always the leaf key the card holds. For secp256k1 it is the BIP44 **account**
+/// node (`m/44'/0'/0'`) with its chain code, so that a Keystone/MetaMask wallet
+/// which derives `<origin>/0/*` from the exported extended public key lands on
+/// the card's leaf key. `childrenPath` is pinned to the fixed path that reaches
+/// that leaf, so such a wallet presents the card's address instead of sibling
+/// addresses the card cannot sign for.
+public struct PairingExport: Equatable, Sendable {
+    public let algorithm: KeyAlgorithm
+    /// Origin path written into the UR (`crypto-keypath`, field 6).
+    public let path: DerivationPath
+    /// `key-data` (field 3).
+    public let publicKey: [UInt8]
+    /// `chain-code` (field 4). Always present. `@keystonehq/bc-ur-registry`'s
+    /// `CryptoHDKey.getBip32Key()` concatenates it unconditionally, so a
+    /// `crypto-hdkey` without a chain code makes MetaMask fail with
+    /// "Cannot read properties of undefined (reading 'length')".
+    public let chainCode: [UInt8]
+    /// `parent-fingerprint` (field 8).
+    public let parentFingerprintHex: String
+    /// `children` keypath (field 7), relative to `path`. Non-nil for secp256k1:
+    /// the fixed path (`0/0`) that reaches the card's leaf, with no wildcard, so
+    /// a wallet enumerating account indices cannot offer a sibling.
+    public let childrenPath: DerivationPath?
+    /// True when the exported key is an ancestor of the card's leaf.
+    public let isAccountLevel: Bool
 
-    public var includesChainCode: Bool {
-        if case .includeChainCode(let acknowledged) = self { return acknowledged }
-        return false
-    }
+    public var publicKeyHex: String { publicKey.hexString }
+}
 
-    public var warning: String? {
-        switch self {
-        case .singleKeyOnly:
-            return nil
-        case .includeChainCode(let acknowledged):
-            guard acknowledged else { return nil }
-            return "The exported key includes a chain code. Your wallet may derive "
-                + "further addresses from it, but this YubiKey cannot sign for them: "
-                + "it holds one key only. Do not send funds to derived addresses."
-        }
-    }
+/// What the operator must acknowledge before the pairing codes are produced.
+///
+/// A chain code is mandatory: Keystone and MetaMask both refuse a `crypto-hdkey`
+/// without one (the JS `CryptoHDKey.getBip32Key()` concatenates it
+/// unconditionally). The export pins the derivation to the card's single leaf
+/// key, but a chain code is still a chain code: a wallet that ignores the pinned
+/// `children` path can derive siblings this YubiKey cannot sign for.
+/// Acknowledgement is a hard gate on `buildPairingURs`.
+public enum PairingPolicy {
+    public static let chainCodeWarning =
+        "The pairing code carries a chain code, which Keystone/MetaMask require. "
+        + "It pins the derivation to the single key on this YubiKey, but a wallet that "
+        + "ignores the pinned path could offer sibling addresses this card cannot sign "
+        + "for. Never send funds to any address except the ones shown on this screen."
+
+    /// Device name written into the `name` field (BCR-2020-007 field 9) of every
+    /// exported `crypto-hdkey`.
+    ///
+    /// This is not cosmetic. Keystone devices always set it, and MetaMask derives
+    /// its keyring/device name from it:
+    ///
+    /// * `@keystonehq/base-eth-keyring`'s `__readCryptoHDKey` only ever restores
+    ///   `this.name` from this field, and its `deserialize()` overwrites the
+    ///   `"QR Hardware"` default with whatever was persisted — which is
+    ///   `undefined` for a keyring that was added but never paired.
+    /// * MetaMask's `getAccountLabel()` then does `name[0].toUpperCase()`, i.e.
+    ///   `undefined[0]` → `Cannot read properties of undefined (reading '0')`
+    ///   exactly when the operator confirms the account.
+    /// * `@metamask/eth-qr-keyring`'s `Device.getName()` returns the field as-is,
+    ///   so without it the device reports no name at all.
+    public static let deviceName = "PlexVault"
 }
 
 /// Public summary of one derived key handed to the UI (never the private key).
@@ -223,6 +272,9 @@ public final class ProvisioningCeremony {
     public private(set) var derivedKeys: DerivedKeys?
     public private(set) var readBackResults: [KeyAlgorithm: ReadBackResult] = [:]
     public private(set) var pairingURs: [KeyAlgorithm: UR] = [:]
+    /// Key material written into each pairing UR. Not necessarily the leaf key;
+    /// see `PairingExport`.
+    public private(set) var pairingExports: [KeyAlgorithm: PairingExport] = [:]
 
     // MARK: Secrets (wiped on every exit path)
 
@@ -439,6 +491,12 @@ public final class ProvisioningCeremony {
         // Deliberately does NOT advance: the inventory must stay on screen for
         // the operator to read before the destructive reset.
         return result
+    }
+
+    /// Appends a warning once; the pairing step can be re-run ("regenerate").
+    private func addWarning(_ text: String) {
+        guard !report.warnings.contains(text) else { return }
+        report.warnings.append(text)
     }
 
     private func describe(_ inventory: CardInventory) -> String {
@@ -714,6 +772,27 @@ public final class ProvisioningCeremony {
         privateKeys[.secp256k1] = node.key
         chainCodes[.secp256k1] = node.chainCode
 
+        // Pairing export: the BIP44 account node one level up (`m/44'/0'/0'`),
+        // with its chain code. A Keystone/MetaMask wallet derives `<origin>/0/*`
+        // from this extended public key; index 0 is the leaf above. The pinned
+        // `children` path (`0/0`) makes such a wallet present that leaf for every
+        // account index instead of sibling addresses this card cannot sign for.
+        let accountPath = DerivationPath(
+            components: Array(DerivationPath.secp256k1Default.components.prefix(3))
+        )
+        let accountNode = try master.derived(accountPath)
+        pairingExports[.secp256k1] = PairingExport(
+            algorithm: .secp256k1,
+            path: accountPath,
+            publicKey: try accountNode.publicKey(),
+            chainCode: accountNode.chainCode,
+            parentFingerprintHex: Hex.encode(accountNode.parentFingerprint),
+            childrenPath: DerivationPath(
+                components: Array(DerivationPath.secp256k1Default.components.dropFirst(accountPath.components.count))
+            ),
+            isAccountLevel: true
+        )
+
         return DerivedKeySummary(
             algorithm: .secp256k1,
             slot: .signature,
@@ -739,6 +818,20 @@ public final class ProvisioningCeremony {
         privateKeys[.ed25519]?.zeroize()
         privateKeys[.ed25519] = node.key
         chainCodes[.ed25519] = node.chainCode
+
+        // Ed25519 is exported at its own path: SLIP-0010 derivation is
+        // all-hardened, so a watch-only wallet cannot derive children from an
+        // extended public key anyway. The chain code is still included, because a
+        // `crypto-hdkey` without one crashes Keystone/MetaMask decoders.
+        pairingExports[.ed25519] = PairingExport(
+            algorithm: .ed25519,
+            path: .ed25519Default,
+            publicKey: publicKey,
+            chainCode: node.chainCode,
+            parentFingerprintHex: Hex.encode(node.parentFingerprint),
+            childrenPath: nil,
+            isAccountLevel: false
+        )
 
         return DerivedKeySummary(
             algorithm: .ed25519,
@@ -845,39 +938,56 @@ public final class ProvisioningCeremony {
     // MARK: Step 11 — pairing export
 
     /// Builds **two** URs, one per algorithm, for the desktop wallet to scan.
-    /// `policy` decides whether a chain code is advertised; see `PairingPolicy`
-    /// for why the default omits it.
+    ///
+    /// Both carry a chain code (Keystone/MetaMask require one). secp256k1 is
+    /// exported at its BIP44 account level with the children path pinned to the
+    /// card's leaf, so an account-enumerating wallet shows the card's address.
+    /// `chainCodeAcknowledged` is the operator's acknowledgement of
+    /// `PairingPolicy.chainCodeWarning`.
     @discardableResult
-    public func buildPairingURs(style: URTypeStyle, policy: PairingPolicy = .singleKeyOnly) throws -> [KeyAlgorithm: UR] {
+    public func buildPairingURs(
+        style: URTypeStyle,
+        chainCodeAcknowledged: Bool
+    ) throws -> [KeyAlgorithm: UR] {
         try requireCurrent(.pairingExport)
         guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
-        if case .includeChainCode(let acknowledged) = policy, !acknowledged {
-            throw CeremonyError.pairingPolicyNotAcknowledged
-        }
-        let includeChainCode = policy.includesChainCode
+        guard chainCodeAcknowledged else { throw CeremonyError.pairingPolicyNotAcknowledged }
 
         var urs: [KeyAlgorithm: UR] = [:]
         for summary in keys.all {
+            guard let export = pairingExports[summary.algorithm] else {
+                throw CeremonyError.keysNotDerived
+            }
             let origin = URKeyPath(
-                path: summary.path,
+                path: export.path,
                 sourceFingerprint: UInt32(summary.masterFingerprintHex.prefix(8), radix: 16) ?? 0
             )
+            // `children` is written only when the export is an ancestor of the
+            // leaf: it pins a deriving wallet to the card's one signable key.
+            let children = export.childrenPath.map { URKeyPath(path: $0) }
             let key = HDKey(
-                keyData: summary.publicKey,
-                chainCode: includeChainCode ? chainCodes[summary.algorithm] : nil,
+                keyData: export.publicKey,
+                chainCode: export.chainCode,
                 useInfo: CoinInfo(type: summary.algorithm.slip44CoinType, network: 0),
                 origin: origin,
-                parentFingerprint: UInt32(summary.parentFingerprintHex.prefix(8), radix: 16)
+                children: children,
+                parentFingerprint: UInt32(export.parentFingerprintHex.prefix(8), radix: 16),
+                // Field 9. Required in practice, not just decorative: see
+                // `PairingPolicy.deviceName`.
+                name: PairingPolicy.deviceName
             )
             let ur = try key.ur(style: style)
             urs[summary.algorithm] = ur
             if let index = report.keys.firstIndex(where: { $0.algorithm == summary.algorithm.rawValue }) {
                 report.keys[index].pairingURType = ur.type
-                report.keys[index].pairingIncludedChainCode = includeChainCode
+                report.keys[index].pairingIncludedChainCode = true
+                report.keys[index].pairingPath = export.path.description
+                report.keys[index].pairingPublicKeyHex = export.publicKeyHex
+                report.keys[index].pairingAccountLevel = export.isAccountLevel
             }
         }
         pairingURs = urs
-        if let warning = policy.warning { report.warnings.append(warning) }
+        addWarning(PairingPolicy.chainCodeWarning)
         // Deliberately does NOT advance: the operator must scan the codes and
         // confirm the wallet shows the same addresses first.
         return urs
@@ -934,6 +1044,7 @@ public final class ProvisioningCeremony {
         mnemonicWords = []
         mnemonicConfirmed = false
         pairingURs = [:]
+        pairingExports = [:]
         derivedKeys = nil
         readBackResults = [:]
     }

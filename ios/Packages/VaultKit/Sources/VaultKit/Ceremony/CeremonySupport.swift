@@ -361,7 +361,7 @@ public enum CeremonyError: Swift.Error, Equatable {
         case .readBackMismatch(let algorithm, _, _):
             return "The \(algorithm.displayName) public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
         case .pairingPolicyNotAcknowledged:
-            return "Exporting a chain code requires acknowledging that the derived child addresses cannot be signed by this YubiKey."
+            return "The pairing code carries a chain code, which Keystone/MetaMask require. Confirm you understand that only the address shown on this screen can be signed for."
         case .destructiveResetNotAcknowledged:
             return "This YubiKey already holds a key. Resetting the OpenPGP applet will erase it, so the operation must be explicitly acknowledged."
         case .cardNotFactoryFresh:

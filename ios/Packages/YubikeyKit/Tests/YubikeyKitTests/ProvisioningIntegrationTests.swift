@@ -145,22 +145,27 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(readBack[.secp256k1]?.cardPublicKeyHex, keys.secp256k1.publicKeyHex)
         XCTAssertEqual(readBack[.ed25519]?.cardPublicKeyHex, keys.ed25519.publicKeyHex)
 
-        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, policy: .singleKeyOnly)
+        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
 
         let secp256k1UR = try XCTUnwrap(urs[.secp256k1])
         let secp256k1 = try HDKey(ur: try UR(urString: secp256k1UR.string))
-        XCTAssertNil(secp256k1.chainCode)
-        XCTAssertEqual(secp256k1.keyData, keys.secp256k1.publicKey)
+        XCTAssertNotNil(secp256k1.chainCode, "MetaMask requires a chain code on crypto-hdkey")
+        XCTAssertNotEqual(secp256k1.keyData, keys.secp256k1.publicKey,
+                          "secp256k1 is exported at the account level, not the leaf")
+        XCTAssertEqual(secp256k1.origin?.components,
+                       [.hardened(44), .hardened(0), .hardened(0)])
+        XCTAssertEqual(secp256k1.children?.components, [.normal(0), .normal(0)])
         XCTAssertEqual(secp256k1.useInfo?.type, 0)
         XCTAssertEqual(secp256k1.origin?.sourceFingerprint,
                        UInt32(keys.secp256k1.masterFingerprintHex.prefix(8), radix: 16))
 
         let ed25519UR = try XCTUnwrap(urs[.ed25519])
         let ed25519 = try HDKey(ur: try UR(urString: ed25519UR.string))
-        XCTAssertNil(ed25519.chainCode)
+        XCTAssertNotNil(ed25519.chainCode)
         XCTAssertEqual(ed25519.keyData, keys.ed25519.publicKey)
+        XCTAssertNil(ed25519.children)
         XCTAssertTrue(ed25519.isEd25519)
         XCTAssertEqual(ed25519.useInfo?.type, 501)
 
