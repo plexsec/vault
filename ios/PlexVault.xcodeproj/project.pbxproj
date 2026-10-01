@@ -19,6 +19,7 @@
 		7C51E72B2FB24B55FCE108C1 /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = 96FB3B402292C2FB1A645A38 /* VaultKit */; };
 		7EF6CA9F2329A2F1F0F4B779 /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56C3AD3CE58AE21CA21E813 /* ReportView.swift */; };
 		8B5D86C3F45244809462FF44 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42A82FC3A8ECF99D53C02C8F /* SetupView.swift */; };
+		9FDFBCB352CCAC63FBF913D5 /* UITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D658ED9348FB1E4C071545C1 /* UITestSupport.swift */; };
 		A4ADF89D1FD15205C30AFDFF /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */; };
 		C322294583EFF8589E7BEDC8 /* CeremonyRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1249F80D8E8A09D2B2FDC701 /* CeremonyRootView.swift */; };
 		D5DEC7C15C9EE6A2216A8A68 /* SimulatedCardTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */; };
@@ -54,6 +55,7 @@
 		C317FC416A1CCC483A5ACEB2 /* YubikeyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = YubikeyKit; path = Packages/YubikeyKit; sourceTree = SOURCE_ROOT; };
 		C56C3AD3CE58AE21CA21E813 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		C6B653D5F78724154C95A233 /* CeremonySteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonySteps.swift; sourceTree = "<group>"; };
+		D658ED9348FB1E4C071545C1 /* UITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestSupport.swift; sourceTree = "<group>"; };
 		DAFD014B49A22E0EA73A737B /* MockYubikeyTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockYubikeyTransport.swift; sourceTree = "<group>"; };
 		E9FBCA011DBFBE29906CDC5D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F8809A236D2A19B5D0D92541 /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
@@ -114,6 +116,7 @@
 			children = (
 				427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */,
 				7029409A50A278443DA04717 /* SetupFlowUITests.swift */,
+				D658ED9348FB1E4C071545C1 /* UITestSupport.swift */,
 			);
 			path = PlexVaultUITests;
 			sourceTree = "<group>";
@@ -308,6 +311,7 @@
 			files = (
 				3C3C3F780EDB321F5DE73F51 /* CeremonyFlowUITests.swift in Sources */,
 				68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */,
+				9FDFBCB352CCAC63FBF913D5 /* UITestSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

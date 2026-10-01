@@ -11,6 +11,8 @@ import VaultKit
 /// entropy commitment, the derived address, the read-back comparison, the pairing
 /// QR and the counter value. None of that is visible from unit tests, which is
 /// why this test drives the actual screens.
+///
+/// Scrolling to a control is done with `tapWhenVisible`, from `UITestSupport`.
 final class CeremonyFlowUITests: XCTestCase {
 
     /// All-zero entropy produces a known mnemonic, which lets the test complete
@@ -27,20 +29,6 @@ final class CeremonyFlowUITests: XCTestCase {
         return app
     }
 
-    private func tap(_ element: XCUIElement, in app: XCUIApplication,
-                     file: StaticString = #filePath, line: UInt = #line) {
-        var attempts = 0
-        while attempts < 12 {
-            let frame = element.frame
-            let visible = app.windows.firstMatch.frame.insetBy(dx: 0, dy: 140)
-            if visible.contains(CGPoint(x: frame.midX, y: frame.midY)) { break }
-            if frame.midY > visible.midY { app.swipeUp() } else { app.swipeDown() }
-            attempts += 1
-        }
-        XCTAssertTrue(element.waitForExistence(timeout: 5), "\\(element) never appeared", file: file, line: line)
-        element.tap()
-    }
-
     private func button(_ label: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons[label]
     }
@@ -55,7 +43,7 @@ final class CeremonyFlowUITests: XCTestCase {
         // The keyboard is dismissed after every field, so the layout is stable and
         // each field keeps its position — the earlier flakiness came from focus
         // being lost while the keyboard animated over the target.
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        tapWhenVisible(field, in: app, file: file, line: line)
         Thread.sleep(forTimeInterval: 0.3)   // let focus and the keyboard animation settle
         field.typeText(text)
 
@@ -64,13 +52,6 @@ final class CeremonyFlowUITests: XCTestCase {
         let done = app.buttons["dismiss-keyboard"]
         if done.exists { done.tap() }
         Thread.sleep(forTimeInterval: 0.2)
-    }
-
-    private func acknowledgePosture(in app: XCUIApplication) {
-        for index in 0..<app.switches.count {
-            let toggle = app.switches.element(boundBy: index)
-            if (toggle.value as? String) == "0" { toggle.tap() }
-        }
     }
 
     /// The regression test for the reported bug: after the entropy step, the
@@ -82,7 +63,7 @@ final class CeremonyFlowUITests: XCTestCase {
         // Nothing is shown until the operator asks for it.
         XCTAssertFalse(app.staticTexts["abandon"].exists, "words must not be on screen before revealing")
 
-        tap(app.buttons["reveal-mnemonic"], in: app)
+        tapWhenVisible(app.buttons["reveal-mnemonic"], in: app)
 
         // All 24 words must actually be rendered, not just the container.
         let expected = try BIP39.mnemonic(fromEntropy: [UInt8](repeating: 0, count: 32))
@@ -93,7 +74,7 @@ final class CeremonyFlowUITests: XCTestCase {
             let cell = app.staticTexts[word]
             XCTAssertTrue(
                 cell.waitForExistence(timeout: 5),
-                "word \\(index + 1) (\\(word)) is missing from the revealed list:\n\(app.debugDescription)"
+                "word \(index + 1) (\(word)) is missing from the revealed list:\n\(app.debugDescription)"
             )
         }
         XCTAssertTrue(app.staticTexts["24."].exists || app.staticTexts["24"].exists, "numbering missing")
@@ -107,7 +88,7 @@ final class CeremonyFlowUITests: XCTestCase {
     func testBackfillAdvancesToDerivation() throws {
         let app = launchApp()
         advanceToMnemonicStep(app)
-        tap(app.buttons["reveal-mnemonic"], in: app)
+        tapWhenVisible(app.buttons["reveal-mnemonic"], in: app)
 
         let challenge = try BIP39.mnemonic(fromEntropy: [UInt8](repeating: 0, count: 32))
         let digest = SHA256.hash(challenge.joined(separator: " "))
@@ -121,8 +102,8 @@ final class CeremonyFlowUITests: XCTestCase {
 
         for (position, index) in indices.sorted().enumerated() {
             let field = app.textFields.element(boundBy: position)
-            XCTAssertTrue(field.waitForExistence(timeout: 5), "back-fill field \\(position) missing")
-            tap(field, in: app)
+            XCTAssertTrue(field.waitForExistence(timeout: 5), "back-fill field \(position) missing")
+            tapWhenVisible(field, in: app)
             field.typeText(challenge[index])
         }
 
@@ -135,7 +116,7 @@ final class CeremonyFlowUITests: XCTestCase {
 
         let confirm = button("Confirm transcription", in: app)
         XCTAssertTrue(confirm.isEnabled, "a correct back-fill must enable confirmation")
-        tap(confirm, in: app)
+        tapWhenVisible(confirm, in: app)
 
         XCTAssertTrue(
             button("Derive keys", in: app).waitForExistence(timeout: 10),
@@ -147,21 +128,21 @@ final class CeremonyFlowUITests: XCTestCase {
     /// on the mnemonic step.
     private func advanceToMnemonicStep(_ app: XCUIApplication,
                                        file: StaticString = #filePath, line: UInt = #line) {
-        tap(app.buttons["choice-Simulated (debug)"], in: app)
-        acknowledgePosture(in: app)
-        tap(app.buttons["begin-ceremony"], in: app)
+        tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app, file: file, line: line)
+        acknowledgePosture(in: app, file: file, line: line)
+        tapPinnedPrimaryAction(app, file: file, line: line)
 
         // Card inventory: read, look at it, then continue.
         let read = button("Read YubiKey", in: app)
         XCTAssertTrue(read.waitForExistence(timeout: 10), "inventory step missing:\n\(app.debugDescription)")
-        tap(read, in: app)
+        tapWhenVisible(read, in: app, file: file, line: line)
         XCTAssertTrue(app.staticTexts["Factory fresh"].waitForExistence(timeout: 10),
                       "inventory output must stay on screen:\n\(app.debugDescription)")
-        tap(button("Continue", in: app), in: app)
+        tapWhenVisible(button("Continue", in: app), in: app, file: file, line: line)
 
         // Reset with the factory default Admin PIN.
-        typeSecret("12345678", into: "Admin PIN (PW3)", in: app)
-        tap(button("Reset applet", in: app), in: app)
+        typeSecret("12345678", into: "Admin PIN (PW3)", in: app, file: file, line: line)
+        tapWhenVisible(button("Reset applet", in: app), in: app, file: file, line: line)
         let confirmReset = app.buttons["Reset and erase"]
         XCTAssertTrue(confirmReset.waitForExistence(timeout: 5), "reset confirmation missing")
         confirmReset.tap()
@@ -169,21 +150,21 @@ final class CeremonyFlowUITests: XCTestCase {
         // PINs: user, repeat, admin, repeat.
         XCTAssertTrue(app.staticTexts["User PIN (PW1) — at least 6 digits"].waitForExistence(timeout: 10),
                       "PIN step missing:\n\(app.debugDescription)")
-        typeSecret(Self.userPIN, into: "User PIN", in: app)
-        typeSecret(Self.userPIN, into: "Repeat User PIN", in: app)
-        typeSecret(Self.adminPIN, into: "Admin PIN", in: app)
-        typeSecret(Self.adminPIN, into: "Repeat Admin PIN", in: app)
-        tap(button("Set PINs", in: app), in: app)
+        typeSecret(Self.userPIN, into: "User PIN", in: app, file: file, line: line)
+        typeSecret(Self.userPIN, into: "Repeat User PIN", in: app, file: file, line: line)
+        typeSecret(Self.adminPIN, into: "Admin PIN", in: app, file: file, line: line)
+        typeSecret(Self.adminPIN, into: "Repeat Admin PIN", in: app, file: file, line: line)
+        tapWhenVisible(button("Set PINs", in: app), in: app, file: file, line: line)
 
         // Policy.
         let applyPolicy = button("Apply policy", in: app)
         XCTAssertTrue(applyPolicy.waitForExistence(timeout: 10), "policy step missing")
-        tap(applyPolicy, in: app)
+        tapWhenVisible(applyPolicy, in: app, file: file, line: line)
 
         // Entropy: generate, record the commitment, then continue.
         let generate = button("Generate entropy", in: app)
         XCTAssertTrue(generate.waitForExistence(timeout: 10), "entropy step missing")
-        tap(generate, in: app)
+        tapWhenVisible(generate, in: app, file: file, line: line)
 
         let commitment = app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"]
         XCTAssertTrue(commitment.waitForExistence(timeout: 10),
@@ -191,11 +172,11 @@ final class CeremonyFlowUITests: XCTestCase {
 
         let recorded = app.switches["I have written down the entropy commitment"]
         XCTAssertTrue(recorded.waitForExistence(timeout: 5))
-        tap(recorded, in: app)
+        tapWhenVisible(recorded, in: app, file: file, line: line)
 
         let reveal = button("Reveal the mnemonic", in: app)
         XCTAssertTrue(reveal.waitForExistence(timeout: 5), "cannot proceed to the mnemonic")
-        tap(reveal, in: app)
+        tapWhenVisible(reveal, in: app, file: file, line: line)
 
         XCTAssertTrue(app.buttons["reveal-mnemonic"].waitForExistence(timeout: 10),
                       "mnemonic step missing:\n\(app.debugDescription)")

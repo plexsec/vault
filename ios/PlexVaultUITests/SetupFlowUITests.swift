@@ -12,45 +12,9 @@ import XCTest
 ///    nothing and the screen looked broken.
 /// 2. The primary action must be reachable without scrolling and must say why it
 ///    is disabled, instead of appearing to ignore taps.
+///
+/// Scrolling to a control is done with `tapWhenVisible`, from `UITestSupport`.
 final class SetupFlowUITests: XCTestCase {
-
-    /// Brings an element into the *visible* part of the window before tapping it.
-    ///
-    /// Deliberately not `isHittable`-based: for an element underneath the pinned
-    /// bottom bar, `isHittable` still reports true while the tap is intercepted by
-    /// the bar. The band below keeps clear of the bar and the navigation bar.
-    private func tap(_ element: XCUIElement, in app: XCUIApplication,
-                     file: StaticString = #filePath, line: UInt = #line) {
-        let window = app.windows.firstMatch
-        var attempts = 0
-        while attempts < 12 {
-            let frame = element.frame
-            let visible = window.frame.insetBy(dx: 0, dy: 140)
-            if visible.contains(CGPoint(x: frame.midX, y: frame.midY)) { break }
-            if frame.midY > visible.midY {
-                app.swipeUp()
-            } else {
-                app.swipeDown()
-            }
-            attempts += 1
-        }
-        XCTAssertTrue(
-            window.frame.insetBy(dx: 0, dy: 140).contains(CGPoint(x: element.frame.midX, y: element.frame.midY)),
-            "\(element) could not be brought into the visible area",
-            file: file, line: line
-        )
-        element.tap()
-    }
-
-    /// The pinned primary action needs no scrolling, and must be tappable from a
-    /// cold launch — that is the property being locked in.
-    private func tapPinnedPrimaryAction(_ app: XCUIApplication,
-                                        file: StaticString = #filePath, line: UInt = #line) {
-        let begin = app.buttons["begin-ceremony"]
-        XCTAssertTrue(begin.isHittable, "the primary action must be hittable without scrolling",
-                      file: file, line: line)
-        begin.tap()
-    }
 
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
@@ -75,9 +39,8 @@ final class SetupFlowUITests: XCTestCase {
         // Regression for the reported bug: the mode rows must be on screen and
         // unobscured on launch. Previously this was a wheel-based picker whose
         // default was already selected, so tapping it appeared to do nothing.
-        let visibleBand = app.windows.firstMatch.frame.insetBy(dx: 0, dy: 140)
         XCTAssertTrue(
-            visibleBand.contains(CGPoint(x: generate.frame.midX, y: generate.frame.midY)),
+            visibleBand(in: app).contains(CGPoint(x: generate.frame.midX, y: generate.frame.midY)),
             "Generate a new wallet must be visible without scrolling (y=\(generate.frame.midY))"
         )
 
@@ -85,11 +48,11 @@ final class SetupFlowUITests: XCTestCase {
         XCTAssertTrue(generate.isSelected, "Generate a new wallet should start selected")
         XCTAssertFalse(restore.isSelected)
 
-        tap(restore, in: app)
+        tapWhenVisible(restore, in: app)
         XCTAssertTrue(restore.isSelected, "tapping a mode row must select it")
         XCTAssertFalse(generate.isSelected, "selection must move, not accumulate")
 
-        tap(generate, in: app)
+        tapWhenVisible(generate, in: app)
         XCTAssertTrue(generate.isSelected)
         XCTAssertFalse(restore.isSelected)
     }
@@ -100,7 +63,7 @@ final class SetupFlowUITests: XCTestCase {
         let usbC = app.buttons["choice-USB-C"]
         XCTAssertTrue(usbC.exists, app.debugDescription)
         XCTAssertFalse(usbC.isSelected)
-        tap(usbC, in: app)
+        tapWhenVisible(usbC, in: app)
         XCTAssertTrue(usbC.isSelected)
 
         // There is no chain picker any more: one ceremony always writes both
@@ -124,10 +87,7 @@ final class SetupFlowUITests: XCTestCase {
             "a disabled action must explain itself"
         )
 
-        for index in 0..<app.switches.count {
-            let toggle = app.switches.element(boundBy: index)
-            if (toggle.value as? String) == "0" { toggle.tap() }
-        }
+        acknowledgePosture(in: app)
 
         XCTAssertTrue(begin.isEnabled, "acknowledging both checks must enable the action")
         tapPinnedPrimaryAction(app)
@@ -142,15 +102,12 @@ final class SetupFlowUITests: XCTestCase {
     /// observable because it is recorded in the step flow.
     func testRestoreModeReachesTheCeremony() {
         let app = launch()
-        tap(app.buttons["choice-Restore from a mnemonic"], in: app)
-        for index in 0..<app.switches.count {
-            let toggle = app.switches.element(boundBy: index)
-            if (toggle.value as? String) == "0" { toggle.tap() }
-        }
+        tapWhenVisible(app.buttons["choice-Restore from a mnemonic"], in: app)
+        acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)
         XCTAssertTrue(
             app.buttons["Read YubiKey"].waitForExistence(timeout: 10),
-            "restore mode must also reach the ceremony"
+            "restore mode must also reach the ceremony:\n\(app.debugDescription)"
         )
     }
 }
