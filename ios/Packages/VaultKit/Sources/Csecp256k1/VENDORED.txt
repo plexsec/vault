@@ -2,7 +2,18 @@ VERSION=v0.8.0
 SOURCE=https://github.com/bitcoin-core/secp256k1
 TARBALL=https://api.github.com/repos/bitcoin-core/secp256k1/tarball/v0.8.0
 UPSTREAM_SHA256=9380dd972effcbedb8bc915ea77090d811a5fb4ec5588159b529361bb99b1dc6
-VENDORED_FILES=include/*.h (9), src/*.h (54 non-test), src/{secp256k1,precomputed_ecmult,precomputed_ecmult_gen}.c
+VENDORED_FILES=include/*.h (9), src/*.h (54 non-test), src/{secp256k1,precomputed_ecmult,precomputed_ecmult_gen}.c, src/modules/recovery/main_impl.h
 CONFIG_HEADER=none (v0.8.0 needs no libsecp256k1-config.h; HAVE_CONFIG_H is never defined)
-MODULES=all disabled (no ENABLE_MODULE_* defined)
+MODULES=recovery only (ENABLE_MODULE_RECOVERY; see Package.swift)
 ASM=disabled (USE_ASM_X86_64 / arm asm not enabled; src/asm not vendored)
+
+RECOVERY_MODULE=src/modules/recovery/main_impl.h is byte-identical to upstream
+v0.8.0 (sha256 fbec2358a560b669d85720108b0b1a8f653c91531a88ded0a1da339445266cc9,
+6135 bytes). It is the only vendored file added after the initial import, it is
+unmodified, and it is compiled by defining ENABLE_MODULE_RECOVERY for this target.
+It is needed because the v0.2 signing flow must recover a public key from a
+signature to determine the signature's recovery value and to verify the card's
+output; that is not derivable from point arithmetic alone. The module's signing
+entry point (secp256k1_ecdsa_sign_recoverable) is not reachable from Swift: the
+wrapper in Sources/VaultKit/Crypto/Secp256k1.swift exposes recover and verify
+only, and tools/audit-release.sh asserts no signing entry point is referenced.

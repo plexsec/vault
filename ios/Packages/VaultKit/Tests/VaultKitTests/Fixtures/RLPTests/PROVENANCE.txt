@@ -1,0 +1,10 @@
+The two JSON files in this directory are copied verbatim from the
+ethereum/tests suite, which is the published reference for what RLP may and may
+not encode. They are here because this project's RLP decoder claims strictness,
+and a claim of strictness needs the reference's own counter-examples: all 26
+vectors in invalidRLPTest.json must be refused.
+
+SOURCE=https://github.com/ethereum/tests/tree/develop/RLPTests
+FETCHED_FROM=https://raw.githubusercontent.com/ethereum/tests/develop/RLPTests/
+rlptest.json	sha256=dd11055db749a21d8ee7aae7810ac30d19a89e2c6dadba9967f7bd567ad5fc00	8102 bytes
+invalidRLPTest.json	sha256=f90bf5745d21bfa7fbfeabaf5b6d1c66bae10051b1c0a054eecd424d488385d7	2616 bytes

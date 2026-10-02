@@ -8,19 +8,19 @@ import XCTest
 /// published standards (BIP39 wordlist and Trezor vectors), so tests that use
 /// them are differential rather than self-referential.
 enum FixtureLoader {
-    static func url(_ name: String, extension ext: String) throws -> URL {
+    static func url(_ name: String, extension ext: String, subdirectory: String = "Fixtures") throws -> URL {
         guard let url = Bundle.module.url(
             forResource: name,
             withExtension: ext,
-            subdirectory: "Fixtures"
+            subdirectory: subdirectory
         ) else {
             throw FixtureError.missing("\(name).\(ext)")
         }
         return url
     }
 
-    static func data(_ name: String, extension ext: String) throws -> Data {
-        try Data(contentsOf: url(name, extension: ext))
+    static func data(_ name: String, extension ext: String, subdirectory: String = "Fixtures") throws -> Data {
+        try Data(contentsOf: url(name, extension: ext, subdirectory: subdirectory))
     }
 
     static func text(_ name: String, extension ext: String) throws -> String {
@@ -30,8 +30,8 @@ enum FixtureLoader {
         return string
     }
 
-    static func json(_ name: String, extension ext: String) throws -> Any {
-        try JSONSerialization.jsonObject(with: try data(name, extension: ext))
+    static func json(_ name: String, extension ext: String, subdirectory: String = "Fixtures") throws -> Any {
+        try JSONSerialization.jsonObject(with: try data(name, extension: ext, subdirectory: subdirectory))
     }
 
     enum FixtureError: Error, CustomStringConvertible {

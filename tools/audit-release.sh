@@ -126,6 +126,37 @@ if ! grep -q "public struct CeremonyReport" \
 fi
 
 # ---------------------------------------------------------------------------
+# 3b. No in-memory signing.
+# ---------------------------------------------------------------------------
+echo
+echo "[3b] No in-memory signing"
+# The vendored libsecp256k1 compiles its recovery module, which also contains
+# secp256k1_ecdsa_sign_recoverable (a secret-key entry point). The app must never
+# call it: the signing key exists only on the YubiKey, and a signature produced
+# from a secret held in the phone would defeat the entire design (design.md §3.2).
+# Only the calls that take a *secret key* are listed; verification and recovery
+# take public material and are the point of the module.
+signing_hits="$(grep -rnE '\bsecp256k1_ecdsa_sign|secp256k1_ecdsa_sign_recoverable|secp256k1_ecdsa_signature_sign' \
+      "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit" \
+      "$REPO_ROOT/ios/PlexVault" 2>/dev/null || true)"
+signing_hits="$(grep -v '^\s*//' <<<"$signing_hits" || true)"
+if [[ -n "$signing_hits" ]]; then
+  note_fail "a secret-key signing entry point is referenced:"
+  sed 's/^/        /' <<<"$signing_hits"
+else
+  note_ok "no signing entry point is referenced by the app or VaultKit"
+fi
+# Positive assertion: the recovery module really is compiled in, otherwise the
+# check above would pass by looking at a library that cannot verify anything.
+if ! grep -q 'ENABLE_MODULE_RECOVERY' "$REPO_ROOT/ios/Packages/VaultKit/Package.swift"; then
+  note_fail "recovery module is not enabled; the signing flow cannot determine v"
+fi
+if ! grep -q 'secp256k1_ecdsa_recover' \
+     "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Crypto/Secp256k1.swift"; then
+  note_fail "VaultKit does not use secp256k1 recovery; the check above proved nothing"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Platform keys.
 # ---------------------------------------------------------------------------
 echo

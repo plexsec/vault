@@ -1,11 +1,19 @@
 // Explicit module map for the vendored libsecp256k1 (see ../VENDORED.txt).
 //
-// Only the core library headers are exposed. The experimental modules
-// (ecdh/recovery/extrakeys/schnorrsig/musig/ellswift/silentpayments) are NOT
-// compiled into this target, so their headers are deliberately not declared
+// Only the core library headers and libsecp256k1's recovery module are exposed.
+// The other modules (ecdh/extrakeys/schnorrsig/musig/ellswift/silentpayments) are
+// NOT compiled into this target, so their headers are deliberately not declared
 // here: exposing them would advertise symbols that do not exist at link time.
+//
+// `recovery` is compiled in because the signing flow has to recover the public
+// key from a signature — that is how the app decides which `v` to return, and how
+// it checks the card's signature against the key it provisioned. The module also
+// compiles `secp256k1_ecdsa_sign_recoverable`, which takes a secret key; the Swift
+// wrapper exposes no signing entry point, and the app holds no secret key for the
+// signing slot to pass it (design.md §3.2).
 module Csecp256k1 {
     header "secp256k1.h"
+    header "secp256k1_recovery.h"
     header "secp256k1_preallocated.h"
     export *
 }

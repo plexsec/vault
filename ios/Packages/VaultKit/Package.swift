@@ -22,10 +22,20 @@ let package = Package(
     targets: [
         // Vendored bitcoin-core libsecp256k1 v0.8.0. See Sources/Csecp256k1/VENDORED.txt
         // for provenance, the exact file list, and the disabled configuration knobs.
+        // `ENABLE_MODULE_RECOVERY` compiles libsecp256k1's own recovery module,
+        // which the signing flow needs to determine a signature's recovery value
+        // (`v`) and to check that a signature really came from the card's key.
+        // Signing with an in-memory key stays impossible at the Swift layer: the
+        // wrapper exposes recover/verify only (see Crypto/Secp256k1.swift).
         .target(
             name: "Csecp256k1",
             path: "Sources/Csecp256k1",
-            publicHeadersPath: "include"
+            // `main_impl.h` is not compiled on its own; `src/secp256k1.c`
+            // includes it when ENABLE_MODULE_RECOVERY is defined. Excluding it
+            // from the target's file list is how that is expressed to SwiftPM.
+            exclude: ["src/modules/recovery/main_impl.h"],
+            publicHeadersPath: "include",
+            cSettings: [.define("ENABLE_MODULE_RECOVERY")]
         ),
         // Vendored TweetNaCl 20140427 (public domain) plus a project-owned shim.
         // See Sources/Ced25519/VENDORED.txt: tweetnacl.c is compiled exactly once,

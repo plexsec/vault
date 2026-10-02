@@ -107,7 +107,7 @@ public struct CoinInfo: Equatable {
 }
 
 /// `keypath` per BCR-2020-007: components plus optional source fingerprint/depth.
-public struct URKeyPath: Equatable {
+public struct URKeyPath: Equatable, Sendable {
     public var components: [DerivationPath.Component]
     public var sourceFingerprint: UInt32?
     public var depth: UInt8?

@@ -7,14 +7,21 @@ public enum Secp256k1Error: Swift.Error, Equatable {
     case invalidPublicKey
     case invalidTweak
     case resultOutOfRange
+    case invalidSignature
+    case recoveryFailed
 }
 
 /// Holds the libsecp256k1 context.
 ///
-/// The context is never randomised and no signing entry point is exposed by this
-/// module: v1 is a provisioning-only app, so no ECDSA signature is ever produced
-/// (design.md §3.2 — the signing flow is v2). That keeps the attack surface of
-/// this wrapper to point arithmetic only.
+/// The context is never randomised. Since v0.2 the vendored library also compiles
+/// libsecp256k1's recovery module, because the signing flow has to recover a public
+/// key from a signature to decide which `v` to return and to check the card's
+/// output. Point arithmetic, verification and recovery are the whole surface this
+/// wrapper exposes: **no entry point that takes a secret key is reachable from
+/// Swift**, so the app cannot sign with an in-memory key even by mistake, and
+/// `tools/audit-release.sh` asserts that no signing symbol is referenced. The one
+/// secret-key call in this file is BIP32's `tweakAdd`, which derives a child key
+/// during provisioning and never produces a signature.
 final class Secp256k1Context {
     static let shared = Secp256k1Context()
 
@@ -32,8 +39,10 @@ final class Secp256k1Context {
     }
 }
 
-/// Minimal secp256k1 surface required for BIP32 derivation and public-key
-/// serialisation. Deliberately excludes signing, recovery, ECDH and Schnorr.
+/// Minimal secp256k1 surface: BIP32 derivation, public-key serialisation,
+/// signature verification and public-key recovery (`ecrecover`, which is what
+/// determines a signature's `v`). Deliberately excludes signing, ECDH and
+/// Schnorr — see the note on `Secp256k1Context`.
 public enum Secp256k1 {
     public static let compressedPublicKeyLength = 33
     public static let uncompressedPublicKeyLength = 65
@@ -203,6 +212,92 @@ public enum Secp256k1 {
         let context = Secp256k1Context.shared.raw
         return privateKey.withUnsafeBufferPointer { buffer in
             secp256k1_ec_seckey_verify(context, buffer.baseAddress!) == 1
+        }
+    }
+
+    // MARK: - Verification and recovery (v0.2 signing flow)
+
+    /// Recovers the public key that produced `signature` over `digest`.
+    ///
+    /// `recoveryID` is the two-bit recovery value (0...3) as secp256k1 defines it,
+    /// not Ethereum's `v`. Returns the 65-byte uncompressed point (`04 ‖ X ‖ Y`),
+    /// which is the form Ethereum hashes for an address. Throws when the signature
+    /// is inconsistent with the recovery id, which is how a wrong `v` is detected:
+    /// with four ids at most one recovers the key we expect.
+    public static func recoverPublicKey(
+        signature: ECDSASignature,
+        digest: [UInt8],
+        recoveryID: UInt8
+    ) throws -> [UInt8] {
+        guard digest.count == 32 else { throw Secp256k1Error.invalidSignature }
+        guard recoveryID < 4 else { throw Secp256k1Error.invalidSignature }
+        let context = Secp256k1Context.shared.raw
+
+        var recoverable = secp256k1_ecdsa_recoverable_signature()
+        let compact = signature.r + signature.s
+        let parsed = compact.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ecdsa_recoverable_signature_parse_compact(
+                context,
+                &recoverable,
+                buffer.baseAddress!,
+                Int32(recoveryID)
+            )
+        }
+        guard parsed == 1 else { throw Secp256k1Error.invalidSignature }
+
+        var publicKey = secp256k1_pubkey()
+        let recovered = digest.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ecdsa_recover(context, &publicKey, &recoverable, buffer.baseAddress!)
+        }
+        guard recovered == 1 else { throw Secp256k1Error.recoveryFailed }
+
+        var output = [UInt8](repeating: 0, count: uncompressedPublicKeyLength)
+        var outputLength = output.count
+        let serialized = output.withUnsafeMutableBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_serialize(
+                context,
+                buffer.baseAddress!,
+                &outputLength,
+                &publicKey,
+                UInt32(SECP256K1_EC_UNCOMPRESSED)
+            )
+        }
+        guard serialized == 1, outputLength == uncompressedPublicKeyLength else {
+            throw Secp256k1Error.invalidPublicKey
+        }
+        return output
+    }
+
+    /// Whether `signature` verifies against `publicKey` (compressed or
+    /// uncompressed) over `digest`.
+    ///
+    /// This is the independent check on what the card returned: the app recovers
+    /// the key from the signature anyway, and verification here means a card that
+    /// returns a valid-looking signature for the wrong key cannot produce a
+    /// signature the app will hand to a wallet.
+    public static func verify(
+        signature: ECDSASignature,
+        digest: [UInt8],
+        publicKey: [UInt8]
+    ) throws -> Bool {
+        guard digest.count == 32 else { throw Secp256k1Error.invalidSignature }
+        let context = Secp256k1Context.shared.raw
+
+        var parsedKey = secp256k1_pubkey()
+        let parsed = publicKey.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_parse(context, &parsedKey, buffer.baseAddress!, publicKey.count)
+        }
+        guard parsed == 1 else { throw Secp256k1Error.invalidPublicKey }
+
+        let compact = signature.r + signature.s
+        var parsedSignature = secp256k1_ecdsa_signature()
+        let signatureParsed = compact.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ecdsa_signature_parse_compact(context, &parsedSignature, buffer.baseAddress!)
+        }
+        guard signatureParsed == 1 else { throw Secp256k1Error.invalidSignature }
+
+        return digest.withUnsafeBufferPointer { buffer -> Bool in
+            secp256k1_ecdsa_verify(context, &parsedSignature, buffer.baseAddress!, &parsedKey) == 1
         }
     }
 }
