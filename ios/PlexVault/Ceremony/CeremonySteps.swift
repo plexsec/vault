@@ -665,50 +665,52 @@ struct PairingStepView: View {
         ) {
             chainCodeWarning
 
-            if prepared, let keys = viewModel.derivedKeys {
-                ForEach(keys.all, id: \.algorithm) { key in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(key.algorithm.displayName).font(.subheadline.weight(.semibold))
-                            Spacer(minLength: 8)
-                            if viewModel.pairingAccountLevel(for: key.algorithm) {
-                                Text("account-level export")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Color.orange.opacity(0.2))
-                                    .clipShape(Capsule())
+            if prepared {
+                ForEach(KeyAlgorithm.allCases, id: \.self) { algorithm in
+                    if let key = viewModel.keyRecord(for: algorithm) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(algorithm.displayName).font(.subheadline.weight(.semibold))
+                                Spacer(minLength: 8)
+                                if viewModel.pairingAccountLevel(for: algorithm) {
+                                    Text("account-level export")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Color.orange.opacity(0.2))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            if let urString = viewModel.pairingURStrings[algorithm],
+                               let ur = try? UR(urString: urString) {
+                                AnimatedURView(ur: ur)
+                                Text("Type: \(ur.type)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let evm = key.evmAddress {
+                                AddressDisplay(label: "Address your wallet must show (EVM)", value: evm)
+                            }
+                            if let btc = key.bitcoinAddress {
+                                AddressDisplay(label: "Address your wallet must show (Bitcoin)", value: btc)
+                            }
+                            if key.evmAddress == nil {
+                                AddressDisplay(label: "Public key your wallet must show", value: key.identity)
+                            }
+                            if algorithm == .secp256k1 {
+                                Text("""
+                                The secp256k1 code exports the account-level key so a Keystone/MetaMask \
+                                wallet can derive from it. Its derivation is pinned to the single key on \
+                                this YubiKey: every account the wallet offers is the same address shown \
+                                above. Do not fund any address that differs from it.
+                                """)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
                         }
-                        if let urString = viewModel.pairingURStrings[key.algorithm],
-                           let ur = try? UR(urString: urString) {
-                            AnimatedURView(ur: ur)
-                            Text("Type: \(ur.type)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let evm = key.evmAddress {
-                            AddressDisplay(label: "Address your wallet must show (EVM)", value: evm)
-                        }
-                        if let btc = key.bitcoinAddress {
-                            AddressDisplay(label: "Address your wallet must show (Bitcoin)", value: btc)
-                        }
-                        if key.evmAddress == nil {
-                            AddressDisplay(label: "Public key your wallet must show", value: key.identity)
-                        }
-                        if key.algorithm == .secp256k1 {
-                            Text("""
-                            The secp256k1 code exports the account-level key so a Keystone/MetaMask \
-                            wallet can derive from it. Its derivation is pinned to the single key on \
-                            this YubiKey: every account the wallet offers is the same address shown \
-                            above. Do not fund any address that differs from it.
-                            """)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
 

@@ -632,3 +632,54 @@ codes, without touching a working card. The exposure is unchanged from amendment
 18 and is recorded in §10 item 13. A card that was reset, or provisioned before
 this feature existed, has no manifest and needs the mnemonic — the app says so
 before the ceremony ends, and refuses rather than inventing codes.
+
+## 20. The pairing screen renders from the record, and a ceremony inherits nothing
+
+**Sections:** §5.2 (new rule 8).
+
+*Reported:* after reading the manifest in re-pair mode, the pairing step showed no
+QR code and no addresses — so there was nothing to import into a wallet and nothing
+to check against it. The mode was useless in practice despite passing its unit
+tests.
+
+*Cause.* `PairingStepView` rendered its codes from `viewModel.derivedKeys`, which
+exists only when a mnemonic was entered. A re-pair deliberately has none, so the
+screen's entire code-and-address block was skipped and only the warnings remained.
+The unit tests could not see this: they assert ceremony state, and the ceremony
+state was correct — the *view* was reading the wrong source.
+
+*Fix.* The pairing screen now renders from the ceremony **record**
+(`CeremonyViewModel.keyRecord(for:)`), which both routes fill in: provisioning from
+the derivation, re-pair from the card and the manifest on it. Renders-from-the-record
+is the rule, because the record is the thing both routes are guaranteed to produce.
+
+*Found while testing the fix, and fixed with it.* Driving a full ceremony and then a
+re-pair in one app session exposed a second defect of the same family:
+`resetTransientState()` did not clear the previous ceremony's results — `inventory`,
+`pairingURStrings`, the manifest flags, the re-pair records, `report` and the
+acknowledgement gates all survived "Provision another wallet". The second ceremony
+therefore opened on the **previous card's inventory**, showing "Factory fresh / no
+keys" for a card that had just been provisioned and offering "Continue" where it
+must ask the operator to read the card; and its pairing step would have shown the
+previous ceremony's codes. The state is now cleared on the way into a ceremony as
+well as on the way out, and §5.2 rule 8 records the invariant.
+
+*Evidence.* Both defects are covered by a UI test that provisions the simulated card
+through the whole ceremony (previously no test walked past the mnemonic), returns to
+setup, re-pairs read-only, and asserts that the codes and the **independently
+derived EVM address** are on screen. It fails on both defects as they were, and on
+the second one only because it drives two ceremonies in one session — which is why
+the unit tests missed it.
+
+*Cost.* That test runs a complete ceremony, so the UI suite went from ~40s to ~8
+minutes. It is kept in the default (non-`QUICK`) run: it is the only coverage of the
+ceremony's end-to-end behaviour in the real app, and both defects it catches were
+invisible to every other kind of test.
+
+*Also learned, and recorded because it wasted an afternoon:* the UI helpers' tappable
+band is deliberately conservative — it reserves the area under the pinned footer, so a
+step action that settles at the end of a tall page's content lands ~5pt below it and
+the band-based helper refuses to tap a button that is plainly on screen. Step actions
+are now tapped by label through `tapStepAction`, which scrolls until `isHittable`.
+This is a test-harness lesson, not a product rule, but it is where a future reader
+will look after watching the walk stall on the derivation step.

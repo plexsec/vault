@@ -124,7 +124,6 @@ public final class CeremonyViewModel {
     public private(set) var revealSecondsRemaining = 0
     public static let revealWindowSeconds = 60
     private var revealTimer: Timer?
-
     /// True while the screen is being mirrored or recorded. The mnemonic is
     /// hidden in that case: a screen capture of the words defeats the whole
     /// ceremony.
@@ -176,6 +175,17 @@ public final class CeremonyViewModel {
 
     public var pairingPrepared: Bool { !pairingURStrings.isEmpty }
 
+    /// The record's entry for one algorithm.
+    ///
+    /// Both routes populate the record: provisioning from the derivation, re-pair
+    /// from the card and the manifest on it. The pairing screen renders from here
+    /// rather than from `derivedKeys` — which exists only when a mnemonic was
+    /// entered, so a re-pair used to reach the pairing step with no QR code and no
+    /// addresses on it.
+    public func keyRecord(for algorithm: KeyAlgorithm) -> KeyRecord? {
+        report?.keys.first { $0.algorithm == algorithm.rawValue }
+    }
+
     /// True when the exported pairing key is an ancestor of the card's leaf
     /// (the secp256k1 account-level export).
     public func pairingAccountLevel(for algorithm: KeyAlgorithm) -> Bool {
@@ -187,6 +197,9 @@ public final class CeremonyViewModel {
     public func start() {
         guard phase == .setup else { return }
         errorMessage = nil
+        // A ceremony never inherits another one's results, whatever route the
+        // operator took out of the last one.
+        resetTransientState()
         let card = TransportSessionCard(
             makeTransport: { [transportChoice] in Self.makeTransport(transportChoice) },
             onSessionStart: { [weak self] _ in
@@ -231,21 +244,43 @@ public final class CeremonyViewModel {
     }
 
     private func resetTransientState() {
+        // Everything a ceremony produces is cleared here, not just the secrets.
+        // Leaving any of it behind is a correctness bug rather than a cosmetic one:
+        // the screens decide what to show from these values, so a second ceremony
+        // used to open on the *previous* card's inventory (offering "Continue" where
+        // it should have asked for a card read) and to show the previous ceremony's
+        // pairing codes, which may describe keys that are no longer on the card.
+        inventory = nil
+        report = nil
+        entropyCommitment = nil
         mnemonic = []
+        transcriptionChallenge = []
         derivedKeys = nil
         readBack = [:]
+        pairingManifestStored = nil
+        pairingManifestNote = nil
+        repairedKeys = [:]
+        repairedFromSerial = nil
         pairingURStrings = [:]
         counterBaseline = nil
-        entropyCommitment = nil
-        backfillEntries = [:]
-        mnemonicRevealed = false
+
+        // Form state, including the gates: a stale acknowledgement would let a new
+        // ceremony past a step the operator never saw this time.
+        resetAdminPIN = ""
+        acknowledgeDestructiveReset = false
         userPIN = ""
         userPINConfirmation = ""
         adminPIN = ""
         adminPINConfirmation = ""
-        resetAdminPIN = ""
+        backfillEntries = [:]
         restoreWords = ""
         diceRolls = []
+        acknowledgeChainCodeWarning = false
+        pairingAddressConfirmed = false
+        mnemonicRevealed = false
+        revealTimer?.invalidate()
+        revealTimer = nil
+        revealSecondsRemaining = 0
     }
 
     // MARK: Step actions

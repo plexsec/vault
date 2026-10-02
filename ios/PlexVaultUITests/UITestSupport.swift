@@ -1,4 +1,5 @@
 import XCTest
+import VaultKit
 
 /// Shared helpers for driving the real app in a simulator.
 ///
@@ -98,5 +99,237 @@ extension XCTestCase {
                 tapWhenVisible(toggle, in: app, file: file, line: line)
             }
         }
+    }
+}
+
+// MARK: - Typing secrets
+
+extension XCTestCase {
+    /// Types into the n-th secure field on screen. The PIN fields are `SecureField`s
+    /// rendered in order, and are never revealed.
+    func typeSecret(_ text: String, into title: String, in app: XCUIApplication,
+                            file: StaticString = #filePath, line: UInt = #line) {
+        let field = app.secureTextFields["secret-\(title)"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "secret field '\(title)' missing", file: file, line: line)
+
+        // The keyboard is dismissed after every field, so the layout is stable and
+        // each field keeps its position — the earlier flakiness came from focus
+        // being lost while the keyboard animated over the target.
+        tapWhenVisible(field, in: app, file: file, line: line)
+        Thread.sleep(forTimeInterval: 0.3)   // let focus and the keyboard animation settle
+        field.typeText(text)
+
+        // Dismiss the keyboard so the next field is not covered by it. This also
+        // exercises the app's own Done button, which the numeric PIN pads need.
+        let done = app.buttons["dismiss-keyboard"]
+        if done.exists { done.tap() }
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+}
+
+extension XCTestCase {
+    /// Taps a ceremony step's primary action by its label, scrolling it into view
+    /// first.
+    ///
+    /// This is not `tapWhenVisible`, and the difference is measured rather than
+    /// stylistic. A step action is the last element of the step's content, and the
+    /// tall steps (derivation, import, read-back) put it below the fold. Scrolled
+    /// to the end, it settles ~5pt below the band `visibleBand(in:)` reserves for
+    /// the privacy footer — the band would refuse to tap a button that is on
+    /// screen and unobstructed. `isHittable` asks the question that matters here
+    /// (is anything in the way?), and unlike the posture toggles, nothing overlays
+    /// a step action.
+    func tapStepAction(
+        _ title: String,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let action = app.buttons[title]
+        XCTAssertTrue(
+            action.waitForExistence(timeout: 15),
+            "step action '\(title)' never appeared:\n\(app.debugDescription)",
+            file: file, line: line
+        )
+        for _ in 0..<16 where !action.isHittable {
+            scroll(app, by: 220)
+        }
+        XCTAssertTrue(
+            action.isHittable,
+            "step action '\(title)' is not tappable (midY=\(action.frame.midY)):\n\(app.debugDescription)",
+            file: file, line: line
+        )
+        action.tap()
+    }
+}
+
+// MARK: - Driving the whole ceremony
+
+/// The walk helpers live here rather than in one test file because two suites
+/// need them now: the ceremony walk, and the read-only re-pair that has to be
+/// preceded by a real provisioning pass to have anything to read.
+extension XCTestCase {
+
+    /// Steps 1-6: setup, inventory, reset, PINs, policy, entropy — landing on the
+    /// mnemonic step with the words still hidden.
+    func advanceToMnemonicStep(
+        _ app: XCUIApplication,
+        userPIN: String,
+        adminPIN: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app, file: file, line: line)
+        acknowledgePosture(in: app, file: file, line: line)
+        tapPinnedPrimaryAction(app, file: file, line: line)
+
+        // Card inventory: read, look at it, then continue.
+        let read = app.buttons["Read YubiKey"]
+        XCTAssertTrue(read.waitForExistence(timeout: 10), "inventory step missing", file: file, line: line)
+        tapWhenVisible(read, in: app, file: file, line: line)
+        XCTAssertTrue(app.staticTexts["Factory fresh"].waitForExistence(timeout: 10),
+                      "inventory output must stay on screen", file: file, line: line)
+        tapStepAction("Continue", in: app, file: file, line: line)
+
+        // Reset with the factory default Admin PIN.
+        typeSecret("12345678", into: "Admin PIN (PW3)", in: app, file: file, line: line)
+        tapWhenVisible(app.buttons["Reset applet"], in: app, file: file, line: line)
+        let confirmReset = app.buttons["Reset and erase"]
+        XCTAssertTrue(confirmReset.waitForExistence(timeout: 5), "reset confirmation missing", file: file, line: line)
+        confirmReset.tap()
+
+        // PINs: user, repeat, admin, repeat.
+        XCTAssertTrue(app.staticTexts["User PIN (PW1) — at least 6 digits"].waitForExistence(timeout: 10),
+                      "PIN step missing", file: file, line: line)
+        typeSecret(userPIN, into: "User PIN", in: app, file: file, line: line)
+        typeSecret(userPIN, into: "Repeat User PIN", in: app, file: file, line: line)
+        typeSecret(adminPIN, into: "Admin PIN", in: app, file: file, line: line)
+        typeSecret(adminPIN, into: "Repeat Admin PIN", in: app, file: file, line: line)
+        tapWhenVisible(app.buttons["Set PINs"], in: app, file: file, line: line)
+
+        // Policy.
+        let applyPolicy = app.buttons["Apply policy"]
+        XCTAssertTrue(applyPolicy.waitForExistence(timeout: 10), "policy step missing", file: file, line: line)
+        tapWhenVisible(applyPolicy, in: app, file: file, line: line)
+
+        // Entropy: generate, record the commitment, then continue.
+        let generate = app.buttons["Generate entropy"]
+        XCTAssertTrue(generate.waitForExistence(timeout: 10), "entropy step missing", file: file, line: line)
+        tapWhenVisible(generate, in: app, file: file, line: line)
+
+        let commitment = app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"]
+        XCTAssertTrue(commitment.waitForExistence(timeout: 10),
+                      "the commitment must stay on screen after generating", file: file, line: line)
+        let recorded = app.switches["I have written down the entropy commitment"]
+        XCTAssertTrue(recorded.waitForExistence(timeout: 5), file: file, line: line)
+        tapWhenVisible(recorded, in: app, file: file, line: line)
+
+        let reveal = app.buttons["Reveal the mnemonic"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "cannot proceed to the mnemonic", file: file, line: line)
+        tapWhenVisible(reveal, in: app, file: file, line: line)
+
+        XCTAssertTrue(app.buttons["reveal-mnemonic"].waitForExistence(timeout: 10),
+                      "mnemonic step missing", file: file, line: line)
+    }
+
+    /// Reveals the words, back-fills the challenge from the entropy the app was
+    /// launched with, and confirms the transcription.
+    func revealAndConfirmMnemonic(
+        _ app: XCUIApplication,
+        entropy: [UInt8],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        tapWhenVisible(app.buttons["reveal-mnemonic"], in: app, file: file, line: line)
+
+        let words = try BIP39.mnemonic(fromEntropy: entropy)
+        let digest = SHA256.hash(words.joined(separator: " "))
+        var indices: [Int] = []
+        var cursor = 0
+        while indices.count < 3 && cursor < digest.count {
+            let candidate = Int(digest[cursor]) % words.count
+            if !indices.contains(candidate) { indices.append(candidate) }
+            cursor += 1
+        }
+
+        for (position, index) in indices.sorted().enumerated() {
+            let field = app.textFields.element(boundBy: position)
+            XCTAssertTrue(field.waitForExistence(timeout: 5), "back-fill field \(position) missing",
+                          file: file, line: line)
+            tapWhenVisible(field, in: app, file: file, line: line)
+            field.typeText(words[index])
+        }
+
+        let done = app.buttons["dismiss-keyboard"]
+        if done.exists { done.tap() }
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let confirm = app.buttons["Confirm transcription"]
+        XCTAssertTrue(confirm.isEnabled, "a correct back-fill must enable confirmation", file: file, line: line)
+        tapWhenVisible(confirm, in: app, file: file, line: line)
+    }
+
+    /// Everything after the mnemonic: derivation, import, read-back, the manifest
+    /// write, the pairing codes, the counter and the teardown. Returns once the
+    /// record is on screen.
+    ///
+    /// `expectedEVMAddress` is asserted against the address the pairing screen
+    /// shows, so the codes are checked against the address derived independently
+    /// of the app.
+    func completeCeremonyAfterMnemonic(
+        _ app: XCUIApplication,
+        expectedEVMAddress: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        // Every step action goes through `tapStepAction`: on these tall steps the
+        // action sits at the end of the content, where the band-based helper refuses
+        // to tap it. The labels are still asserted, so a step whose action loses its
+        // name fails here rather than silently tapping the wrong control.
+
+        // Derivation: derive, then continue.
+        tapStepAction("Derive keys", in: app, file: file, line: line)
+        tapStepAction("Continue", in: app, file: file, line: line)
+
+        // Import.
+        tapStepAction("Import keys into YubiKey", in: app, file: file, line: line)
+
+        // Read-back: verify, then continue.
+        tapStepAction("Verify read-back", in: app, file: file, line: line)
+        tapStepAction("Continue", in: app, file: file, line: line)
+
+        // The manifest write is new in this version: assert it actually happened,
+        // because every later re-pair depends on it.
+        tapStepAction("Store pairing manifest", in: app, file: file, line: line)
+        XCTAssertTrue(
+            app.staticTexts["Stored on the YubiKey and read back byte-for-byte."].waitForExistence(timeout: 10),
+            "the manifest must be stored and read back", file: file, line: line
+        )
+        tapStepAction("Continue", in: app, file: file, line: line)
+
+        // Pairing: acknowledge the chain code, build the codes, check the address,
+        // then continue.
+        let acknowledge = app.switches["I understand that only the address shown here can be signed for"]
+        XCTAssertTrue(acknowledge.waitForExistence(timeout: 10), "chain-code acknowledgement missing",
+                      file: file, line: line)
+        tapWhenVisible(acknowledge, in: app, file: file, line: line)
+        tapStepAction("Prepare pairing codes", in: app, file: file, line: line)
+
+        XCTAssertTrue(
+            app.staticTexts[expectedEVMAddress].waitForExistence(timeout: 10),
+            "the pairing screen must show the derived EVM address", file: file, line: line
+        )
+        let confirmed = app.switches["I confirmed my desktop wallet shows these exact values"]
+        XCTAssertTrue(confirmed.waitForExistence(timeout: 5), file: file, line: line)
+        tapWhenVisible(confirmed, in: app, file: file, line: line)
+        tapStepAction("Continue", in: app, file: file, line: line)
+
+        // Counter, then teardown.
+        tapStepAction("Read counter", in: app, file: file, line: line)
+        tapStepAction("Continue", in: app, file: file, line: line)
+        tapStepAction("Wipe secrets and finish", in: app, file: file, line: line)
+
+        XCTAssertTrue(app.buttons["Provision another wallet"].waitForExistence(timeout: 10),
+                      "the record must be shown when the ceremony finishes", file: file, line: line)
     }
 }
