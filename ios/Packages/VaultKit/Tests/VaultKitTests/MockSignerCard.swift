@@ -21,6 +21,8 @@ final class MockSignerCard: SignerCard {
         case randomBytes(count: Int)
         case putDataObject(tag: UInt16)
         case getDataObject(tag: UInt16)
+        case readPairingManifest
+        case writePairingManifest(byteCount: Int)
     }
 
     /// Failure injection.
@@ -38,6 +40,10 @@ final class MockSignerCard: SignerCard {
         case readPublicKey
         case counter
         case challenge
+        case pairingManifest
+        /// The card has no private-use data object to write to (an applet that
+        /// does not implement the optional objects).
+        case pairingManifestUnsupported
     }
 
     private(set) var calls: [Call] = []
@@ -55,6 +61,15 @@ final class MockSignerCard: SignerCard {
     private(set) var storedCreationTime: Date?
     private(set) var dataObjects: [UInt16: [UInt8]] = [:]
     private(set) var appliedPolicy = false
+    /// The pairing manifest as the card holds it. `nil` is a never-written
+    /// (empty) object, which is what a reset leaves behind.
+    private(set) var pairingManifestBytes: [UInt8]?
+    /// Mirrors `CardInventory.pairingManifest`; `false` makes the read throw the
+    /// way a card without the optional objects does.
+    var supportsPairingManifest = true
+    /// When set, `readPairingManifest` returns this instead of what was written,
+    /// modelling storage that silently keeps something else (or truncates).
+    var pairingManifestReadBackOverride: [UInt8]?
     private(set) var resetCount = 0
     private(set) var pinChangeCount = 0
     /// The Admin PIN last provisioned, used to model per-session VERIFY state.
@@ -75,7 +90,12 @@ final class MockSignerCard: SignerCard {
         pwStatusBytes: [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F],
         occupiedSlots: [],
         signatureCounter: 0,
-        isFactoryFresh: true
+        isFactoryFresh: true,
+        // A YubiKey answers `9000` with no data for a private-use object that has
+        // never been written, so a factory-fresh card is `.absent`, not
+        // `.unsupported`: the tests must exercise the write path, and the
+        // degraded path is covered by setting `.unsupported` explicitly.
+        pairingManifest: .absent
     )
 
     /// Convenience accessors for assertions.
@@ -191,5 +211,29 @@ final class MockSignerCard: SignerCard {
             throw CardError.unexpectedStatusWord(sw1: 0x6A, sw2: 0x88)
         }
         return value
+    }
+
+    func readPairingManifest() async throws -> [UInt8]? {
+        calls.append(.readPairingManifest)
+        if failurePoint == .pairingManifestUnsupported || !supportsPairingManifest {
+            throw CardError.unsupportedFeature("this applet has no private-use data object 0x0102")
+        }
+        if failurePoint == .pairingManifest { throw CardError.transportUnavailable("mock") }
+        return pairingManifestReadBackOverride ?? pairingManifestBytes
+    }
+
+    func writePairingManifest(_ manifest: [UInt8], adminPIN: [UInt8]) async throws {
+        calls.append(.writePairingManifest(byteCount: manifest.count))
+        if failurePoint == .pairingManifestUnsupported || !supportsPairingManifest {
+            throw CardError.unsupportedFeature("this applet has no private-use data object 0x0102")
+        }
+        if failurePoint == .pairingManifest { throw CardError.transportUnavailable("mock") }
+        // Models the write's real failure mode: PUT DATA of a private-use object
+        // requires PW3, and the ceremony re-verifies it in this session.
+        guard adminPIN == lastSetAdminPIN else {
+            throw CardError.pinIncorrect(retriesRemaining: 2)
+        }
+        pairingManifestBytes = manifest
+        inventoryResult.pairingManifest = .present(byteCount: manifest.count)
     }
 }

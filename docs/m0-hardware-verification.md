@@ -326,3 +326,65 @@ send `ACTIVATE FILE` — a command every reset already sends — and it fires on
 when `SELECT` answers `6985`/`6285`, status words that mean the applet is not
 usable in that state anyway. Every one of these failures is visible rather than
 silent: a wrong assumption here costs a re-tap, never a silently different key.
+
+## 12. The private-use data objects hold a pairing manifest
+
+**What M0 could not assume.** The four private-use data objects are *optional* in
+the OpenPGP card spec and announced in Extended Capabilities, so that a
+conforming applet may not implement them at all. Their access conditions also
+differ per object, and the whole design depends on one of them being readable
+with no PIN — a property that cannot be inferred from the spec table alone with
+enough confidence to write 194 bytes of pairing material into an operator's card.
+
+**Already verified, on a desk.** A YubiKey 5C NFC (firmware 5.8.0, OpenPGP 3.4,
+serial 38531019) was driven directly with an independent tool (`scdaemon`, so the
+check does not agree with our own code by construction). With **no PIN
+presented**:
+
+| APDU | answer | meaning |
+|---|---|---|
+| `GET DATA 0x0101` | `9000`, no data | implemented, readable without a PIN, empty |
+| `GET DATA 0x0102` | `9000`, no data | implemented, readable without a PIN, empty |
+| `GET DATA 0x0103` | `6982` | implemented, but a PIN is required to read it |
+| `GET DATA 0x0104` | `6982` | implemented, but a PIN is required to read it |
+| `GET DATA 0x00C0` | `6B00` | extended capabilities is not a standalone object on this applet |
+
+So the objects exist, and `0x0102` is the one that is both readable with no PIN
+and writable with PW3. That is the combination the feature stands on.
+
+**And verified end to end.** With PW3 verified (`00 20 00 83 08 <PIN>`):
+
+1. `PUT DATA 0x0102` with a **194-byte** manifest produced by this repository's
+   own encoder answered `9000`; `GET DATA 0x0102` returned exactly those bytes,
+   byte for byte.
+2. A **254-byte** value was accepted; a **255-byte** value answered `6A80`. The
+   applet enforces the spec's 254-byte limit, so `PairingManifest` must stay
+   inside it (currently 194 bytes, asserted by a test).
+3. The application data (`GET DATA 0x6E`) is **319 bytes and arrives chained**:
+   the card answered `613F`, i.e. "63 more bytes available", and the full object
+   only arrived after a `GET RESPONSE` (`00 C0 00 00 3F`). The shared
+   `YubikeyTransport.exchange` loop handles this, which is worth knowing because
+   the manifest read is of a similar size.
+4. Parsed by this repository's own parser, that application data yielded applet
+   3.4, serial `38531019` and PW status `00 7F 7F 7F 03 00 03`.
+5. The binding check was run against the card's real keys: a manifest naming the
+   card's own public keys was accepted, one with a single flipped bit in the
+   secp256k1 key was refused (`.cardKeyMismatch`), and one written for a different
+   serial was refused (`.cardSerialMismatch`).
+6. The object was emptied afterwards with a zero-length `PUT DATA 0x0102`
+   (`9000`, and a following read returns no data), so the card was left as found.
+
+**Still to confirm on a card this app provisioned.** The chain codes in the
+manifest above were synthetic: the test card was provisioned by something else, so
+the *storage* and the *key binding* are verified, but not that a manifest written
+by a full ceremony is accepted by a real wallet. That is what the small-value test
+transaction of §4.2 step 10 covers, and it needs a card provisioned end to end by
+this app — i.e. it is the same hardware gate the pairing export (items 1-8) is
+already behind. Until then, treat "a wallet pairs from the stored manifest" as
+unverified.
+
+**Why it is safe to be wrong.** The write is 194 bytes into an object nothing else
+uses, it happens after the keys are verified, and a failure is reported and
+non-fatal: the ceremony still finishes, and the only consequence is that a later
+re-pair needs the mnemonic. A `TERMINATE DF` clears the object, so a wrong
+assumption cannot leave a card advertising keys it no longer holds.

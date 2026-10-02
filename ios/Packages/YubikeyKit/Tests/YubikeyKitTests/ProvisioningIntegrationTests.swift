@@ -145,6 +145,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(readBack[.secp256k1]?.cardPublicKeyHex, keys.secp256k1.publicKeyHex)
         XCTAssertEqual(readBack[.ed25519]?.cardPublicKeyHex, keys.ed25519.publicKeyHex)
 
+        // The manifest goes to the card itself, through the real APDU layer — this
+        // is the write that makes a later re-pair possible without a reset.
+        let manifest = try await ceremony.writePairingManifest()
+        try ceremony.advance()
+        let stored = try XCTUnwrap(manifest)
+        XCTAssertEqual(transport.storedPairingManifest, stored.encoded())
+        XCTAssertEqual(stored.encoded().count, 194)
+        XCTAssertLessThanOrEqual(stored.encoded().count, PrivateUseDataObject.maximumValueLength)
+        XCTAssertEqual(stored.entries.count, 2)
+        XCTAssertTrue(
+            transport.receivedAPDUs.contains { $0.hasPrefix("00da0102") },
+            "the manifest must reach the card as PUT DATA 0x0102"
+        )
+
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -269,6 +283,9 @@ final class ProvisioningIntegrationTests: XCTestCase {
         )
         try await restored.importKeys()
         let readBack = try await restored.verifyReadBack()
+        try restored.advance()
+        _ = try await restored.writePairingManifest()
+        try restored.advance()
 
         for algorithm in KeyAlgorithm.allCases {
             XCTAssertEqual(

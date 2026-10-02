@@ -53,6 +53,12 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     public var cardSerial: String?
     public var cardOpenPGPVersion: String?
     public var counterBaseline: UInt32?
+    /// True when a pairing manifest was written into the card's private-use data
+    /// object and read back byte-for-byte. False means the pairing codes can
+    /// still be produced now, but not later without the mnemonic — the card was
+    /// reset, the object was already occupied by something else, or the applet
+    /// has no private-use objects at all.
+    public var pairingManifestStored: Bool?
     /// Ordered: secp256k1, then Ed25519. Empty until derivation.
     public var keys: [KeyRecord] = []
     public var warnings: [String] = []
@@ -275,6 +281,14 @@ public final class ProvisioningCeremony {
     /// Key material written into each pairing UR. Not necessarily the leaf key;
     /// see `PairingExport`.
     public private(set) var pairingExports: [KeyAlgorithm: PairingExport] = [:]
+    /// The manifest written into the card's private-use data object, once it has
+    /// been read back and confirmed byte-for-byte.
+    public private(set) var pairingManifest: PairingManifest?
+    /// How the manifest step ended. Non-nil is what lets the step advance, so the
+    /// gate is "the step ran", not "the write succeeded": a card that cannot hold
+    /// a manifest must not strand the operator in the middle of a ceremony whose
+    /// keys are already in it.
+    public private(set) var pairingManifestOutcome: PairingManifestOutcome?
 
     // MARK: Secrets (wiped on every exit path)
 
@@ -382,6 +396,15 @@ public final class ProvisioningCeremony {
         case .readBackCheck:
             guard report.readBackVerified else {
                 throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public keys have not been verified yet")
+            }
+            step = .pairingManifest
+
+        case .pairingManifest:
+            guard pairingManifestOutcome != nil else {
+                throw CeremonyError.stepIncomplete(
+                    step: .pairingManifest,
+                    detail: "the pairing manifest step has not run yet"
+                )
             }
             step = .pairingExport
 
@@ -960,6 +983,146 @@ public final class ProvisioningCeremony {
     /// `chainCodeAcknowledged` is the operator's acknowledgement of
     /// `PairingPolicy.chainCodeWarning`.
     @discardableResult
+    // MARK: Step 7b — pairing manifest (design.md §4.2 step 7b)
+
+    /// Writes the pairing manifest into the card and reads it straight back.
+    ///
+    /// This is what makes the pairing codes reproducible **without resetting the
+    /// applet**. A chain code cannot be read out of a YubiKey — the OpenPGP
+    /// applet holds a key, not a BIP32 node (design.md §4.3) — so without this
+    /// step the only way to show the codes again is to re-run the whole ceremony,
+    /// which destroys the keys. The manifest stores the extended public keys a
+    /// wallet needs, and storing them on the card keeps the app stateless: the
+    /// phone persists nothing, and a re-pair on a fresh install works.
+    ///
+    /// Deliberately *after* the read-back check: the card must not be told to
+    /// advertise a key until that key has been verified to be in it.
+    ///
+    /// Failure here is a warning, not an abort. The keys and the mnemonic — the
+    /// things that actually hold funds — are already verified at this point; what
+    /// is at stake is the convenience of a later re-pair. The one exception is
+    /// data that came back different from what was written, which is reported as
+    /// a warning too, because the re-pair path re-checks the manifest against the
+    /// card's live keys and would refuse a manifest that does not match.
+    public func writePairingManifest() async throws -> PairingManifest? {
+        try requireCurrent(.pairingManifest)
+        guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
+        var pin = adminPIN.materializedCopy()
+        defer { VaultKit.wipe(&pin) }
+
+        switch inventory?.pairingManifest ?? .unsupported {
+        case .unsupported:
+            return decline(
+                "This card refused the read of its private-use data object, so no pairing manifest "
+                + "was stored. Re-pairing this card later will require the mnemonic again."
+            )
+        case .unreadable(let reason):
+            return decline("The card's pairing manifest slot could not be read (\(reason)); nothing was written.")
+        case .absent, .present:
+            break
+        }
+
+        guard let manifest = makePairingManifest() else {
+            throw CeremonyError.stepIncomplete(
+                step: .pairingManifest,
+                detail: "the pairing export has not been built yet"
+            )
+        }
+        let encoded = manifest.encoded()
+
+        do {
+            try await withMutatingStep(.pairingManifest) {
+                try await card.writePairingManifest(encoded, adminPIN: pin)
+            }
+        } catch let error as CardError {
+            return decline("The pairing manifest could not be stored: \(error.userFacingDescription)")
+        }
+
+        // Read it straight back. A write that is not read back is a write that is
+        // assumed, and the whole point of this object is that a *later* session
+        // can trust it.
+        let readBack: [UInt8]?
+        do {
+            readBack = try await card.readPairingManifest()
+        } catch let error as CardError {
+            return decline(
+                "The pairing manifest was written but could not be read back: \(error.userFacingDescription)"
+            )
+        }
+        guard readBack == encoded else {
+            return decline(
+                "The pairing manifest did not read back byte-for-byte (wrote \(encoded.count) bytes, "
+                + "read \(readBack?.count.description ?? "nothing")); it will not be trusted on re-pair."
+            )
+        }
+
+        // The check a later re-pair will repeat: derive the pinned child of the
+        // stored account node and confirm it is the key physically in the card.
+        // Doing it here means a manifest that could never verify is caught while
+        // the mnemonic is still on screen, rather than months later.
+        do {
+            try manifest.verify(against: cardKeyReport(from: readBackResults))
+        } catch let error as PairingManifest.VerificationError {
+            return decline("The stored pairing manifest does not describe the keys in this card: \(error).")
+        }
+
+        pairingManifest = manifest
+        pairingManifestOutcome = .stored(manifest)
+        report.pairingManifestStored = true
+        return manifest
+    }
+
+    /// Records that the manifest is not on the card, says why, and lets the step
+    /// advance. Every declining path in `writePairingManifest` goes through here,
+    /// so none of them can forget to record the outcome and strand the operator.
+    @discardableResult
+    private func decline(_ reason: String) -> PairingManifest? {
+        addWarning(reason)
+        pairingManifestOutcome = .declined(reason: reason)
+        report.pairingManifestStored = false
+        return nil
+    }
+
+    /// The public material the card needs in order to be re-paired later.
+    private func makePairingManifest() -> PairingManifest? {
+        guard let keys = derivedKeys else { return nil }
+        let exports = KeyAlgorithm.allCases.compactMap { pairingExports[$0] }
+        guard exports.count == KeyAlgorithm.allCases.count else { return nil }
+
+        // The master fingerprint is per-mnemonic, not per-key; every summary
+        // carries the same value.
+        guard let master = keys.all.first?.masterFingerprintHex,
+              let masterBytes = try? Hex.decode(master), masterBytes.count == 4
+        else { return nil }
+        // The serial is what ties a manifest to one card, so a manifest copied to
+        // another YubiKey is refused with a reason the operator can act on.
+        guard let serial = inventory?.serial,
+              let serialBytes = try? Hex.decode(serial), serialBytes.count == 4
+        else { return nil }
+        let entries = exports.compactMap(PairingManifest.Entry.init(export:))
+        guard entries.count == exports.count else { return nil }
+
+        return PairingManifest(
+            cardSerial: serialBytes,
+            masterFingerprint: masterBytes,
+            entries: entries
+        )
+    }
+
+    /// What the card reports about its own keys, for a manifest check.
+    private func cardKeyReport(from results: [KeyAlgorithm: ReadBackResult]) -> CardKeyReport {
+        var keys: [KeyAlgorithm: [UInt8]] = [:]
+        for (algorithm, result) in results {
+            guard let publicKey = try? Hex.decode(result.cardPublicKeyHex) else { continue }
+            keys[algorithm] = publicKey
+        }
+        return CardKeyReport(
+            cardSerial: inventory?.serial.flatMap { try? Hex.decode($0) },
+            publicKeys: keys
+        )
+    }
+
+    @discardableResult
     public func buildPairingURs(
         style: URTypeStyle,
         chainCodeAcknowledged: Bool
@@ -1060,6 +1223,11 @@ public final class ProvisioningCeremony {
         mnemonicConfirmed = false
         pairingURs = [:]
         pairingExports = [:]
+        // The manifest is public data, but it is derived from `pairingExports`:
+        // leaving a copy behind after a wipe would mean the teardown step left
+        // wallet material in memory. The durable record is `report`.
+        pairingManifest = nil
+        pairingManifestOutcome = nil
         derivedKeys = nil
         readBackResults = [:]
     }

@@ -123,6 +123,22 @@ public protocol SignerCard: AnyObject {
 
     /// Reads a single data object by tag.
     func getDataObject(_ tag: UInt16) async throws -> [UInt8]
+
+    /// `GET DATA` for one of the applet's private-use data objects.
+    ///
+    /// `nil` means "the object is there and empty", which is what the hardware
+    /// answers for a never-written object (`9000` with no data) and the state a
+    /// reset leaves behind. A card that has no such object at all throws, so the
+    /// two cases cannot be confused: an empty manifest is a card that can store
+    /// one, a thrown error is a card that cannot.
+    func readPairingManifest() async throws -> [UInt8]?
+
+    /// `PUT DATA` for the private-use data object the pairing manifest lives in.
+    ///
+    /// The Admin PIN is required and must be re-verified in this session, for the
+    /// same reason `importKey` does it: NFC sessions are short and VERIFY state
+    /// does not survive one.
+    func writePairingManifest(_ manifest: [UInt8], adminPIN: [UInt8]) async throws
 }
 
 public enum CardError: Swift.Error, Equatable {
@@ -139,6 +155,10 @@ public enum CardError: Swift.Error, Equatable {
     case malformedResponse(String)
     case unsupportedFeature(String)
     case unsupportedKeyType(String)
+    /// A value that cannot fit the card's storage for the object being written.
+    /// Raised before the card is asked, because the answer would be the same
+    /// every time: the private-use data objects hold at most 254 bytes.
+    case dataObjectTooLarge(byteCount: Int, maximum: Int)
 
     /// User-facing text. Kept here so every surface reports the same wording.
     /// Whether this failure leaves the card in a state the ceremony cannot
@@ -162,6 +182,9 @@ public enum CardError: Swift.Error, Equatable {
         case .conditionsNotSatisfied, .unsupportedFirmware, .keyImportRejected:
             return true
         case .unsupportedFeature, .unsupportedKeyType:
+            return true
+        case .dataObjectTooLarge:
+            // Nothing was written and no retry can succeed: the value cannot fit.
             return true
         case .transportUnavailable, .cardNotSelected, .malformedResponse:
             return false
@@ -201,7 +224,57 @@ public enum CardError: Swift.Error, Equatable {
             return "Unsupported by this YubiKey: \(detail)."
         case .unsupportedKeyType(let detail):
             return "This slot holds a key this app does not support: \(detail)."
+        case .dataObjectTooLarge(let byteCount, let maximum):
+            return "The value is \(byteCount) bytes but this card holds at most \(maximum) in that object."
         }
+    }
+}
+
+/// How the pairing-manifest step ended.
+///
+/// A card that cannot store a manifest is not a failure — the keys and the
+/// mnemonic, which are what hold funds, are unaffected — so the step records what
+/// happened and moves on. The distinction is kept in the report so the operator
+/// knows whether re-pairing will need the mnemonic again.
+public enum PairingManifestOutcome: Equatable, Sendable {
+    case stored(PairingManifest)
+    /// Not stored, with the reason, for the report and the screen.
+    case declined(reason: String)
+
+    public var manifest: PairingManifest? {
+        if case .stored(let manifest) = self { return manifest }
+        return nil
+    }
+
+    public var isStored: Bool { manifest != nil }
+}
+
+/// What a card's private-use data object holds — the pairing manifest slot.
+///
+/// This is read during inventory because it decides whether the card can be
+/// re-paired without a reset. It is *not* a gate on provisioning: a card that
+/// cannot store a manifest is still perfectly provisionable, it just costs the
+/// operator a re-run of the ceremony (mnemonic included) the next time the
+/// pairing codes are needed.
+public enum PairingManifestState: Equatable, Sendable {
+    /// The card refused the read of the private-use object, so it has no place to
+    /// keep a manifest. Reported, never fatal.
+    case unsupported
+    /// Readable and empty — what a freshly reset applet looks like, because
+    /// `TERMINATE DF` wipes the object with everything else.
+    case absent
+    case present(byteCount: Int)
+    /// The read failed for some other reason, with the card's own words.
+    case unreadable(String)
+
+    public var isPresent: Bool {
+        if case .present = self { return true }
+        return false
+    }
+
+    public var byteCount: Int? {
+        if case .present(let count) = self { return count }
+        return nil
     }
 }
 
@@ -227,6 +300,9 @@ public struct CardInventory: Equatable, Sendable {
     /// abort the whole inventory. The applet-version gate (`isDefinitelyUnsupported`)
     /// is what decides whether such a card can be provisioned at all.
     public var probeFailures: [KeySlot: String]
+    /// Whether the card's private-use data object can hold a pairing manifest,
+    /// and what is in it now.
+    public var pairingManifest: PairingManifestState
 
     public init(
         openPGPVersion: String,
@@ -237,7 +313,8 @@ public struct CardInventory: Equatable, Sendable {
         occupiedSlots: Set<KeySlot> = [],
         signatureCounter: UInt32? = nil,
         isFactoryFresh: Bool = true,
-        probeFailures: [KeySlot: String] = [:]
+        probeFailures: [KeySlot: String] = [:],
+        pairingManifest: PairingManifestState = .unsupported
     ) {
         self.openPGPVersion = openPGPVersion
         self.manufacturer = manufacturer
@@ -248,6 +325,7 @@ public struct CardInventory: Equatable, Sendable {
         self.signatureCounter = signatureCounter
         self.isFactoryFresh = isFactoryFresh
         self.probeFailures = probeFailures
+        self.pairingManifest = pairingManifest
     }
 
     public func holdsKey(in slot: KeySlot) -> Bool { occupiedSlots.contains(slot) }
@@ -298,6 +376,11 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case derivation
     case keyImport
     case readBackCheck
+    /// Writes the pairing manifest into the card's private-use data object, so
+    /// that the pairing codes can be produced again later without resetting the
+    /// applet. Sits after the read-back check on purpose: nothing is advertised
+    /// to a wallet until the keys it describes have been verified in the card.
+    case pairingManifest
     case pairingExport
     case counterBaseline
     case teardown
@@ -319,6 +402,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .derivation: return "Derive the signing keys"
         case .keyImport: return "Import keys into YubiKey"
         case .readBackCheck: return "Verify read-back keys"
+        case .pairingManifest: return "Store the pairing manifest"
         case .pairingExport: return "Pair with the desktop wallet"
         case .counterBaseline: return "Record signature counter baseline"
         case .teardown: return "Wipe secrets and finish"
@@ -330,7 +414,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     /// anything else happens (design.md §5.2 rule 1 forbids blind retries).
     public var isMutatingCardState: Bool {
         switch self {
-        case .reset, .pinProvisioning, .policy, .keyImport: return true
+        case .reset, .pinProvisioning, .policy, .keyImport, .pairingManifest: return true
         default: return false
         }
     }

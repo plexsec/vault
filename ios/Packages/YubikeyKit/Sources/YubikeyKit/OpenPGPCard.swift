@@ -88,6 +88,82 @@ public final class OpenPGPCard: SignerCard {
         try await getData(tag, operation: .readApplicationData)
     }
 
+    // MARK: Pairing manifest (private-use data object)
+
+    /// `GET DATA 0x0102` — the applet's second private-use object.
+    ///
+    /// The value is read, never derived: it is whatever a previous ceremony wrote
+    /// there. `nil` means the object is present and empty, which is what the
+    /// hardware answers for one that has never been written (measured: `9000`
+    /// with no data, not `6A88`) and the state a reset leaves behind, because
+    /// `TERMINATE DF` wipes it along with the keys.
+    ///
+    /// A card that has no such object at all is a different case and throws
+    /// `.unsupportedFeature`, so "this card cannot store a manifest" never looks
+    /// like "this card has not been given one yet".
+    public func readPairingManifest() async throws -> [UInt8]? {
+        do {
+            let value = try await getData(OpenPGPDataObject.privateUse2, operation: .readPairingManifest)
+            return value.isEmpty ? nil : value
+        } catch let error as CardError {
+            switch error {
+            case .unexpectedStatusWord(let sw1, let sw2) where Self.isMissingDataObject(sw1, sw2):
+                throw CardError.unsupportedFeature("this applet has no private-use data object 0x0102")
+            default:
+                throw error
+            }
+        }
+    }
+
+    /// `PUT DATA 0x0102` — stores the pairing manifest in the card.
+    ///
+    /// This is the one write that keeps a card re-pairable without a reset: the
+    /// manifest holds the extended public keys a wallet needs, which the applet
+    /// itself cannot supply because it stores a key rather than a BIP32 node.
+    ///
+    /// Writing requires PW3 and the object is readable without any PIN, which is
+    /// exactly the access-condition pair that makes a later re-pair possible
+    /// without asking the operator for a PIN (see `PrivateUseDataObject`).
+    ///
+    /// There is deliberately no "clear" counterpart: emptying the object is what
+    /// a reset does, and a ceremony that finds itself wanting to clear a manifest
+    /// is really wanting to start over.
+    public func writePairingManifest(_ manifest: [UInt8], adminPIN: [UInt8]) async throws {
+        guard manifest.count <= PrivateUseDataObject.maximumValueLength else {
+            throw CardError.dataObjectTooLarge(
+                byteCount: manifest.count,
+                maximum: PrivateUseDataObject.maximumValueLength
+            )
+        }
+        // Re-verify in THIS session, as everywhere else: the ceremony spans
+        // short-lived NFC sessions and VERIFY state does not survive one.
+        try await verify(pin: adminPIN, reference: .admin, operation: .verifyAdminPIN)
+        do {
+            try await putData(
+                tag: OpenPGPDataObject.privateUse2,
+                value: manifest,
+                operation: .writePairingManifest
+            )
+        } catch let error as CardError {
+            // Same vocabulary as the read: a card that has no such object says so,
+            // rather than surfacing a bare status word the operator cannot act on.
+            switch error {
+            case .unexpectedStatusWord(let sw1, let sw2) where Self.isMissingDataObject(sw1, sw2):
+                throw CardError.unsupportedFeature("this applet has no private-use data object 0x0102")
+            default:
+                throw error
+            }
+        }
+    }
+
+    /// Status words that mean "there is no such data object here": 6A88
+    /// (referenced data not found), 6D00 (instruction not supported) and 6B00
+    /// (wrong P1-P2). All three have been seen from applets that do not implement
+    /// the optional private-use objects.
+    static func isMissingDataObject(_ sw1: UInt8, _ sw2: UInt8) -> Bool {
+        (sw1 == 0x6A && sw2 == 0x88) || (sw1 == 0x6D && sw2 == 0x00) || (sw1 == 0x6B && sw2 == 0x00)
+    }
+
     /// `GET DATA` (INS 0xCA), tag in P1P2.
     public func getData(_ tag: UInt16, operation: OpenPGPOperation) async throws -> [UInt8] {
         let apdu = CommandAPDU(
@@ -257,6 +333,23 @@ public final class OpenPGPCard: SignerCard {
 
         let counter = parsed.signatureCounter
 
+        // Whether this card can hold a manifest decides whether the pairing codes
+        // can ever be produced again without a reset, so it is worth one extra
+        // APDU here instead of a surprise at the end of a ceremony. It is not a
+        // gate: a card that cannot store one is still provisionable.
+        let pairingManifest: PairingManifestState
+        do {
+            if let value = try await readPairingManifest() {
+                pairingManifest = .present(byteCount: value.count)
+            } else {
+                pairingManifest = .absent
+            }
+        } catch CardError.unsupportedFeature {
+            pairingManifest = .unsupported
+        } catch let error as CardError {
+            pairingManifest = .unreadable(error.userFacingDescription)
+        }
+
         return CardInventory(
             openPGPVersion: parsed.openPGPVersion ?? "unknown",
             manufacturer: parsed.manufacturer.map { String(format: "0x%04X", $0) },
@@ -266,7 +359,8 @@ public final class OpenPGPCard: SignerCard {
             occupiedSlots: occupied,
             signatureCounter: counter,
             isFactoryFresh: occupied.isEmpty && (counter ?? 0) == 0,
-            probeFailures: probeFailures
+            probeFailures: probeFailures,
+            pairingManifest: pairingManifest
         )
     }
 

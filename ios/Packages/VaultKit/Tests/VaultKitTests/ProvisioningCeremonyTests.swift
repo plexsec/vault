@@ -82,6 +82,12 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
+        // The pairing manifest step sits between the read-back and the export, so
+        // that a card is never told to advertise a key that has not been verified
+        // to be in it. A card that cannot store a manifest returns nil here and
+        // the step still advances; that is the designed degradation.
+        _ = try await ceremony.writePairingManifest()
+        try ceremony.advance()
         _ = try ceremony.buildPairingURs(style: style, chainCodeAcknowledged: chainCodeAcknowledged)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -131,6 +137,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(readBack[.secp256k1]?.identityFromCardKey, Expected.evmAddress)
         XCTAssertEqual(readBack[.ed25519]?.identityFromCardKey, Expected.ed25519PublicKey)
         XCTAssertEqual(ceremony.step, .readBackCheck)
+        try ceremony.advance()
+        // The manifest is written before anything is advertised to a wallet.
+        XCTAssertEqual(ceremony.step, .pairingManifest)
+        _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
         XCTAssertEqual(ceremony.step, .pairingExport)
 
@@ -186,8 +196,15 @@ final class ProvisioningCeremonyTests: XCTestCase {
             .importKey(slot: .authentication, algorithm: .ed25519, fingerprint: Expected.ed25519Fingerprint),
             .readPublicKey(slot: .signature),
             .readPublicKey(slot: .authentication),
+            // The manifest write and the read-back that proves it landed. The
+            // byte count is asserted so a format change that would overflow the
+            // applet's 254-byte private-use object fails here, not on a card.
+            .writePairingManifest(byteCount: 194),
+            .readPairingManifest,
             .signatureCounter,
         ])
+        XCTAssertEqual(ceremony.report.pairingManifestStored, true)
+        XCTAssertEqual(card.pairingManifestBytes?.count, 194)
     }
 
     /// The two keys must be independent: the same mnemonic at one path must not
@@ -432,6 +449,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
+        // The manifest step is between the read-back and the export.
+        _ = try await ceremony.writePairingManifest()
+        try ceremony.advance()
         _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -493,6 +513,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
+        // The manifest step is between the read-back and the export.
+        _ = try await ceremony.writePairingManifest()
+        try ceremony.advance()
 
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
@@ -540,6 +563,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
+        // The manifest step is between the read-back and the export.
+        _ = try await ceremony.writePairingManifest()
+        try ceremony.advance()
         XCTAssertThrowsError(try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: false)) { error in
             XCTAssertEqual(error as? CeremonyError, .pairingPolicyNotAcknowledged)
         }
@@ -552,6 +578,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await runThroughDerivation(ceremony)
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
+        // The manifest step is between the read-back and the export.
+        _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
 
         _ = try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: true)
@@ -783,10 +812,148 @@ final class ProvisioningCeremonyTests: XCTestCase {
             XCTAssertTrue(text.contains(expected), "printout missing: \(expected)")
         }
     }
+
+    // MARK: Pairing manifest (design.md §4.2 step 8b)
+
+    /// The card keeps the pairing material, so the codes can be produced again
+    /// without resetting the applet — which is the entire point of the step.
+    func testTheCeremonyStoresAManifestThatDescribesTheCardsKeys() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+        _ = try await completeCeremony(ceremony)
+
+        let stored = try XCTUnwrap(card.pairingManifestBytes)
+        let manifest = try PairingManifest.decode(stored)
+        XCTAssertEqual(manifest.entries.count, 2)
+        XCTAssertEqual(ceremony.report.pairingManifestStored, true)
+
+        // The card's own keys are what the manifest is checked against, and the
+        // ceremony performs that check before it will advertise anything.
+        let leaf = try XCTUnwrap(card.storedPrivateKey(.signature))
+        let ed25519 = try XCTUnwrap(card.storedPrivateKey(.authentication))
+        XCTAssertNoThrow(
+            try manifest.verify(
+                against: CardKeyReport(
+                    cardSerial: [0, 0, 0, 0],
+                    publicKeys: [
+                        .secp256k1: try Secp256k1.publicKey(fromPrivateKey: leaf),
+                        .ed25519: try Ed25519.publicKey(fromSeed: ed25519),
+                    ]
+                )
+            )
+        )
+    }
+
+    /// A card that cannot store a manifest is not a broken card: the keys and the
+    /// mnemonic are unaffected, and all that is lost is re-pairing without the
+    /// mnemonic later. The ceremony warns and carries on.
+    func testACardWithoutThePrivateUseObjectWarnsAndContinues() async throws {
+        let card = MockSignerCard(
+            inventory: {
+                var inventory = MockSignerCard.factoryFreshCard
+                inventory.pairingManifest = .unsupported
+                return inventory
+            }()
+        )
+        card.supportsPairingManifest = false
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+
+        let report = try await completeCeremony(ceremony)
+
+        XCTAssertEqual(report.pairingManifestStored, false)
+        XCTAssertTrue(
+            report.warnings.contains { $0.contains("no pairing manifest was stored") },
+            "the operator must be told the re-pair will need the mnemonic: \(report.warnings)"
+        )
+        // The ceremony still completed: the pairing codes themselves are fine.
+        XCTAssertEqual(report.keys.count, 2)
+        for key in report.keys {
+            XCTAssertNotNil(key.pairingURType, "the codes are still produced")
+        }
+    }
+
+    /// Storage that hands back something other than what was written is never
+    /// trusted, and the ceremony says so instead of pretending.
+    func testAManifestThatDoesNotReadBackIsNotTrusted() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+        try await ceremony.importKeys()
+        _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
+        card.pairingManifestReadBackOverride = [UInt8](repeating: 0, count: 194)
+
+        let stored = try await ceremony.writePairingManifest()
+
+        XCTAssertNil(stored)
+        XCTAssertEqual(ceremony.pairingManifestOutcome?.isStored, false)
+        XCTAssertEqual(ceremony.report.pairingManifestStored, false)
+        XCTAssertTrue(
+            ceremony.report.warnings.contains { $0.contains("did not read back byte-for-byte") },
+            "a write that cannot be read back must be reported: \(ceremony.report.warnings)"
+        )
+        // The step still advances, because the keys are already verified.
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .pairingExport)
+    }
+
+    /// A wrong Admin PIN at this point is a warning, not a ceremony failure: every
+    /// key is already in the card and verified.
+    func testAFailedManifestWriteIsAWarningNotAnAbort() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+        try await ceremony.importKeys()
+        _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
+        card.failurePoint = .pairingManifest
+
+        let stored = try await ceremony.writePairingManifest()
+
+        XCTAssertNil(stored)
+        XCTAssertTrue(
+            ceremony.report.warnings.contains { $0.contains("pairing manifest could not be stored") },
+            "expected a warning, got \(ceremony.report.warnings)"
+        )
+        XCTAssertEqual(card.hasKey(in: .signature), true, "the keys are unaffected")
+    }
+
+    /// The step is ordered: the card must not be told to advertise a key before
+    /// that key has been verified to be in it.
+    func testTheManifestStepCannotRunBeforeTheReadBack() async throws {
+        let ceremony = makeCeremony()
+        _ = try await runThroughDerivation(ceremony)
+        try await ceremony.importKeys()
+
+        await XCTAssertThrowsErrorAsync { try await ceremony.writePairingManifest() } verify: { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepOutOfOrder(expected: .readBackCheck, actual: .pairingManifest)
+            )
+        }
+    }
+
+    /// The manifest carries no secret, but it is written to the card and must not
+    /// leak into the operator's printed record beyond the fact that it exists.
+    func testTheReportDoesNotCarryTheManifestItself() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+        let report = try await completeCeremony(ceremony)
+        let text = report.printableLines().joined(separator: "\n")
+
+        let manifest = try PairingManifest.decode(try XCTUnwrap(card.pairingManifestBytes))
+        let chainCode = try XCTUnwrap(manifest.entry(for: .secp256k1)?.chainCode)
+        XCTAssertFalse(
+            text.contains(Hex.encode(chainCode)),
+            "the chain code belongs on the card, not on the paper record"
+        )
+    }
 }
 
 // MARK: - Async assertion helper
-
 /// `XCTAssertThrowsError` cannot await, so this is the async equivalent with the
 /// same call shape.
 func XCTAssertThrowsErrorAsync<T>(

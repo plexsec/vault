@@ -24,6 +24,16 @@ public enum OpenPGPDataObject {
     // Password status
     public static let pwStatusBytes: UInt16 = 0x00C4
 
+    // Private use (spec §4.3.1). Optional objects the spec lets an application
+    // fill with anything, and the only place on this applet that can hold data
+    // this app did not put there for the card's own operation. `VaultKit`'s
+    // `PrivateUseDataObject` names them and records their differing access
+    // conditions; the pairing manifest goes in 0x0102.
+    public static let privateUse1: UInt16 = 0x0101
+    public static let privateUse2: UInt16 = 0x0102
+    public static let privateUse3: UInt16 = 0x0103
+    public static let privateUse4: UInt16 = 0x0104
+
     // Fingerprints. 2.x used a single combined 0xC5 (three 20-byte
     // fingerprints); 3.4 defines per-key objects. This app writes 0xC7 and
     // reports whichever of 0xC5/0xC7 the card actually exposes.

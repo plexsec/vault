@@ -487,3 +487,67 @@ half-written key is exactly what the re-inspection rule exists to catch.
 *Consequence:* `CardErrorPolicyTests` pins the classification, and the ceremony
 tests assert both directions — a dropped session rewinds, a refused PIN and a
 rejected import do not.
+
+## 18. The chain code is stored on the card, so a re-pair needs no reset
+
+**Sections:** §4.2 (new step 7b), §6.5 (two rows), §10 (new item 13).
+
+*Before:* a pairing code could only be produced during the ceremony that created
+the keys. The chain code a wallet requires (amendment 14) is not in the YubiKey —
+the OpenPGP applet stores a key, not a BIP32 node — so the only way to show the
+codes again was to re-run §4.2 from the top, which resets the applet and destroys
+the keys. An operator who lost the pairing codes, or wanted to pair a second
+wallet, had to wipe a working card.
+
+*After:* the ceremony writes the public material a wallet needs into the applet's
+second private-use data object (`PUT DATA 0x0102`, 194 bytes), and reads it back
+before the codes are shown (§4.2 step 7b). The app still persists nothing; the
+card holds the manifest, so it survives reinstalls, the weekly profile expiry of
+§10 item 12, and a new phone.
+
+*Why this object.* The four private-use data objects (spec §4.3.1, optional, "can
+be used to store any information") differ in access conditions by design, and the
+difference decides which is usable:
+
+| object | read | write | usable? |
+|---|---|---|---|
+| `0x0101` | no PIN | PW2 | no — PW2 is the resetting code, which this app never sets |
+| **`0x0102`** | **no PIN** | **PW3** | **yes** — read free, and PW3 is already verified when the ceremony writes |
+| `0x0103` | PW2 | PW2 | no — a re-pair must not need a PIN to read |
+| `0x0104` | PW3 | PW3 | no — same reason |
+
+Measured on a YubiKey 5C NFC (firmware 5.8.0, OpenPGP 3.4) with no PIN presented:
+`GET DATA 0x0101` and `0x0102` answer `9000` (empty); `0x0103` and `0x0104` answer
+`6982`. `PUT DATA 0x0102` accepts 254 bytes and refuses 255 with `6A80`. A
+zero-length `PUT DATA` empties the object. Recorded in
+`docs/m0-hardware-verification.md` item 12.
+
+*Why it is written after the read-back check, and not before.* The manifest makes
+the card advertise a key to a wallet. Writing it before the card has been shown to
+hold that key would let a card that failed verification be paired anyway. It also
+cannot be written before the reset, because `TERMINATE DF` wipes it: the object
+lives inside the applet, so the manifest has the same lifetime as the keys.
+
+*Why a plain byte comparison is not enough.* A manifest that is merely present
+proves nothing — it can be stale, copied from another card, or corrupted. The app
+therefore derives the pinned child of the stored account node and requires it to
+equal the public key the card reports for its own signature slot. That is a
+watch-only derivation, so `ExtendedPublicKey` (`ckd_pub`) is now implemented in
+`VaultKit/BIP32`; until this change the source said in as many words that public
+derivation was deliberately absent because the ceremony did not need it. It is
+tested against the `xpub` values in the published BIP32 vectors, not against its
+own output.
+
+*Consequence for the threat model, and how it is bounded:* the manifest is public
+data, so a card that is read by someone else discloses the account-level extended
+public key — a watch-only capability, not a signing one. The marginal disclosure
+over what the card already leaks is the chain code and the fingerprint: the public
+key in the signature slot is readable without a PIN under any circumstances
+(`GENERATE ASYMMETRIC KEY PAIR P1=0x81` is "read always"). Recorded in §10 item 13
+rather than argued away.
+
+*Not yet done, and deliberately not claimed:* the ceremony **writes** the manifest
+and verifies it; a read-only *re-pair* mode that reads it off an already
+provisioned card and rebuilds the QR codes without touching the card is the next
+change. Until it lands, the manifest is a verified, on-card record, and a re-pair
+still means running the ceremony.

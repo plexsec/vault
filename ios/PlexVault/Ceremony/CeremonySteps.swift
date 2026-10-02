@@ -533,6 +533,53 @@ struct ReadBackStepView: View {
     }
 }
 
+// MARK: - Step 7b: pairing manifest
+
+/// Stores the public material a wallet needs in the card itself, so the pairing
+/// codes can be produced again later without resetting the applet — the chain
+/// code is not readable out of a YubiKey, and re-running the ceremony destroys
+/// the keys.
+struct ManifestStepView: View {
+    @Bindable var viewModel: CeremonyViewModel
+
+    var body: some View {
+        StepScaffold(
+            why: "Stores the public keys and chain codes a desktop wallet needs inside the YubiKey's private-use data object, and reads them straight back. This is what makes the pairing codes reproducible later without resetting the applet: a chain code cannot be read out of the card, only out of the mnemonic. Nothing secret is written — it is the same material the wallet is given — and the card's own key is checked against it before anything is advertised.",
+            actionTitle: viewModel.pairingManifestStored == nil ? "Store pairing manifest" : "Continue",
+            isBusy: viewModel.busy,
+            action: {
+                if viewModel.pairingManifestStored == nil {
+                    Task { await viewModel.writePairingManifest() }
+                } else {
+                    viewModel.advance()
+                }
+            }
+        ) {
+            if let stored = viewModel.pairingManifestStored {
+                if stored {
+                    Label("Stored on the YubiKey and read back byte-for-byte.", systemImage: "checkmark.seal.fill")
+                        .font(.callout)
+                        .foregroundStyle(.green)
+                    Text("A later re-pair can read this off the card, so it will not need the mnemonic and will not reset the applet. A reset erases it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Label("Not stored on this card — the pairing codes are only available now.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    if let note = viewModel.pairingManifestNote {
+                        Text(note).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("This does not affect the keys or the mnemonic. Re-pairing later will mean running the ceremony again with the mnemonic.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("This write needs the Admin PIN, which is re-verified in this session. The object is readable afterwards with no PIN — that is what makes a re-pair possible without one.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 // MARK: - Step 11: pairing
 
 struct PairingStepView: View {

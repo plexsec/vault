@@ -158,6 +158,46 @@ public enum Secp256k1 {
         return result
     }
 
+    /// `publicKey + tweak·G`. This is the public half of BIP32 child
+    /// derivation (`ckd_pub`), used to check that an extended public key read
+    /// back off a card really does reach the key inside it.
+    ///
+    /// Throws when the tweak is out of range or the sum is the point at
+    /// infinity — the BIP32 "invalid child" condition, which the private side
+    /// reports as `Secp256k1Error.resultOutOfRange`.
+    public static func tweakAdd(publicKey compressed: [UInt8], tweak: [UInt8]) throws -> [UInt8] {
+        guard compressed.count == compressedPublicKeyLength else { throw Secp256k1Error.invalidPublicKey }
+        guard tweak.count == 32 else { throw Secp256k1Error.invalidTweak }
+        let context = Secp256k1Context.shared.raw
+
+        var publicKey = secp256k1_pubkey()
+        let parsed = compressed.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_parse(context, &publicKey, buffer.baseAddress!, compressed.count)
+        }
+        guard parsed == 1 else { throw Secp256k1Error.invalidPublicKey }
+
+        let tweaked = tweak.withUnsafeBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_tweak_add(context, &publicKey, buffer.baseAddress!)
+        }
+        guard tweaked == 1 else { throw Secp256k1Error.resultOutOfRange }
+
+        var output = [UInt8](repeating: 0, count: compressedPublicKeyLength)
+        var outputLength = output.count
+        let serialized = output.withUnsafeMutableBufferPointer { buffer -> Int32 in
+            secp256k1_ec_pubkey_serialize(
+                context,
+                buffer.baseAddress!,
+                &outputLength,
+                &publicKey,
+                UInt32(SECP256K1_EC_COMPRESSED)
+            )
+        }
+        guard serialized == 1, outputLength == compressedPublicKeyLength else {
+            throw Secp256k1Error.invalidPublicKey
+        }
+        return output
+    }
+
     public static func isValidPrivateKey(_ privateKey: [UInt8]) -> Bool {
         guard privateKey.count == 32 else { return false }
         let context = Secp256k1Context.shared.raw

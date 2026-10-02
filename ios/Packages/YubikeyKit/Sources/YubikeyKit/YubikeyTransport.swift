@@ -114,4 +114,10 @@ public enum OpenPGPOperation: String, Sendable {
     case readPublicKey
     case readCounter
     case getChallenge
+    /// Reading the private-use data object that holds the pairing manifest. Read
+    /// access on that object requires no PIN, which is what makes a re-pair
+    /// possible on a card nobody has a PIN for.
+    case readPairingManifest
+    /// Writing it. Requires PW3, which the ceremony has already verified.
+    case writePairingManifest
 }

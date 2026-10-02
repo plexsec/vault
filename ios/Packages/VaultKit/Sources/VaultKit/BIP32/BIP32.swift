@@ -145,11 +145,13 @@ public struct ExtendedKeyPayload: Equatable {
     }
 }
 
-/// BIP32 extended key pair operations, private side.
+/// BIP32 extended key operations, private side.
 ///
-/// Only the private side is implemented: this app derives a key once and
-/// imports it into the YubiKey. Public-only (watch-only) derivation is not
-/// needed for the provisioning ceremony, so `ckd_pub` is deliberately absent.
+/// The private side is what the provisioning ceremony needs: it derives a key
+/// once, imports it into the YubiKey, and compares the card's public key against
+/// the key it just derived. `ExtendedPublicKey` below adds the public-only
+/// (`ckd_pub`) half for the pairing manifest, which is read back off a card that
+/// no longer has the mnemonic available.
 public struct ExtendedPrivateKey {
     public let depth: UInt8
     public let parentFingerprint: [UInt8]
@@ -286,5 +288,106 @@ public struct ExtendedPrivateKey {
         payload.append(contentsOf: chainCode)
         payload.append(contentsOf: try publicKey())
         return Base58.encodeCheck(payload)
+    }
+}
+
+/// BIP32 extended key, public side — `ckd_pub` and nothing else.
+///
+/// This type exists for one job: a pairing manifest read off a YubiKey holds an
+/// extended public key, and the only way to show that it describes the key
+/// *inside that card* — without the mnemonic, which the card does not have and
+/// the phone does not store — is to derive the pinned child from it and compare
+/// the result against the public key the card reports for its own slot.
+///
+/// Hardened children are refused rather than approximated: they cannot be
+/// derived from a public key at all, and returning a plausible-looking wrong key
+/// would defeat the comparison this type exists to make.
+public struct ExtendedPublicKey: Equatable {
+    public let depth: UInt8
+    public let parentFingerprint: [UInt8]
+    public let childNumber: UInt32
+    public let chainCode: [UInt8]
+    /// 33-byte compressed SEC1 public key.
+    public let publicKey: [UInt8]
+
+    public enum PublicDerivationError: Swift.Error, Equatable {
+        /// A hardened component in a public-only path (`m/44'` and friends).
+        case hardenedComponent(UInt32)
+        case invalidPoint
+        case invalidChildKey(index: UInt32)
+        case depthExceeded
+    }
+
+    public init(
+        publicKey: [UInt8],
+        chainCode: [UInt8],
+        depth: UInt8 = 0,
+        parentFingerprint: [UInt8] = [0, 0, 0, 0],
+        childNumber: UInt32 = 0
+    ) throws {
+        guard publicKey.count == Secp256k1.compressedPublicKeyLength else {
+            throw PublicDerivationError.invalidPoint
+        }
+        // Parsing rejects a point that is not on the curve; without this an
+        // off-curve "public key" would be carried around until it either failed
+        // to derive or, worse, compared equal to something it is not. The
+        // library's own error is mapped so callers only ever see this type.
+        do {
+            _ = try Secp256k1.uncompressedPublicKey(fromCompressed: publicKey)
+        } catch {
+            throw PublicDerivationError.invalidPoint
+        }
+        guard chainCode.count == 32 else { throw BIP32Error.invalidSerialization }
+        self.publicKey = publicKey
+        self.chainCode = chainCode
+        self.depth = depth
+        self.parentFingerprint = parentFingerprint
+        self.childNumber = childNumber
+    }
+
+    /// First four bytes of HASH160 of this key — the same value BIP32 writes as
+    /// the *parent* fingerprint of a child.
+    public func fingerprint() -> [UInt8] {
+        Array(RIPEMD160.hash160(publicKey).prefix(4))
+    }
+
+    /// Derives a single **non-hardened** child. `index` must not carry the
+    /// hardened bit.
+    public func child(_ index: UInt32) throws -> ExtendedPublicKey {
+        guard depth < 255 else { throw PublicDerivationError.depthExceeded }
+        guard index < 0x8000_0000 else { throw PublicDerivationError.hardenedComponent(index) }
+
+        var data = publicKey
+        data.append(UInt8((index >> 24) & 0xff))
+        data.append(UInt8((index >> 16) & 0xff))
+        data.append(UInt8((index >> 8) & 0xff))
+        data.append(UInt8(index & 0xff))
+
+        let i = HMACSHA512.authenticate(key: chainCode, message: data)
+        let il = Array(i[0..<32])
+        let ir = Array(i[32..<64])
+
+        let childPoint: [UInt8]
+        do {
+            childPoint = try Secp256k1.tweakAdd(publicKey: publicKey, tweak: il)
+        } catch {
+            throw PublicDerivationError.invalidChildKey(index: index)
+        }
+
+        return try ExtendedPublicKey(
+            publicKey: childPoint,
+            chainCode: ir,
+            depth: depth + 1,
+            parentFingerprint: fingerprint(),
+            childNumber: index
+        )
+    }
+
+    public func derived(_ path: DerivationPath) throws -> ExtendedPublicKey {
+        var current = self
+        for index in path.indices {
+            current = try current.child(index)
+        }
+        return current
     }
 }

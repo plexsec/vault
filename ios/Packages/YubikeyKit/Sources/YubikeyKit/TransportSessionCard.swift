@@ -112,4 +112,16 @@ public final class TransportSessionCard: SignerCard {
     public func getDataObject(_ tag: UInt16) async throws -> [UInt8] {
         try await withSession { try await $0.getDataObject(tag) }
     }
+
+    /// Each of these opens its own session like every other card operation. For
+    /// the manifest that is not incidental: the write re-verifies PW3 inside the
+    /// session, and the read is the one card operation a re-pair performs at all,
+    /// so it must work with no PIN entered and no prior session.
+    public func readPairingManifest() async throws -> [UInt8]? {
+        try await withSession { try await $0.readPairingManifest() }
+    }
+
+    public func writePairingManifest(_ manifest: [UInt8], adminPIN: [UInt8]) async throws {
+        try await withSession { try await $0.writePairingManifest(manifest, adminPIN: adminPIN) }
+    }
 }

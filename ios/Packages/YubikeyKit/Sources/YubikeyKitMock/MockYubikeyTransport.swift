@@ -75,6 +75,21 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// word instead of the key, simulating an applet that cannot read EC keys
     /// (e.g. firmware < 5.2.3 answering 6581).
     public var readPublicKeyStatus: StatusWord?
+    /// Private-use data objects (0x0101–0x0104), exactly as the card would hold
+    /// them. Empty for a never-written object, which on real hardware answers
+    /// `9000` with no data rather than `6A88`.
+    private var privateUseDataObjects: [UInt16: [UInt8]] = [:]
+    /// When false, the applet has no private-use objects at all and answers
+    /// `6A88` — what an applet that does not implement the optional objects does.
+    /// Defaults to true because YubiKey 5 does implement them.
+    public var hasPrivateUseDataObjects = true
+    /// Stands in for PW2 (the resetting code), which this app never sets. The
+    /// spec puts two of the four objects behind it; leaving it unset is what the
+    /// real cards this app writes look like.
+    public var pw2Verified = false
+
+    /// What the card holds in the pairing manifest's object, for trace assertions.
+    public var storedPairingManifest: [UInt8]? { privateUseDataObjects[OpenPGPDataObject.privateUse2] }
     /// Random bytes returned by `GET CHALLENGE` (INS 0x84). Defaults to all-zero
     /// so tests and the DEBUG simulated card are reproducible; the app's DEBUG
     /// card overrides it via `-deterministic-entropy`, and a real card always
@@ -217,6 +232,20 @@ public final class MockYubikeyTransport: YubikeyTransport {
                 return status(0x6A, 0x88)
             }
             return ResponseAPDU(data: uif, status: .success)
+        case OpenPGPDataObject.privateUse1, OpenPGPDataObject.privateUse2,
+             OpenPGPDataObject.privateUse3, OpenPGPDataObject.privateUse4:
+            // The access conditions are the whole point of having four of these,
+            // so the mock enforces them instead of handing out whatever is
+            // asked for: a ceremony that picks the wrong object has to fail here
+            // and not on an operator's card.
+            guard hasPrivateUseDataObjects else { return status(0x6A, 0x88) }
+            guard Self.privateUseObject(tag)?.readAccess != .pw3 || pw3Verified else {
+                return status(0x69, 0x82)
+            }
+            guard Self.privateUseObject(tag)?.readAccess != .pw2 || pw2Verified else {
+                return status(0x69, 0x82)
+            }
+            return ResponseAPDU(data: privateUseDataObjects[tag] ?? [], status: .success)
         case OpenPGPDataObject.fingerprintSignature, OpenPGPDataObject.fingerprintAuthentication:
             guard let slot = Self.slot(forFingerprintTag: tag), let fingerprint = slots[slot]?.fingerprint else {
                 return status(0x6A, 0x88)
@@ -303,6 +332,20 @@ public final class MockYubikeyTransport: YubikeyTransport {
         case OpenPGPDataObject.generationTimeSignature, OpenPGPDataObject.generationTimeAuthentication:
             // The simulation accepts the tags design.md specifies.
             break
+        case OpenPGPDataObject.privateUse1, OpenPGPDataObject.privateUse2,
+             OpenPGPDataObject.privateUse3, OpenPGPDataObject.privateUse4:
+            guard hasPrivateUseDataObjects else { return status(0x6A, 0x88) }
+            guard let object = Self.privateUseObject(tag) else { return status(0x6A, 0x88) }
+            // PW3 is already verified at the top of putData; the other two
+            // conditions are the ones that differ per object.
+            guard object.writeAccess == .pw3 || (object.writeAccess == .pw2 && pw2Verified) else {
+                return status(0x69, 0x82)
+            }
+            guard command.data.count <= PrivateUseDataObject.maximumValueLength else {
+                // The spec's limit is 254 bytes; a real applet rejects more.
+                return status(0x6A, 0x80)
+            }
+            privateUseDataObjects[tag] = command.data
         default:
             return status(0x6A, 0x88)
         }
@@ -325,8 +368,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         }
     }
 
-    private static func slot(forUIFTag tag: UInt16) -> KeySlot? {
-        switch tag {
+    private static func slot(forUIFTag tag: UInt16) -> KeySlot? {        switch tag {
         case OpenPGPDataObject.uifSignature: return .signature
         case OpenPGPDataObject.uifAuthentication: return .authentication
         default: return nil
@@ -441,6 +483,13 @@ public final class MockYubikeyTransport: YubikeyTransport {
         return ResponseAPDU(data: Array(challengeBytes.prefix(count)), status: .success)
     }
 
+    /// The `VaultKit` enumeration is the single source of truth for which object
+    /// has which access condition, so the mock cannot drift from the real card's
+    /// documented behaviour.
+    static func privateUseObject(_ tag: UInt16) -> PrivateUseDataObject? {
+        PrivateUseDataObject(rawValue: tag)
+    }
+
     private func resetApplet() {
         userPIN = OpenPGPPinDefaults.user
         adminPIN = OpenPGPPinDefaults.admin
@@ -451,6 +500,10 @@ public final class MockYubikeyTransport: YubikeyTransport {
         slots = [.signature: SlotState(), .authentication: SlotState()]
         pwStatus = [0x00]
         signatureCounter = 0
+        // TERMINATE DF wipes the private-use objects along with everything else,
+        // which is why the manifest has to be written *after* a reset and why a
+        // reset is what "forget the pairing" means for this card.
+        privateUseDataObjects = [:]
         isSelected = false
     }
 

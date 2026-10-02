@@ -84,6 +84,10 @@ public final class CeremonyViewModel {
     public private(set) var transcriptionChallenge: [Int] = []
     public private(set) var derivedKeys: DerivedKeys?
     public private(set) var readBack: [KeyAlgorithm: ReadBackResult] = [:]
+    /// Whether the pairing manifest reached the card. `nil` before the step ran.
+    public private(set) var pairingManifestStored: Bool?
+    /// Why it did not, when it did not.
+    public private(set) var pairingManifestNote: String?
     public private(set) var pairingURStrings: [KeyAlgorithm: String] = [:]
     public private(set) var counterBaseline: UInt32?
     public private(set) var report: CeremonyReport?
@@ -408,6 +412,21 @@ public final class CeremonyViewModel {
     public func verifyReadBack() async {
         await run { ceremony in
             self.readBack = try await ceremony.verifyReadBack()
+        }
+    }
+
+    /// Writes the pairing manifest into the card and reads it straight back.
+    /// Non-fatal by design: the keys are already verified when this runs, so a
+    /// card that cannot store a manifest costs a later re-pair (with the
+    /// mnemonic), not the ceremony.
+    public func writePairingManifest() async {
+        await run { ceremony in
+            _ = try await ceremony.writePairingManifest()
+            self.pairingManifestStored = ceremony.pairingManifestOutcome?.isStored
+            self.pairingManifestNote = ceremony.pairingManifestOutcome.flatMap { outcome in
+                if case .declined(let reason) = outcome { return reason }
+                return nil
+            }
         }
     }
 
