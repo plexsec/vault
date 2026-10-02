@@ -45,7 +45,9 @@ The starting point of this scheme is: the YubiKey offers a mature, mass-produced
 - No reliance on trust in the iPhone hardware (Secure Enclave) itself; in this scheme the iPhone is treated as a "potentially tampered display terminal."
 - Duress scenarios are not addressed.
 - No Lightning / MFi accessory transport: the 5Ci path is dropped, so transports are NFC and USB-C CCID only (see §7.2).
-- No in-app signing in v1: the app performs the provisioning ceremony of §4.2 and stops there.
+- **No message signing.** The app signs *transactions*: `data-type` 1 (legacy) and 4 (EIP-2718 typed). `personal_sign` (EIP-191) and EIP-712 typed data are refused with an explanation rather than signed with a transaction's `v` convention, which would produce a signature no wallet accepts. EIP-712 in particular is not a small addition: it needs the full structured-hashing encoder.
+- **No Bitcoin/PSBT signing yet** (§6.3), and no Ed25519 signing: the OpenPGP applet hashes the message itself for EdDSA (§6.1), so the "pass in a 32-byte digest" contract does not generalise.
+- **No in-hardware BIP32 derivation** (§4.3), so the card signs for exactly one account. A request for any other path is refused rather than signed.
 - No chain-specific address derivation for Ed25519 in v1: the key's identity is the public key itself (see §6.4).
 
 ---
@@ -137,53 +139,76 @@ Prerequisites: a **brand-new or factory-reset** iPhone, no SIM, airplane mode; a
 
 ### 5.1 Sequence
 
-Using an EVM transaction as the example (PSBT differences are described in §6.3).
+The wallet is the watch-only side: it builds the unsigned transaction, shows it as an
+animated QR code, and verifies what comes back. The app is the signer, and the YubiKey
+holds the only copy of the key.
 
 ```
- Desktop                          iPhone app                        YubiKey
- ───────                          ──────────                        ───────
- 1. User builds transaction A in the wallet
- 2. Serialize A (unsigned RLP)
- 3. Wrap as UR eth-sign-request
-    (with requestId, chainId,
-     derivationPath, address)
- 4. Render as (animated) QR ─────▶ 5. Scan, CRC check, reassemble
-                                  6. Parse A: type, chainId, to,
-                                     value, gas, nonce, data
-                                  7. If data non-empty, try to decode
-                                     with built-in ABI library (ERC-20 etc.)
-                                  8. Check that address in the request
-                                     matches the locally paired address
-                                  9. Full-screen human-readable summary of A;
-                                     raw hex expandable
-                                 10. User confirms → compute H(A)=keccak256
-                                 11. Prompt "Bring YubiKey near / plug in,
-                                     enter PIN"
-                                 12. SELECT OpenPGP AID ─────────▶
-                                 13. VERIFY PW1 (P2=0x81) ───────▶ Check PIN (locks after 3 failures)
-                                 14. PSO:CDS (H(A)) ─────────────▶ LED blinks, awaits touch
-                                                                   User touches ──▶ compute σ=Sign(sk,H(A))
-                                                                   counter +1
-                                 15. ◀──────────────────── (r,s)
-                                 16. Normalize low-s; try v∈{0,1}
-                                     such that ecrecover(H(A), σ) = address
-                                 17. Wrap as UR eth-signature
-                                     (requestId, r‖s‖v), show QR
- 18. Scan ◀──────────────────────
- 18.5 **Independent verification**:
-      Verify(P, H(A), σ) and
-      ecrecover(H(A), σ) == account address
-      Any failure → do not broadcast, raise alarm (see below)
- 19. expected_counter += 1
- 20. Assemble signed transaction, broadcast
+ Wallet                            iPhone app                        YubiKey
+ ──────                            ──────────                        ───────
+                                                                     1. Read: manifest +
+                                                                        signature-slot public key
+                                                                        (no PIN, no writes)
+                                                                     2. Address derived from the
+                                                                        card's own public key
+ 3. Serialize the transaction
+    unsigned, as sign-data
+ 4. Wrap as UR eth-sign-request ──▶ 5. Camera: fountain-decode the
+    (requestId, data-type,              animated QR, reassemble
+     chain-id, derivation-path,         the CBOR
+     sign-data)
+                                    6. Parse: legacy / EIP-2930 /
+                                       EIP-1559, re-encode and
+                                       require byte equality
+                                    7. Bind to this card: path,
+                                       master fingerprint, and the
+                                       address if the wallet sent one
+                                    8. Chain id: must be agreed by the
+                                       request's field and the payload,
+                                       and confirmed by the operator
+                                    9. Summary on screen: recipient,
+                                       value, function (ERC-20 etc.),
+                                       raw hex; warnings unmissable
+                                   10. Operator approves → the digest
+                                       shown is the digest to be signed
+                                   11. VERIFY PW1 (user PIN) ────────▶
+                                   12. PSO:CDS(keccak256(sign-data)) ─▶ LED blinks, awaits touch
+                                                                       User touches ──▶ σ = Sign(sk, H)
+                                                                       counter +1
+                                   13. ◀────────────────────────── DER (r, s)
+                                   14. Normalise low-s (EIP-2), recover the
+                                       key, require it to be this card's,
+                                       and compute the recovery value
+                                   15. Wrap as UR eth-signature
+                                       (requestId echoed, r‖s‖v), show QR
+ 16. Scan ◀─────────────────────────
+ 16.5 **Independent verification** (the wallet, not this app):
+      Verify(P, H, σ) and ecrecover(H, σ) == account address
+      Any failure → do not broadcast, raise alarm (§5.2)
+ 17. expected_counter += 1
+ 18. Assemble the signed transaction, broadcast
 ```
 
-**Step 18.5 is a mandatory step of this scheme, not an optional optimization.** On failure, the Desktop must:
+The app reads the card **before** it reads the request, so the account that will sign is
+on screen while the transaction is being checked rather than after. Steps 6–11 are
+gates in `SigningCeremony`; the view layer only renders them.
 
-- Refuse to broadcast and discard this signature;
-- Display "The signature returned by the signer does not match the request; the signing device may have been tampered with";
-- Guide the user to immediately insert the YubiKey into the Desktop and read the signature counter, comparing it against `expected_counter`;
-- Advise the user to stop using that iPhone until safety is confirmed, and to consider migrating assets.
+What the app verifies itself, and why it is not optional:
+
+* the request's `derivation-path` and `source-fingerprint` are the card's pinned path
+  and its master fingerprint — a wallet paired to another wallet's key ring would
+  otherwise get a signature from a key it is not watching;
+* an `address` field, when the wallet sends one (it does not for transactions), is the
+  address the card's key derives;
+* the bytes hashed are the bytes displayed: the transaction is re-encoded from the
+  decoded fields and must reproduce the input exactly, and the digest is recomputed
+  from the approved transaction rather than taken from the screen;
+* the signature recovers **this card's** key, by recovery and by libsecp256k1
+  verification. A signature that does not produce no QR at all.
+
+Step 16.5 stays where it is: the wallet is the independent party. The app's own check in
+step 14 protects against a card that signs with another slot; it cannot protect against
+the app itself.
 
 ### 5.2 Rules
 
@@ -194,10 +219,75 @@ Using an EVM transaction as the example (PSBT differences are described in §6.3
 4. **Counter audit frequency**: at least once at the end of every signing session; for large holdings, once per transaction is recommended. `actual_counter > expected_counter` means the YubiKey produced a signature the Desktop does not know about; migrate assets immediately.
 5. **The iPhone app only displays parsed content and never performs "smart" rewriting.** Undecodable `data` must be shown as raw hex and explicitly labeled "Unable to parse — proceed with caution."
 6. **Address binding.** The app refuses to sign any request whose `address` field does not match the locally paired address, preventing the Desktop from mistakenly sending another account's transaction.
-7. **chainId allowlist.** The app maintains a user-configured list of permitted chains; a chainId not on the list requires a second confirmation.
+7. **chainId confirmation.** A chain id that has not been confirmed in this session requires an explicit, named confirmation before anything is signed for it (§5.3 records why this is per session rather than a remembered allowlist: the app stores nothing). The confirmation names the id, so it cannot be a blanket "yes", and the request's `chain-id` field must agree with the chain id inside the transaction payload.
+7b. **The signed bytes are the displayed bytes.** The app refuses any transaction whose re-encoded form differs from the bytes it received (a non-canonical encoding is a way to display one transaction and sign another), and the approval names the digest that was displayed, so an approval cannot be carried over to a different payload. What the card is asked to sign is recomputed from the approved transaction.
+
+7c. **One session for PIN and signature.** VERIFY state belongs to a card session, and an NFC session lasts about a minute. `SignerCard.sign(digest:userPIN:)` therefore performs `VERIFY PW1` and `PSO:CDS` in one session; a design that verified in one session and signed in the next would work against a simulated card and fail on hardware with 6982.
+
 8. **A ceremony inherits nothing from the previous one.** Entering setup again — after finishing, aborting, or a re-pair — clears every result the last ceremony produced (inventory, derived keys, read-back, pairing codes, manifest state, counter), and the ceremony screens render from the **current** ceremony's record rather than from whatever the view model happens to still hold. Anything less lets a stale value stand in for a fresh one: a second ceremony that opens on the previous card's inventory offers "Continue" where it must ask for a card read, and a pairing screen showing the previous ceremony's codes offers a wallet keys that may no longer be on the card (amendment 20).
 
 9. **NFC session timeout** (about 60 seconds on iOS): if the touch is not completed within the session, it is treated as failure with no automatic retry. This governs a session in which an operation was **already sent**. Beginning a *new* reader session is a separate case: iOS can refuse one because the previous session has not finished shutting down (CoreNFC error 202), which is a transport race rather than a decision about the card, and the transport waits out a cooldown and retries it (amendment 15). Operator cancellation and the system timeout are never retried.
+
+### 5.3 Wire Format
+
+The two UR types are the Ethereum QR protocol (ERC-4527), as implemented by
+`@keystonehq/bc-ur-registry-eth` — the library MetaMask's QR keyring uses. Where the
+EIP's CDDL and that implementation disagree, the implementation wins, because it is
+what a wallet actually sends.
+
+**`eth-sign-request` (CBOR tag 401)**
+
+| field | type | notes |
+|---|---|---|
+| 1 | `#6.37(bytes .size 16)` | request id, echoed in the signature |
+| 2 | bytes | `sign-data`, at most 16 KiB here |
+| 3 | **uint** | `data-type`: 1 legacy transaction, 2 EIP-712, 3 personal message, 4 typed transaction. The CDDL writes this as a tagged map; the implementation writes a bare integer, and a tagged one is refused rather than guessed at |
+| 4 | uint | `chain-id`, omitted when 0 |
+| 5 | `#6.304(crypto-keypath)` | full path from the master, with the master fingerprint |
+| 6 | bytes .size 20 | `address`. **Absent for transactions**, present for messages, so the binding check cannot rely on it |
+| 7 | text | `origin` (a dapp name, display only) |
+
+Unknown fields are refused, not ignored: a field this app does not read could be one that
+changes what gets signed.
+
+**`sign-data`**
+
+| tx | `data-type` | bytes | digest |
+|---|---|---|---|
+| legacy, pre-EIP-155 | 1 | `RLP([nonce, gasPrice, gas, to, value, data])` | keccak256 of those bytes |
+| legacy, EIP-155 | 1 | `RLP([…, chainId, 0, 0])` | keccak256 of those bytes |
+| EIP-2930 | 4 | `0x01 ‖ RLP([chainId, nonce, gasPrice, gas, to, value, data, accessList])` | keccak256 |
+| EIP-1559 | 4 | `0x02 ‖ RLP([chainId, nonce, maxPriorityFee, maxFee, gas, to, value, data, accessList])` | keccak256 |
+
+A legacy payload whose `r`/`s` slots are not empty is a *signed* transaction and is
+refused. A transaction with no chain id at all is refused as well: it would be replayable
+on every chain.
+
+**`eth-signature` (CBOR tag 402)**: field 1 the request id (required — the wallet matches
+on it and throws without it), field 2 `r ‖ s ‖ v`, field 3 `origin` (optional).
+
+The recovery value in byte 64 is the part that is easy to get wrong, because two
+conventions are in play and the wallet stores what it is given:
+
+* **typed transactions** (EIP-2930/1559) carry the y-parity, `0` or `1`, because that is
+  what the wallet writes into the signature's parity slot;
+* **legacy transactions** carry the *EIP-155* value, `chainId·2 + 35 + recid`, because
+  the wallet writes that into the `v` slot and the network recovers the sender from it.
+  `chainId·2 + 35 + recid` exceeds one byte for chain ids above 110, and the 65-byte
+  layout cannot express it, so the field grows to 2–4 bytes in that case rather than
+  carrying a wrong value. A wallet reads everything from byte 64 as `v`, and the
+  reference implementations' own validation accepts any `v ≥ 37` for a legacy
+  transaction. This is the one place where the app deliberately emits something the
+  EIP's `.size 65` annotation forbids, because the annotation is unsatisfiable there;
+  docs/m0-hardware-verification.md carries the check against a real MetaMask.
+
+**Chain ids are confirmed per session, not remembered.** §5.2 rule 7 asks for a
+user-configured allowlist, and this app persists nothing (see the release audit), so the
+allowlist cannot exist. The implementation is therefore *stricter*: every chain id is
+confirmed by the operator, by name, in the session that signs for it. A remembered list
+would be more convenient and less safe.
+
+---
 
 ---
 
@@ -206,8 +296,8 @@ Using an EVM transaction as the example (PSBT differences are described in §6.3
 ### 6.1 Curve and Algorithm
 
 - Curves: **secp256k1** (OID `1.3.132.0.10`) in the signature slot and **Ed25519** (EdDSA, OID `1.3.6.1.4.1.11591.15.1`) in the authentication slot, both supported in the OpenPGP applet on YubiKey 5 firmware ≥ 5.2.3. (The exact EdDSA object identifiers and import encoding are M0 hardware-verification items; see `docs/m0-hardware-verification.md`.)
-- Signature **over secp256k1**: ECDSA. The OpenPGP applet's `PSO:CDS` **signs the supplied 32-byte digest directly** without further internal hashing, so keccak256 / double-SHA256 can be computed by the app and passed in.
-- Signature **over Ed25519**: EdDSA is **not hash-then-sign**. OpenPGP delivers the *message* to the card, which applies SHA-512 internally, so the v0.2 signing protocol cannot reuse the "compute a 32-byte digest in the app and pass it in" shape for Ed25519 chains. This is a v0.2 design input, not a v1 behaviour: v1 never signs. It is recorded now because a reader would otherwise assume the ECDSA flow generalises.
+- Signature **over secp256k1**: ECDSA. The OpenPGP applet's `PSO:CDS` **signs the supplied 32-byte digest directly** without further internal hashing, so keccak256 / double-SHA256 can be computed by the app and passed in. The card returns a DER-encoded `SEQUENCE { r, s }`; the app parses it strictly, normalises `s` to the low half of the curve order (EIP-2 requires it and a high-`s` signature is malleable), and recovers the key to determine the recovery value. Whether the applet itself ever returns a high `s`, and exactly which status word an unanswered touch produces, are hardware items (docs/m0-hardware-verification.md).
+- Signature **over Ed25519**: EdDSA is **not hash-then-sign**. OpenPGP delivers the *message* to the card, which applies SHA-512 internally, so the v0.2 signing protocol cannot reuse the "compute a 32-byte digest in the app and pass it in" shape for Ed25519 chains. This is why v0.2 signs transactions only, and refuses Ed25519 signing requests rather than pretending the ECDSA flow generalises.
 - Nonce k: generated internally by the YubiKey. The scheme does not assume RFC 6979 deterministic k; Desktop verification relies only on the validity of `(r, s)`, not on k's predictability.
 - **Low-s normalization**: the YubiKey may return `s > n/2`. In step 16, the app replaces `s` with `n − s` (and flips v accordingly). This does not affect validity, but both Ethereum (EIP-2) and Bitcoin (BIP62 / standardness rules) require low-s.
 
@@ -255,7 +345,7 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 | Activate file (reset) | `00 44 00 00` | Case-1. The only command a terminated DF accepts besides a re-SELECT; the second half of a reset |
 | Get challenge (entropy) | `00 84 00 00 20` | Hardware RNG; returns 32 random bytes, XORed with the iOS CSPRNG (§4.2 step 4) |
 | Verify signing PIN | `00 20 00 81 Lc <PIN>` | PW1 mode 81 |
-| Sign | `00 2A 9E 9A 20 <32-byte digest> 00` | PSO:COMPUTE DIGITAL SIGNATURE; returns r‖s (64 bytes) |
+| Sign | `00 2A 9E 9A 20 <32-byte digest> 00` | PSO:COMPUTE DIGITAL SIGNATURE. Requires PW1 verified **in the same session**. The OpenPGP card specification has ECDSA signatures returned as a DER `SEQUENCE { INTEGER r, INTEGER s }`, and the app parses that strictly; a bare 64-byte `r‖s` is accepted too, since the two forms cannot be confused, and which one the firmware returns is an M0 item (docs/m0-hardware-verification.md) |
 | Read public key | `00 47 81 00 02 B6 00 00` | GENERATE ASYMMETRIC KEY PAIR, P1=0x81 (read mode), signature slot |
 | Read public key (auth slot) | `00 47 81 00 02 A4 00 00` | Same, addressed at the authentication slot |
 | Read counter | `00 CA 00 7A 00` | Security Support Template, contains `93 03 <counter>` |
@@ -431,7 +521,7 @@ Ratings are residual risk after the listed mitigations.
 7. **Dependence on Yubico's closed-source firmware.** The OpenPGP applet's behavior can be black-box verified via APDUs, but the internal implementation is not auditable.
 8. **Counter auditing requires the YubiKey to touch an online device.** Although reading the counter requires no PIN and exposes no secrets, this step runs counter to the intuition of a "cold" device and must be explicitly explained as safe in the documentation. During provisioning the read happens on the offline iPhone itself (§4.2 step 9).
 
-9. **v1 is provisioning-only.** The app resets a card, generates or restores a mnemonic, derives both keys, imports them, verifies them by read-back and exports the public keys. It does **not** sign. The signing flow (§5), the `eth-sign-request`/`eth-signature` exchange, the counter-delta audit and therefore the small-value test transaction of §4.2 step 10 are v2 work. Everything in §5 should be read as design intent for v2, not as shipped behaviour.
+9. **Signing covers EVM transactions only** (v0.2). `personal_sign` (EIP-191), EIP-712 typed data, Bitcoin PSBTs (§6.3) and Ed25519 chains are refused with an explanation: the first two need their own hashing and their own `v` convention, the third a PSBT engine, and the fourth cannot use the digest-in contract at all (§6.1). The counter-delta audit of §5.2 rules 3–4 remains a wallet-side procedure: the app records the counter before and after a signature, but the comparison that matters is the wallet's.
 
 10. **Dice entropy is non-authoritative in v1** (§4.2 step 4). A backdoored or faulty RNG is mitigated by construction — the entropy is the XOR of the card's hardware RNG and the iOS CSPRNG — so user dice are the one thing that is not fed into the mnemonic. Reproducible builds bound the residual risk further; the independent cross-check that previously provided an additional bound was removed in v0.1.
 
@@ -446,7 +536,7 @@ Ratings are residual risk after the listed mitigations.
 ## 11. Roadmap
 
 - **v0.1 (implemented)**: iOS **provisioning app only** — §4.2 steps 2–9 over NFC and one wired transport (USB-C CCID), provisioning **both** algorithms (secp256k1 into the signature slot, Ed25519 into the authentication slot) from one mnemonic. Includes `tools/derive` as a differential-testing oracle (BIP32 + SLIP-0010 + Ed25519, cross-checked against the Swift implementation via committed fixtures), a scripted two-slot card for device-free testing, a mechanical release audit, and BIP39/BIP32/SLIP-0010/RFC 8032/BC-UR conformance tests against published vectors. No signing.
-- **v0.2**: Signing flow (§5) — `PSO:CDS`, `eth-sign-request`/`eth-signature` URs, counter-delta auditing, and the small-value test transaction of §4.2 step 10.
+- **v0.2 (implemented)**: EVM signing flow (§5) — read-only card inspection, `eth-sign-request`/`eth-signature` URs, camera scanning, the transaction summary, `VERIFY PW1` + `PSO:CDS` in one session, low-s normalisation, signature verification and the counter read before and after. The small-value test transaction of §4.2 step 10 is the operator's, and remains outstanding for a real wallet.
 - **v0.3**: Bitcoin PSBT signing (§6.3) and the custom Desktop client with the §5.1 step 18.5 verification and unknown-UR-field alarm.
 - **v0.4**: Publish the reference implementation source (iOS app + Electron/Tauri Desktop); reproducible-build pipeline.
 - **v0.5**: Third-party security audit (focus: §4.2 generation flow, §5.1 step 18.5, UR parser).

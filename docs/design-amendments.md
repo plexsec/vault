@@ -683,3 +683,80 @@ the band-based helper refuses to tap a button that is plainly on screen. Step ac
 are now tapped by label through `tapStepAction`, which scrolls until `isHittable`.
 This is a test-harness lesson, not a product rule, but it is where a future reader
 will look after watching the walk stall on the derivation step.
+
+## 21. v0.2: the signing flow, and three places the specification was wrong
+
+**Sections:** §3.2, §5.1, §5.2 (new rules 7b, 7c), new §5.3, §6.1, §6.5, §10 item 9, §11.
+
+The signing flow was specified in §5 long before it existed, and implementing it against
+the reference implementation (MetaMask's QR keyring and `@ethsign`/`bc-ur-registry-eth`)
+showed the specification was wrong in three places. They are recorded here because each
+one would have produced signatures that look fine and do not work.
+
+**1. For transactions, the request carries no address.** §5.1 step 8 required the app to
+check that the request's `address` matches the locally paired address. MetaMask's
+`signTransaction` does not send that field — only the derivation path and the master
+fingerprint — so the check as written could not exist. What binds the request to the card
+is the path and the fingerprint, and what protects the operator is that the app shows the
+address derived from **the card's own public key** so it can be compared with the wallet's
+screen. The `address` field is still checked when a wallet does send it (messages do).
+
+**2. The `data-type` field is a bare integer, not the tagged map the CDDL describes.**
+ERC-4527 writes `data-type` as `#3.401(sign-data-type)`; `bc-ur-registry-eth` writes a
+plain unsigned integer, which is what MetaMask's scanner has been tested against. The
+decoder accepts the bare integer and refuses the tagged form rather than guessing.
+
+**3. The recovery value has two conventions, and the wallet stores what it is given.**
+For typed transactions the 65th byte is the y-parity; for legacy transactions it is the
+full EIP-155 value `chainId·2 + 35 + recid`, because that is what the consumer writes into
+the `v` slot and what the network recovers the sender from (ethereumjs's own validation
+accepts `v = 27/28` or `v ≥ 37` for legacy, and its `_processSignature` adds
+`chainId·2 + 8` only on the internal signing path). §5.1 said "try `v ∈ {0,1}`", which is
+right for typed transactions and silently wrong for legacy ones. And for chain ids above
+110 the EIP-155 value does not fit in one byte at all, so the signature field grows to
+2–4 bytes rather than carrying a wrong `v`: the EIP's `bytes .size 65` is unsatisfiable
+there. A real MetaMask on Polygon or Arbitrum is item 14 in
+docs/m0-hardware-verification.md, because that deviation is the one thing here that only a
+wallet can confirm.
+
+**Decisions taken while implementing**
+
+* **Transactions only.** `personal_sign` and EIP-712 are decoded and then refused with an
+  explanation. EIP-712 needs the full structured-hashing encoder, and signing either with a
+  transaction's `v` convention would produce a signature no wallet accepts.
+* **Chain ids are confirmed per session.** §5.2 rule 7 asks for a remembered allowlist, and
+  the app stores nothing (the release audit enforces it), so the list cannot exist. Every
+  chain id is confirmed by name in the session that signs for it — stricter than the rule,
+  and recorded in §5.3 rather than quietly relaxed.
+* **The pairing manifest is required to sign.** A card provisioned before manifests existed
+  cannot sign, because the app would have no way to tell which account it was paired with.
+  Re-provisioning is the remedy, and the error says so.
+* **`VERIFY PW1` and `PSO:CDS` are one operation.** VERIFY state belongs to a card session
+  and an NFC session lasts about a minute. Exposing them as two `SignerCard` calls would
+  pass against a card that keeps state in memory and fail on hardware with `6982`, so the
+  protocol has `sign(digest:userPIN:)`, the simulated transport now *forgets* verification
+  at a session boundary, and a test asserts both.
+* **libsecp256k1's recovery module is compiled in.** Determining `v` requires recovering a
+  public key from a signature, which the base module cannot do. One upstream file
+  (`src/modules/recovery/main_impl.h`, byte-identical to v0.8.0, hash recorded in
+  VENDORED.txt) is vendored and `ENABLE_MODULE_RECOVERY` is defined. The module also
+  compiles a secret-key signing entry point; the Swift wrapper exposes no signing call, and
+  `tools/audit-release.sh` now asserts that positively, alongside the assertion that
+  recovery really is compiled in.
+* **The DEBUG simulated card returns a real signature.** The app verifies what the card
+  returns, so a fake signature cannot complete the flow — which is the point of the
+  verification and also the reason the UI test needs a genuine one. `tools/derive` signs the
+  digest with the key the *simulated* app is provisioned with (the 256-bit all-zero BIP39
+  vector, whose key is secret to nobody) and generates
+  `Sources/YubikeyKitMock/SimulatedSigningVectors.swift`, which `tools/verify.sh`
+  regenerates and diffs. Writing that generator produced one of those silent mistakes worth
+  recording: the twelve-word "abandon…about" vector is 128-bit entropy, while the UI tests
+  pass **32** zero bytes, i.e. the twenty-four-word "abandon…art" vector — a different key.
+  A unit test now asserts the generated key against the derivation the app performs, so the
+  two cannot drift again.
+
+**Also changed:** the app has a front door (`HomeView`) with two routes, because
+provisioning and signing are separate flows with separate state; the camera became an input
+channel (`NSCameraUsageDescription`), and the README's "air-gapped" claim is now
+"air-gapped in the sense that matters: no network, no persistence, and the only inputs are
+the camera and the card".

@@ -45,6 +45,19 @@ for fixture in derivation_vectors.json signing_vectors.json; do
     stale=1
   fi
 done
+# The simulated card's signing vector is generated Swift rather than a fixture, so
+# it is checked by regenerating it: a stale one would let the UI test pass against
+# a signature the app cannot verify.
+generated_simulated="$REPO_ROOT/ios/Packages/YubikeyKit/Sources/YubikeyKitMock/SimulatedSigningVectors.swift"
+simtmp="$tmpdir/SimulatedSigningVectors.swift"
+(cd "$REPO_ROOT/tools/derive" && "$PYTHON" -c "
+import derive
+derive.gen_simulated_card_vectors('$simtmp')" >/dev/null) || fail "simulated card vector generation"
+if ! diff -q "$simtmp" "$generated_simulated" >/dev/null; then
+  echo "SimulatedSigningVectors.swift may be stale; regenerate with:"
+  echo "  tools/derive/derive.py gen-fixtures ios/Packages/VaultKit/Tests/VaultKitTests/Fixtures"
+  stale=1
+fi
 if [[ "$stale" == "1" ]]; then
   fail "differential fixtures out of date"
 fi

@@ -25,7 +25,8 @@ final class CeremonyFlowUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-deterministic-entropy", Self.zeroEntropyHex]
         app.launch()
-        XCTAssertTrue(app.buttons["begin-ceremony"].waitForExistence(timeout: 15), app.debugDescription)
+        // The app opens on its home screen now; the ceremony screens are behind it.
+        openProvisioningFlow(app)
         return app
     }
 

@@ -1,8 +1,8 @@
-# v0.1 threat notes, deviations and residual risk
+# Threat notes, deviations and residual risk (v0.1 provisioning, v0.2 signing)
 
-This complements §9 of `design.md`. It records what v0.1 actually implements,
+This complements §9 of `design.md`. It records what the app actually implements,
 where it deviates from the design, and which risks are *accepted* rather than
-mitigated — so that no reader mistakes a v2 design intent for a shipped control.
+mitigated — so that no reader mistakes a design intent for a shipped control.
 
 ## Scope actually shipped
 
@@ -207,3 +207,71 @@ it: the defect was only visible by tapping the actual screen.
    scheme's central claim testable at all.
 4. Making dice authoritative again, which would add a third independent entropy
    source on top of the card-RNG-plus-iOS-CSPRNG XOR.
+
+## v0.2: the risks signing introduces
+
+Signing changes the app's role: it stops being a device that only ever writes keys and
+becomes one that hands signatures out. The new surface, and what is accepted about it.
+
+### The camera is now an input channel
+
+The app's only inputs used to be the operator and the card (the transport is the same
+channel). It now also reads QR codes, so a hostile QR code is a way to reach the parser.
+Mitigations: the request is decoded strictly (unknown CBOR fields are refused, the payload
+must match its declared `data-type`, the transaction must survive a decode/re-encode
+equality check, and a signed or chain-id-less transaction is refused); nothing is acted on
+until the operator approves a summary built from the *decoded* fields; and the bytes that
+reach the card are recomputed from the approved transaction. What is accepted: a QR code
+can still be a *social* attack vector — a request that is internally consistent and does
+something the operator does not recognise. That is why the summary leads with the recipient,
+the value and the decoded function, and why an unparsable call is labelled rather than
+summarised.
+
+### The display is still not trustworthy, and now it matters more
+
+v0.1's threat model treats the phone as a possibly tampered display terminal, and that was
+mostly about the mnemonic. During signing, a tampered phone could show one transaction and
+sign another: the app's decode/re-encode check and digest binding make that harder inside
+one app, but cannot survive a compromised app binary. The independent check is the wallet's
+§5.1 step 16.5 verification — verify the signature against the account, and reject on
+failure. The app may not be trusted to be the verifier of its own signature; it is trusted
+only to display what it will sign, and the wallet is trusted to check the result.
+
+### Interop depends on another implementation's conventions
+
+The recovery value (`v`) follows MetaMask's own consumer code: y-parity for typed
+transactions, the full EIP-155 value for legacy ones. For legacy transactions on chain ids
+above 110 that value does not fit the 65-byte layout, so the app emits a wider field. This
+is verified against the consumer's source and its own validation rules, but a *real* wallet
+on such a chain is still an open hardware item (docs/m0-hardware-verification.md item 14).
+Accepted: until that check is done, treat legacy signing on a chain id above 110 as
+unverified.
+
+### What the app does not sign, and why that is safe
+
+`personal_sign`, EIP-712 and Bitcoin PSBTs are refused. Refusing is the conservative
+choice: each has its own hashing and its own signature convention, and reusing the
+transaction path for them would produce signatures that fail in ways that look like the
+wallet's fault. Ed25519 signing is refused for a deeper reason — the applet hashes the
+message itself for EdDSA, so the digest-in contract of §6.1 does not hold, and v0.2 does
+not guess.
+
+### The counter is evidence, not a gate
+
+The app reads the card's signature counter before and after a signature, which is useful
+evidence for the operator. It cannot be the control §5.2 rule 4 describes: the party that
+displays the transaction must not be the party that reads the counter, and here it is the
+same phone. The wallet's independent read remains the control; the app's numbers are a
+convenience and a prompt to do it.
+
+### Residual risks left over from v0.1 that signing inherits
+
+- One key per algorithm, one account per card (§10 item 1, item 11): a wallet that
+  enumerates sibling accounts will offer addresses this card cannot sign for. The app
+  refuses those requests rather than signing the wrong account, and the pairing code pins
+  the derivation path — but the wallet may still *show* a sibling before the refusal.
+- The Ed25519 key has no counter (§10 item 2b), and v0.2 does not sign with it, which
+  removes the question for now.
+- Firmware is closed source (§10 item 7): the `PSO:CDS` behaviour the app relies on —
+  DER output, touch semantics, status words — is black-box verified at best, and
+  docs/m0-hardware-verification.md items 13–14 are what stands in for a firmware audit.

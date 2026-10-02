@@ -12,7 +12,8 @@ final class RePairUITests: XCTestCase {
     private func launchApp() -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.buttons["begin-ceremony"].waitForExistence(timeout: 15), app.debugDescription)
+        // The app opens on its home screen now; the ceremony screens are behind it.
+        openProvisioningFlow(app)
         return app
     }
 
@@ -78,7 +79,7 @@ final class RePairUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-deterministic-entropy", Self.zeroEntropyHex]
         app.launch()
-        XCTAssertTrue(app.buttons["begin-ceremony"].waitForExistence(timeout: 15), app.debugDescription)
+        openProvisioningFlow(app)
 
         // The address an independent implementation derives from the same mnemonic
         // the app was given: the pairing screen has to show this exact string.
@@ -98,6 +99,8 @@ final class RePairUITests: XCTestCase {
         // Back to setup for the read-only pass. The card is a process-wide mock, so
         // it is still provisioned — which is exactly the state this mode is for.
         tapStepAction("Provision another wallet", in: app)
+        // That button returns to the home screen, so the flow is re-entered.
+        openProvisioningFlow(app)
         let mode = app.buttons["choice-Re-pair this YubiKey"]
         XCTAssertTrue(mode.waitForExistence(timeout: 10), app.debugDescription)
         tapWhenVisible(mode, in: app)

@@ -19,10 +19,7 @@ final class SetupFlowUITests: XCTestCase {
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(
-            app.buttons["begin-ceremony"].waitForExistence(timeout: 15),
-            "setup screen did not appear:\n\(app.debugDescription)"
-        )
+        openProvisioningFlow(app)
         return app
     }
 

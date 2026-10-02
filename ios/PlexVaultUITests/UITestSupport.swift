@@ -128,6 +128,27 @@ extension XCTestCase {
 }
 
 extension XCTestCase {
+    /// Opens the provisioning flow from the app's home screen.
+    ///
+    /// The app has two routes — provisioning and signing — so the ceremony screens
+    /// are no longer what `launch()` lands on. Tolerant of being called when the
+    /// flow is already open, so a test can call it without knowing how it got there.
+    func openProvisioningFlow(
+        _ app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let route = app.buttons["route-provisioning"]
+        if route.waitForExistence(timeout: 10) {
+            tapWhenVisible(route, in: app, file: file, line: line)
+        }
+        XCTAssertTrue(
+            app.buttons["choice-NFC"].waitForExistence(timeout: 15),
+            "the provisioning setup screen did not appear:\n\(app.debugDescription)",
+            file: file, line: line
+        )
+    }
+
     /// Taps a ceremony step's primary action by its label, scrolling it into view
     /// first.
     ///
@@ -145,21 +166,37 @@ extension XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let action = app.buttons[title]
+        tapScrolling(app.buttons[title], named: "step action '\(title)'", in: app, file: file, line: line)
+    }
+
+    /// Taps an element that may sit below the fold, scrolling until it is hittable.
+    ///
+    /// The band-based `tapWhenVisible` is the right helper for controls near the top
+    /// of a screen, but an action that is the last element of a tall page settles a
+    /// few points below the band it reserves for the privacy footer, and the band
+    /// then refuses to tap a button that is plainly on screen and unobstructed.
+    /// `isHittable` asks the question that matters for those.
+    func tapScrolling(
+        _ element: XCUIElement,
+        named description: String,
+        in app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         XCTAssertTrue(
-            action.waitForExistence(timeout: 15),
-            "step action '\(title)' never appeared:\n\(app.debugDescription)",
+            element.waitForExistence(timeout: 15),
+            "\(description) never appeared:\n\(app.debugDescription)",
             file: file, line: line
         )
-        for _ in 0..<16 where !action.isHittable {
+        for _ in 0..<16 where !element.isHittable {
             scroll(app, by: 220)
         }
         XCTAssertTrue(
-            action.isHittable,
-            "step action '\(title)' is not tappable (midY=\(action.frame.midY)):\n\(app.debugDescription)",
+            element.isHittable,
+            "\(description) is not tappable (midY=\(element.frame.midY)):\n\(app.debugDescription)",
             file: file, line: line
         )
-        action.tap()
+        element.tap()
     }
 }
 
@@ -179,6 +216,7 @@ extension XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
+        openProvisioningFlow(app, file: file, line: line)
         tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app, file: file, line: line)
         acknowledgePosture(in: app, file: file, line: line)
         tapPinnedPrimaryAction(app, file: file, line: line)

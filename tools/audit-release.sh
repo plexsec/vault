@@ -102,7 +102,8 @@ echo
 echo "[3] No secret persistence"
 persist_hits="$(grep -rnE 'UserDefaults|NSUbiquitousKeyValueStore|FileManager\.default\.createFile|SecItemAdd|\.write\(to:' \
       "$REPO_ROOT/ios/PlexVault" \
-      "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Ceremony" 2>/dev/null || true)"
+      "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Ceremony" \
+      "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Signing" 2>/dev/null || true)"
 persist_hits="$(grep -v '^\s*//' <<<"$persist_hits" || true)"
 if [[ -n "$persist_hits" ]]; then
   note_fail "persistence API referenced in the app or ceremony layer:"
@@ -134,9 +135,12 @@ echo "[3b] No in-memory signing"
 # secp256k1_ecdsa_sign_recoverable (a secret-key entry point). The app must never
 # call it: the signing key exists only on the YubiKey, and a signature produced
 # from a secret held in the phone would defeat the entire design (design.md §3.2).
-# Only the calls that take a *secret key* are listed; verification and recovery
-# take public material and are the point of the module.
-signing_hits="$(grep -rnE '\bsecp256k1_ecdsa_sign|secp256k1_ecdsa_sign_recoverable|secp256k1_ecdsa_signature_sign' \
+# Only the calls that take a *secret key* are listed, and they are matched with word
+# boundaries: `secp256k1_ecdsa_signature_parse_compact` (used by verification) shares
+# a prefix with the signing entry point, and a check that fires on the verifier would
+# be turned off rather than fixed. Verification and recovery take public material and
+# are the point of the module.
+signing_hits="$(grep -rnE '\bsecp256k1_ecdsa_sign\b|\bsecp256k1_ecdsa_sign_recoverable\b' \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit" \
       "$REPO_ROOT/ios/PlexVault" 2>/dev/null || true)"
 signing_hits="$(grep -v '^\s*//' <<<"$signing_hits" || true)"
@@ -174,6 +178,14 @@ if matches "$aid_list" 'D27600012401'; then
   note_ok "OpenPGP AID declared for NFC selection"
 else
   note_fail "OpenPGP AID (D27600012401) not declared; iOS will not surface the YubiKey"
+fi
+# The signing flow reads the wallet's request through the camera, so the usage
+# string must be there — without it iOS kills the app the moment scanning starts.
+camera="$(plist_value NSCameraUsageDescription)"
+if [[ -z "$camera" ]]; then
+  note_fail "NSCameraUsageDescription is missing; the signing flow cannot scan"
+else
+  note_ok "NSCameraUsageDescription present"
 fi
 if [[ "$(plist_value ITSAppUsesNonExemptEncryption)" == "false" ]]; then
   note_ok "ITSAppUsesNonExemptEncryption=false"

@@ -185,3 +185,34 @@ func XCTAssertThrowsErrorAsync(
         return error
     }
 }
+
+/// The DEBUG-only vector: the simulated card must return a *real* signature for the
+/// digest the sample request carries, because the app verifies what it gets back.
+/// Pinned here so a mismatch is a two-second test rather than a three-minute UI run.
+final class SimulatedCardVectorTests: XCTestCase {
+    func testTheSimulatedCardReturnsTheGeneratedSignature() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.select()
+        try await card.verify(pin: OpenPGPPinDefaults.admin, reference: .admin, operation: .verifyAdminPIN)
+        try await card.setPINs(userPIN: Array("246810".utf8), adminPIN: OpenPGPPinDefaults.admin)
+        try await card.importKey(
+            slot: .signature,
+            algorithm: .secp256k1,
+            privateKey: SensitiveBytes(copying: [UInt8](repeating: 0x11, count: 32)),
+            fingerprint: [UInt8](repeating: 0x22, count: 20),
+            creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            adminPIN: OpenPGPPinDefaults.admin
+        )
+        let digest = try Hex.decode("daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53")
+        try await card.verifyUserPIN(Array("246810".utf8))
+        let response = try await card.computeDigitalSignature(digest: digest)
+        XCTAssertEqual(
+            response.hexString,
+            try SimulatedSigningVectors.signatures[digest.hexString].map { $0 }
+                ?? "the generated vector is missing for this digest",
+            "the simulated card must return the generated signature, not the placeholder"
+        )
+    }
+}

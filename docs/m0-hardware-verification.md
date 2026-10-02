@@ -414,3 +414,55 @@ because the card was provisioned by something else. Storage, the binding check, 
 refusal paths, and the read-back are measured; *whether a real wallet accepts a
 code produced from a manifest this app wrote* is not, and needs a card provisioned
 end to end by the app.
+
+## 13. `PSO:CDS`: what the applet actually returns
+
+Everything about signing that the app asserts but cannot prove off-hardware. The app
+already treats both plausible answers correctly (it parses DER strictly and accepts a
+bare 64-byte `r‖s` as well), so none of these can produce a wrong signature — but each
+one decides whether a *real* card works at all.
+
+- [ ] `VERIFY PW1` (`00 20 00 81 06 <PIN>`) then `PSO:CDS` (`00 2A 9E 9A 20 <digest> 00`)
+      **in one session** → `9000` and a signature. Confirms that VERIFY state survives
+      from the verify to the signature within a session, which the whole flow depends on.
+- [ ] The same two commands in **two** sessions → expected `6982`. Confirms that the app's
+      one-session design is necessary rather than merely cautious.
+- [ ] The response body: DER `SEQUENCE { r, s }`, or a bare 64 bytes? Record the length
+      and the first byte for a signature over a known digest.
+- [ ] Is that `s` low (≤ n/2) or not? Sign the same digest several times and record whether
+      the applet ever returns a high `s`; the app normalises, so this only decides whether
+      the normalisation path is reached on hardware.
+- [ ] An unanswered touch (pull the key away before touching): which status word? `6985`,
+      `6400`, something else? The app maps `6985`/`6400`/`6600` to "the touch did not
+      complete" and classifies it as *unknown* rather than as a refusal, because the card
+      may have signed and moved its counter. Record whether the counter moved.
+- [ ] Does a wrong PIN still decrement the PW1 retry counter when it is presented as part of
+      `sign(digest:userPIN:)`, i.e. is the retry count in `63Cx` consistent with
+      `VERIFY` alone?
+- [ ] Order of checks: with no key in the signature slot *and* PW1 unverified, does the card
+      answer `6982` (security status) or `6A88` (no key)? The simulated card answers `6982`
+      first; record the hardware's order.
+- [ ] Is `PSO:CDS` rejected with `6A80` (wrong data) if the digest is not exactly 32 bytes?
+      The app never sends another length, so this is confirming the guard rather than
+      relying on it.
+
+## 14. A real wallet accepts a signature this app produced
+
+The same shape as item 12, on the signing side, and the item that decides whether the
+feature is usable at all.
+
+- [ ] Provision a card with this app, pair it with MetaMask (QR), build a **small-value**
+      transaction, scan it here, approve, sign, and scan the signature back. MetaMask must
+      accept it and broadcast.
+- [ ] Repeat for a **legacy** transaction on a chain whose EIP-155 recovery value exceeds
+      one byte (chain id > 110, e.g. Polygon 137 or Arbitrum 42161): the signature field
+      grows to two bytes there, and MetaMask reads everything from byte 64 as `v`
+      (design.md §5.3). This is the one deliberate deviation from the EIP's
+      `bytes .size 65`, and only a real wallet can confirm it is tolerated.
+- [ ] Repeat for an **EIP-1559** transaction on mainnet: the recovery value is the y-parity
+      (0 or 1) and the field is exactly 65 bytes.
+- [ ] Confirm MetaMask displays the same account address this app showed before signing.
+- [ ] Confirm the counter moved by exactly one for one transaction (the app shows before and
+      after; the wallet's own read is the independent one).
+- [ ] A **wrong** PIN, then sign: the app must report the retry count the card gave, and the
+      wallet must never receive a signature.

@@ -9,19 +9,27 @@
 /* Begin PBXBuildFile section */
 		11E2325830988AF2E3787DCA /* MockYubikeyTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAFD014B49A22E0EA73A737B /* MockYubikeyTransport.swift */; };
 		28058C053CC2C3ECF3945102 /* CeremonySteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B653D5F78724154C95A233 /* CeremonySteps.swift */; };
+		295BA556AD23CD78866E5BEA /* SigningFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E17CE9AED44B9BA8C8DBA66 /* SigningFlowUITests.swift */; };
 		2A27D38EE8278F135DC0B60A /* CeremonyViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C86391DCA17B1F914EB9256 /* CeremonyViewModel.swift */; };
 		32C6D8D273D2584A10695987 /* SecretEntryField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 961B2568A7E9DB1563B80115 /* SecretEntryField.swift */; };
 		36A93EAE33708CE1B102D692 /* PlexVaultApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */; };
 		3B33481E22E7BD547502F6EA /* YubikeyKitNFC in Frameworks */ = {isa = PBXBuildFile; productRef = A9241AD16D138382E96C9A4F /* YubikeyKitNFC */; };
 		3C3C3F780EDB321F5DE73F51 /* CeremonyFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */; };
 		68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7029409A50A278443DA04717 /* SetupFlowUITests.swift */; };
+		6B1A03FA4665A43D93ED6289 /* CardTransports.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A04BF02912F01923ADD40F2 /* CardTransports.swift */; };
+		72B096DB81251451D28EA89A /* SigningRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9F610DEAF451233A86A1007 /* SigningRootView.swift */; };
 		76A9922172A9452E09512B36 /* YubikeyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4FFA45CC3FEACDAFA238223C /* YubikeyKit */; };
+		78505B38B68DBE9995403A3F /* SimulatedSigningVectors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 319444E8E2BFAEEFB4C2F390 /* SimulatedSigningVectors.swift */; };
 		7C51E72B2FB24B55FCE108C1 /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = 96FB3B402292C2FB1A645A38 /* VaultKit */; };
 		7EF6CA9F2329A2F1F0F4B779 /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56C3AD3CE58AE21CA21E813 /* ReportView.swift */; };
 		8B5D86C3F45244809462FF44 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42A82FC3A8ECF99D53C02C8F /* SetupView.swift */; };
 		9FDFBCB352CCAC63FBF913D5 /* UITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D658ED9348FB1E4C071545C1 /* UITestSupport.swift */; };
 		A4ADF89D1FD15205C30AFDFF /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */; };
+		AC5A5E23ECF5CC76ADE84E3B /* QRScanModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE62E25333881B08400609F1 /* QRScanModel.swift */; };
+		B388F225C84E42E8309146D5 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C3C7619237808EA2F79806 /* HomeView.swift */; };
 		B40BB0B42016EAAF6CF0067C /* RePairUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */; };
+		B7655F1581B34403B621E737 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10824E436C2C10D8ACD8F54A /* QRScannerView.swift */; };
+		B931C866D18722F12F38087D /* SigningViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8208006FA19D2CD40A37C2E1 /* SigningViewModel.swift */; };
 		C322294583EFF8589E7BEDC8 /* CeremonyRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1249F80D8E8A09D2B2FDC701 /* CeremonyRootView.swift */; };
 		D5DEC7C15C9EE6A2216A8A68 /* SimulatedCardTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */; };
 		E1220D992627CC16822B2D2B /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = C6834C84E5CF504892BA8E71 /* VaultKit */; };
@@ -43,7 +51,9 @@
 /* Begin PBXFileReference section */
 		0309A73C9494EC5D851C7CA2 /* PlexVault.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PlexVault.entitlements; sourceTree = "<group>"; };
 		0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatedCardTransport.swift; sourceTree = "<group>"; };
+		10824E436C2C10D8ACD8F54A /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		1249F80D8E8A09D2B2FDC701 /* CeremonyRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyRootView.swift; sourceTree = "<group>"; };
+		319444E8E2BFAEEFB4C2F390 /* SimulatedSigningVectors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatedSigningVectors.swift; sourceTree = "<group>"; };
 		427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyFlowUITests.swift; sourceTree = "<group>"; };
 		42A82FC3A8ECF99D53C02C8F /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		4C86391DCA17B1F914EB9256 /* CeremonyViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyViewModel.swift; sourceTree = "<group>"; };
@@ -51,8 +61,12 @@
 		637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlexVaultApp.swift; sourceTree = "<group>"; };
 		6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
 		7029409A50A278443DA04717 /* SetupFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupFlowUITests.swift; sourceTree = "<group>"; };
+		8208006FA19D2CD40A37C2E1 /* SigningViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningViewModel.swift; sourceTree = "<group>"; };
 		88C79A02C45351291BF93ED0 /* VaultKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VaultKit; path = Packages/VaultKit; sourceTree = SOURCE_ROOT; };
+		8A04BF02912F01923ADD40F2 /* CardTransports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardTransports.swift; sourceTree = "<group>"; };
+		8E17CE9AED44B9BA8C8DBA66 /* SigningFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningFlowUITests.swift; sourceTree = "<group>"; };
 		961B2568A7E9DB1563B80115 /* SecretEntryField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretEntryField.swift; sourceTree = "<group>"; };
+		A1C3C7619237808EA2F79806 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		A34A89CB25F1889E8419B947 /* PlexVault.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PlexVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B633C23222CA0AAE9EFE3EF7 /* PlexVaultUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PlexVaultUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C317FC416A1CCC483A5ACEB2 /* YubikeyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = YubikeyKit; path = Packages/YubikeyKit; sourceTree = SOURCE_ROOT; };
@@ -61,6 +75,8 @@
 		D658ED9348FB1E4C071545C1 /* UITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestSupport.swift; sourceTree = "<group>"; };
 		DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RePairUITests.swift; sourceTree = "<group>"; };
 		DAFD014B49A22E0EA73A737B /* MockYubikeyTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockYubikeyTransport.swift; sourceTree = "<group>"; };
+		DE62E25333881B08400609F1 /* QRScanModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanModel.swift; sourceTree = "<group>"; };
+		E9F610DEAF451233A86A1007 /* SigningRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningRootView.swift; sourceTree = "<group>"; };
 		E9FBCA011DBFBE29906CDC5D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F8809A236D2A19B5D0D92541 /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -121,6 +137,7 @@
 				427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */,
 				DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */,
 				7029409A50A278443DA04717 /* SetupFlowUITests.swift */,
+				8E17CE9AED44B9BA8C8DBA66 /* SigningFlowUITests.swift */,
 				D658ED9348FB1E4C071545C1 /* UITestSupport.swift */,
 			);
 			path = PlexVaultUITests;
@@ -151,6 +168,7 @@
 			isa = PBXGroup;
 			children = (
 				6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */,
+				8A04BF02912F01923ADD40F2 /* CardTransports.swift */,
 				F8809A236D2A19B5D0D92541 /* QRCodeView.swift */,
 				961B2568A7E9DB1563B80115 /* SecretEntryField.swift */,
 			);
@@ -161,8 +179,20 @@
 			isa = PBXGroup;
 			children = (
 				DAFD014B49A22E0EA73A737B /* MockYubikeyTransport.swift */,
+				319444E8E2BFAEEFB4C2F390 /* SimulatedSigningVectors.swift */,
 			);
 			path = YubikeyKitMock;
+			sourceTree = "<group>";
+		};
+		B6705A8B22D3B1E923EF0A30 /* Signing */ = {
+			isa = PBXGroup;
+			children = (
+				DE62E25333881B08400609F1 /* QRScanModel.swift */,
+				10824E436C2C10D8ACD8F54A /* QRScannerView.swift */,
+				E9F610DEAF451233A86A1007 /* SigningRootView.swift */,
+				8208006FA19D2CD40A37C2E1 /* SigningViewModel.swift */,
+			);
+			path = Signing;
 			sourceTree = "<group>";
 		};
 		BFE2A8DF3DAC8A16F1262937 /* Report */ = {
@@ -187,8 +217,10 @@
 				590F5589AB8C4445370B217C /* Ceremony */,
 				F77FCBCB805EC934F1496794 /* Debug */,
 				BFE2A8DF3DAC8A16F1262937 /* Report */,
+				B6705A8B22D3B1E923EF0A30 /* Signing */,
 				8C0FDC85574A1396DCB0C4A1 /* Support */,
 				63784F625FBF780F134CEC0B /* Assets.xcassets */,
+				A1C3C7619237808EA2F79806 /* HomeView.swift */,
 				E9FBCA011DBFBE29906CDC5D /* Info.plist */,
 				0309A73C9494EC5D851C7CA2 /* PlexVault.entitlements */,
 				637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */,
@@ -310,16 +342,23 @@
 			buildActionMask = 2147483647;
 			files = (
 				A4ADF89D1FD15205C30AFDFF /* BuildInfo.swift in Sources */,
+				6B1A03FA4665A43D93ED6289 /* CardTransports.swift in Sources */,
 				C322294583EFF8589E7BEDC8 /* CeremonyRootView.swift in Sources */,
 				28058C053CC2C3ECF3945102 /* CeremonySteps.swift in Sources */,
 				2A27D38EE8278F135DC0B60A /* CeremonyViewModel.swift in Sources */,
+				B388F225C84E42E8309146D5 /* HomeView.swift in Sources */,
 				11E2325830988AF2E3787DCA /* MockYubikeyTransport.swift in Sources */,
 				36A93EAE33708CE1B102D692 /* PlexVaultApp.swift in Sources */,
 				E779B12C4CFD586022163D58 /* QRCodeView.swift in Sources */,
+				AC5A5E23ECF5CC76ADE84E3B /* QRScanModel.swift in Sources */,
+				B7655F1581B34403B621E737 /* QRScannerView.swift in Sources */,
 				7EF6CA9F2329A2F1F0F4B779 /* ReportView.swift in Sources */,
 				32C6D8D273D2584A10695987 /* SecretEntryField.swift in Sources */,
 				8B5D86C3F45244809462FF44 /* SetupView.swift in Sources */,
+				72B096DB81251451D28EA89A /* SigningRootView.swift in Sources */,
+				B931C866D18722F12F38087D /* SigningViewModel.swift in Sources */,
 				D5DEC7C15C9EE6A2216A8A68 /* SimulatedCardTransport.swift in Sources */,
+				78505B38B68DBE9995403A3F /* SimulatedSigningVectors.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -330,6 +369,7 @@
 				3C3C3F780EDB321F5DE73F51 /* CeremonyFlowUITests.swift in Sources */,
 				B40BB0B42016EAAF6CF0067C /* RePairUITests.swift in Sources */,
 				68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */,
+				295BA556AD23CD78866E5BEA /* SigningFlowUITests.swift in Sources */,
 				9FDFBCB352CCAC63FBF913D5 /* UITestSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -449,7 +489,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = WSL242UF2M;
-				EXCLUDED_SOURCE_FILE_NAMES = MockYubikeyTransport.swift;
+				EXCLUDED_SOURCE_FILE_NAMES = "MockYubikeyTransport.swift SimulatedSigningVectors.swift";
 				INFOPLIST_FILE = PlexVault/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

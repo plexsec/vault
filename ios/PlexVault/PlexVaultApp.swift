@@ -5,14 +5,16 @@ import VaultKit
 @main
 struct PlexVaultApp: App {
     @State private var viewModel = CeremonyViewModel()
+    @State private var signingViewModel = SigningViewModel()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
-            CeremonyRootView(viewModel: viewModel)
+            HomeView(ceremonyViewModel: viewModel, signingViewModel: signingViewModel)
                 .onChange(of: scenePhase) { _, phase in
                     viewModel.screenIsCaptured = Self.activeScreen?.isCaptured ?? false
                     if phase != .active {
+                        signingViewModel.applicationDidBackground()
                         // Leaving the foreground is treated as an interruption: a
                         // mutating APDU may have been in flight, and the mnemonic
                         // must not stay on screen behind the app switcher.

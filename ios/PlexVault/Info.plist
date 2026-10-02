@@ -17,13 +17,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NFCReaderUsageDescription</key>
 	<string>PlexVault talks to your YubiKey over NFC to provision it. No data leaves this device.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>PlexVault uses the camera to read the unsigned transaction your wallet shows as a QR code. Nothing is recorded and nothing leaves this device.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>
