@@ -95,6 +95,15 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// card overrides it via `-deterministic-entropy`, and a real card always
     /// answers from its hardware RNG.
     public var challengeBytes: [UInt8] = [UInt8](repeating: 0, count: 32)
+    /// When set, the next `PSO:CDS` answers `6985` as an unfinished touch does.
+    public var touchNotCompleted = false
+    /// When set, `PSO:CDS` answers `6983`: PW1 blocked by too many failures.
+    public var userPinBlockedForSigning = false
+    /// The digest of the last signature this card produced, if any.
+    public private(set) var lastSignedDigest: [UInt8]?
+    /// How many signatures this card has been asked to produce. The app must ask
+    /// exactly once per request (design.md §5.2 rule 1).
+    public private(set) var signatureRequestCount = 0
     private var didInjectOnce = false
     private var pendingChainedData: [UInt8]?
 
@@ -118,6 +127,13 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     public func close() async {
         isSelected = false
+        // A session boundary loses VERIFY state on real hardware — the
+        // application note is explicit that PW1/PW3 verification does not survive
+        // one, and design.md §4.2 relies on that. Modelling it is what makes a
+        // "verify in one session, sign in the next" bug fail here instead of on a
+        // card, where the symptom is an unexplained 6982.
+        pw1Verified = false
+        pw3Verified = false
     }
 
     public func send(_ command: CommandAPDU) async throws -> ResponseAPDU {
@@ -187,6 +203,8 @@ public final class MockYubikeyTransport: YubikeyTransport {
             return try readPublicKey(command)
         case (0x84, _, _):
             return try getChallenge(command)
+        case (0x2A, _, _):
+            return computeDigitalSignature(command)
         default:
             return status(0x6D, 0x00)
         }
@@ -393,6 +411,48 @@ public final class MockYubikeyTransport: YubikeyTransport {
         else { return nil }
 
         return (slot, key.value)
+    }
+
+    /// `PSO:CDS`. Models the protocol behaviour the app depends on, not the
+    /// arithmetic: PW1 must have been verified **in this session**, the signature
+    /// slot must hold a key, an unsatisfied touch policy answers `6985`, and a
+    /// produced signature increments the counter. The bytes are a deterministic
+    /// DER pair derived from the digest — VaultKit's own tests check real
+    /// signatures against published vectors, so this fake stays a fake.
+    private func computeDigitalSignature(_ command: CommandAPDU) -> ResponseAPDU {
+        guard command.data.count == 32 else { return status(0x6A, 0x80) }
+        // Security conditions first: that is the usual ISO 7816 order, and the
+        // order the app relies on to tell "no PIN" from "no key". The exact order
+        // a YubiKey uses is an item for the hardware check
+        // (docs/m0-hardware-verification.md), so this is documented, not assumed
+        // to be universal.
+        guard pw1Verified else { return status(0x69, 0x82) }
+        guard slots[.signature]?.isOccupied == true else { return status(0x6A, 0x88) }
+        if touchNotCompleted {
+            // With UIF set the applet waits for a touch; when that wait ends the
+            // card has not produced a signature. The exact status word is an M0
+            // item, and 6985 is what the app maps to "conditions not satisfied".
+            touchNotCompleted = false
+            return status(0x69, 0x85)
+        }
+        guard !userPinBlockedForSigning else { return status(0x69, 0x83) }
+        signatureCounter += 1
+        signatureRequestCount += 1
+        lastSignedDigest = command.data
+        return ResponseAPDU(data: Self.derSignature(for: command.data), status: .success)
+    }
+
+    /// A DER `SEQUENCE { INTEGER r, INTEGER s }` derived from the digest, so the
+    /// bytes differ per request but are reproducible.
+    static func derSignature(for digest: [UInt8]) -> [UInt8] {
+        func scalar(_ seed: UInt8) -> [UInt8] {
+            var value = digest.map { $0 &+ seed }
+            if value[0] & 0x80 != 0 { value.insert(0x00, at: 0) }
+            while value.count > 1, value.first == 0 { value.removeFirst() }
+            return [0x02, UInt8(value.count)] + value
+        }
+        let body = scalar(0x01) + scalar(0x02)
+        return [0x30, UInt8(body.count)] + body
     }
 
     private func verify(_ command: CommandAPDU) -> ResponseAPDU {

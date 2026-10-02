@@ -562,9 +562,149 @@ def gen_fixtures(outdir: str) -> int:
     return 0
 
 
+
+# ---------------------------------------------------------------------------
+# Signing fixtures (v0.2)
+# ---------------------------------------------------------------------------
+#
+# This is a *fixture generator*, not a signer: it exists so the Swift tests can
+# exercise the real verification path (recovery, low-s normalisation, the
+# recovery value) against signatures produced by an implementation that shares no
+# code with libsecp256k1 or with VaultKit. The nonce is derived from a hash of the
+# key and the message purely so the output is reproducible; nothing here is
+# constant-time and nothing here should ever sign anything of value.
+
+SIGNING_FIXTURE_KEY = hashlib.sha256(b"plexvault signing fixture key").digest()
+
+
+def _deterministic_nonce(private_key: bytes, message: int) -> int:
+    return int.from_bytes(
+        hashlib.sha256(b"plexvault signing fixture nonce" + private_key + message.to_bytes(32, "big")).digest(),
+        "big",
+    ) % N
+
+
+def ecdsa_sign(private_key: bytes, message: int) -> dict:
+    """Deterministic ECDSA over secp256k1, returning both s forms."""
+    secret = int.from_bytes(private_key, "big")
+    k = _deterministic_nonce(private_key, message)
+    point = point_mul(k)
+    r = point[0] % N
+    s = (_inv(k, N) * (message + r * secret)) % N
+    recid = (2 if point[0] >= N else 0) | (point[1] & 1)
+    high_s = N - s
+    return {
+        "r": r,
+        "s": s,
+        "high_s": high_s,
+        "recid": recid,
+        # Negating s recovers the same key under the other recovery id.
+        "recid_high_s": recid ^ 1,
+    }
+
+
+def rlp_encode(value) -> bytes:
+    """Minimal RLP encoder, enough for the fixture payloads."""
+    if isinstance(value, (bytes, bytearray)):
+        payload = bytes(value)
+        if len(payload) == 1 and payload[0] < 0x80:
+            return payload
+        return _rlp_length(len(payload), 0x80) + payload
+    if isinstance(value, int):
+        return rlp_encode(b"" if value == 0 else value.to_bytes((value.bit_length() + 7) // 8, "big"))
+    if isinstance(value, (list, tuple)):
+        body = b"".join(rlp_encode(item) for item in value)
+        return _rlp_length(len(body), 0xC0) + body
+    raise TypeError(value)
+
+
+def _rlp_length(length: int, base: int) -> bytes:
+    if length < 56:
+        return bytes([base + length])
+    encoded = length.to_bytes((length.bit_length() + 7) // 8, "big")
+    return bytes([base + 55 + len(encoded)]) + encoded
+
+
+def keccak_256(data: bytes) -> bytes:
+    digest = keccak.new(digest_bits=256)
+    digest.update(data)
+    return digest.digest()
+
+
+def _der(r: int, s: int) -> bytes:
+    def integer(value: int) -> bytes:
+        raw = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+        if raw[0] & 0x80:
+            raw = b"\x00" + raw
+        return b"\x02" + bytes([len(raw)]) + raw
+
+    body = integer(r) + integer(s)
+    return b"\x30" + bytes([len(body)]) + body
+
+
+def gen_signing_fixtures(outdir: str) -> int:
+    """Signatures for the digests the Swift tests use, plus the key that made them.
+
+    The digests are the three transaction shapes the app decodes (EIP-155 legacy,
+    EIP-1559, EIP-2930) plus an arbitrary 32-byte value, so a test can drive the
+    whole ceremony — manifest, approval, signature, verification, export — with a
+    card that behaves like a real one.
+    """
+    os.makedirs(outdir, exist_ok=True)
+    public_key = ser_p(point_mul(int.from_bytes(SIGNING_FIXTURE_KEY, "big")))
+    # The Polygon variant of the EIP-155 example, whose recovery value (309/310)
+    # does not fit in the signature's one-byte v field.
+    polygon_payload = rlp_encode([
+        bytes([0x09]),
+        bytes.fromhex("04a817c800"),
+        bytes.fromhex("5208"),
+        bytes.fromhex("35" * 20),
+        bytes.fromhex("0de0b6b3a7640000"),
+        b"",
+        (137).to_bytes(1, "big"),
+        b"",
+        b"",
+    ])
+    digests = {
+        "eip155_legacy": "daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53",
+        "fee_market": "b28e48247c132650294459b31a5ad7e4e9ad187abb0f984388629b2c29e27e85",
+        "access_list": "ffda134128f580ee2061c44fd17f6aac36bd2032386fd593de3900cb046dadd1",
+        "legacy_chain_137": keccak_256(polygon_payload).hex(),
+        "arbitrary": hashlib.sha256(b"plexvault signing fixture digest").hexdigest(),
+    }
+    signatures = []
+    for name, digest_hex in digests.items():
+        message = int.from_bytes(bytes.fromhex(digest_hex), "big")
+        signature = ecdsa_sign(SIGNING_FIXTURE_KEY, message)
+        signatures.append({
+            "name": name,
+            "digest": digest_hex,
+            "r": f"{signature['r']:064x}",
+            "s": f"{signature['s']:064x}",
+            "high_s": f"{signature['high_s']:064x}",
+            "recid": signature["recid"],
+            "recid_high_s": signature["recid_high_s"],
+            "der": _der(signature["r"], signature["s"]).hex(),
+            "der_high_s": _der(signature["r"], signature["high_s"]).hex(),
+            # The two recovery values a wallet expects, for chain id 1.
+            "legacy_v_chain_1": 35 + 2 * 1 + signature["recid"],
+            "typed_v": signature["recid"],
+        })
+    document = {
+        "note": "generated by tools/derive/derive.py; a fixture generator, not a signer",
+        "publicKeyCompressed": public_key.hex(),
+        "address": evm_address(public_key),
+        "signatures": signatures,
+    }
+    path = os.path.join(outdir, "signing_vectors.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(document, handle, indent=1)
+    print(f"wrote {len(signatures)} signing vectors to {path}")
+    return 0
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", help="selftest | gen-fixtures")
+    parser.add_argument("command", nargs="?", help="selftest | gen-fixtures | gen-signing-fixtures")
     parser.add_argument("outdir", nargs="?", help="output directory for gen-fixtures")
     parser.add_argument("--mnemonic")
     parser.add_argument("--seed-hex")
@@ -580,7 +720,13 @@ def main() -> int:
     if args.command == "gen-fixtures":
         if not args.outdir:
             parser.error("gen-fixtures requires an output directory")
-        return gen_fixtures(args.outdir)
+        gen_fixtures(args.outdir)
+        return gen_signing_fixtures(args.outdir)
+
+    if args.command == "gen-signing-fixtures":
+        if not args.outdir:
+            parser.error("gen-signing-fixtures requires an output directory")
+        return gen_signing_fixtures(args.outdir)
 
     if args.mnemonic:
         seed = mnemonic_to_seed(args.mnemonic.split(), args.passphrase)

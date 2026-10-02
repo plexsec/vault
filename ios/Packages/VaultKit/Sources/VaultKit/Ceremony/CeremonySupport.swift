@@ -139,6 +139,23 @@ public protocol SignerCard: AnyObject {
     /// same reason `importKey` does it: NFC sessions are short and VERIFY state
     /// does not survive one.
     func writePairingManifest(_ manifest: [UInt8], adminPIN: [UInt8]) async throws
+
+    // MARK: - Signing (design.md §5)
+
+    /// `VERIFY PW1` **and** `PSO:CDS` over a 32-byte digest, in one card session.
+    ///
+    /// One method rather than two on purpose. VERIFY state belongs to a session
+    /// and an NFC session lasts about a minute, so a protocol that let the caller
+    /// verify in one session and sign in the next would work against the simulated
+    /// card and fail on hardware with `6982`. The session lifetime is the
+    /// implementation's business, not the ceremony's.
+    ///
+    /// Returns the card's raw response — a DER-encoded ECDSA signature. This is
+    /// the one operation the card counts, which is why design.md §5.2 rule 1
+    /// forbids a second attempt for the same transaction: implementations must not
+    /// retry internally under any circumstances, because a lost response may still
+    /// have produced a signature.
+    func sign(digest: [UInt8], userPIN: [UInt8]) async throws -> [UInt8]
 }
 
 public enum CardError: Swift.Error, Equatable {
@@ -151,6 +168,12 @@ public enum CardError: Swift.Error, Equatable {
     case unsupportedFirmware
     case keyImportRejected
     case signatureFailed
+    /// `6982` on `PSO:CDS`: the applet wants PW1 verified first.
+    case userPinNotVerified
+    /// The card started a signature and did not finish it — most often an
+    /// unanswered touch. The counter may already have moved, so this is *not* a
+    /// definitive rejection: it must not be retried (design.md §5.2 rule 1).
+    case touchNotCompleted
     case unexpectedStatusWord(sw1: UInt8, sw2: UInt8)
     case malformedResponse(String)
     case unsupportedFeature(String)
@@ -181,6 +204,14 @@ public enum CardError: Swift.Error, Equatable {
             return true
         case .conditionsNotSatisfied, .unsupportedFirmware, .keyImportRejected:
             return true
+        case .userPinNotVerified:
+            // The card answered, and answered "no": nothing was signed.
+            return true
+        case .touchNotCompleted:
+            // The signature may or may not have happened — the card began the
+            // operation and the app never saw the end of it. That is exactly the
+            // "unknown" case, and the one where a retry would be most dangerous.
+            return false
         case .unsupportedFeature, .unsupportedKeyType:
             return true
         case .dataObjectTooLarge:
@@ -212,6 +243,14 @@ public enum CardError: Swift.Error, Equatable {
             return "The YubiKey refused the operation because its preconditions were not met (wrong state, or a PIN step was skipped)."
         case .unsupportedFirmware:
             return "This YubiKey's OpenPGP applet does not support the requested algorithm. Firmware 5.2.3 or newer is required."
+        case .userPinNotVerified:
+            return "The YubiKey requires its user PIN before it will sign anything. Verify the PIN, "
+                + "then start again from the wallet: this request has to be signed in one attempt."
+        case .touchNotCompleted:
+            return "The YubiKey started signing and did not finish — most often because it was not "
+                + "touched in time. The card may already have produced a signature and counted it, so "
+                + "nothing will be retried here: check the signature counter on the card, then start "
+                + "again from the wallet with a new request."
         case .keyImportRejected:
             return "The YubiKey rejected the private key import."
         case .signatureFailed:

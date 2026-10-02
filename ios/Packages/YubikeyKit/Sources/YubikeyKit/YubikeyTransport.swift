@@ -76,8 +76,30 @@ public enum OpenPGPStatusMapper {
             case .verifyAdminPIN, .changeAdminPIN, .terminate: return .adminPinBlocked
             default: return .pinBlocked
             }
-        case (0x69, 0x82), (0x69, 0x85):
-            return .conditionsNotSatisfied
+        case (0x69, 0x82):
+            // Security status not satisfied: the applet wants a PIN it has not
+            // been given. For a signature that means PW1 was not verified.
+            switch context {
+            case .computeSignature: return .userPinNotVerified
+            default: return .conditionsNotSatisfied
+            }
+        case (0x69, 0x85):
+            // Conditions of use not satisfied. On a YubiKey with a touch policy
+            // this is what an unfinished touch looks like, but the exact status
+            // word for an unanswered touch is an M0 item
+            // (docs/m0-hardware-verification.md): the app reports it as a
+            // conditions failure and does not retry either way.
+            switch context {
+            case .computeSignature: return .touchNotCompleted
+            default: return .conditionsNotSatisfied
+            }
+        case (0x64, 0x00), (0x66, 0x00):
+            // Execution error / no information: the card began the operation and
+            // did not finish it. The counter may already have moved.
+            switch context {
+            case .computeSignature: return .touchNotCompleted
+            default: return .unexpectedStatusWord(sw1: status.sw1, sw2: status.sw2)
+            }
         case (0x6A, 0x80):
             switch context {
             case .importKey: return .keyImportRejected
@@ -120,4 +142,8 @@ public enum OpenPGPOperation: String, Sendable {
     case readPairingManifest
     /// Writing it. Requires PW3, which the ceremony has already verified.
     case writePairingManifest
+    /// `PSO:CDS` — the one operation that consumes a touch, increments the
+    /// signature counter, and must never be attempted twice for one request
+    /// (design.md §5.2 rule 1).
+    case computeSignature
 }

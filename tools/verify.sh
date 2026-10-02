@@ -36,13 +36,19 @@ step "Differential fixtures are current"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 (cd "$REPO_ROOT/tools/derive" && "$PYTHON" derive.py gen-fixtures "$tmpdir" >/dev/null) || fail "fixture generation"
-if ! diff -q "$tmpdir/derivation_vectors.json" \
-     "$REPO_ROOT/ios/Packages/VaultKit/Tests/VaultKitTests/Fixtures/derivation_vectors.json" >/dev/null; then
-  echo "derivation_vectors.json is stale; regenerate with:"
-  echo "  tools/derive/derive.py gen-fixtures ios/Packages/VaultKit/Tests/VaultKitTests/Fixtures"
+stale=0
+for fixture in derivation_vectors.json signing_vectors.json; do
+  if ! diff -q "$tmpdir/$fixture" \
+       "$REPO_ROOT/ios/Packages/VaultKit/Tests/VaultKitTests/Fixtures/$fixture" >/dev/null; then
+    echo "$fixture is stale; regenerate with:"
+    echo "  tools/derive/derive.py gen-fixtures ios/Packages/VaultKit/Tests/VaultKitTests/Fixtures"
+    stale=1
+  fi
+done
+if [[ "$stale" == "1" ]]; then
   fail "differential fixtures out of date"
 fi
-echo "  ok: derivation fixtures match the independent implementation"
+echo "  ok: derivation and signing fixtures match the independent implementation"
 
 step "VaultKit tests (crypto, BIP39/BIP32, addresses, BC-UR, ceremony)"
 (cd "$REPO_ROOT/ios/Packages/VaultKit" && swift test) || fail "VaultKit tests"

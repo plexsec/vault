@@ -23,6 +23,9 @@ final class MockSignerCard: SignerCard {
         case getDataObject(tag: UInt16)
         case readPairingManifest
         case writePairingManifest(byteCount: Int)
+        case verifyUserPIN
+        case computeDigitalSignature(digestHex: String)
+        case signInSession(digestHex: String)
     }
 
     /// Failure injection.
@@ -44,6 +47,9 @@ final class MockSignerCard: SignerCard {
         /// The card has no private-use data object to write to (an applet that
         /// does not implement the optional objects).
         case pairingManifestUnsupported
+        /// `PSO:CDS` failed after the applet had been asked to sign: the response
+        /// was lost. Whatever the card did, the app never saw it.
+        case signatureTransport
     }
 
     private(set) var calls: [Call] = []
@@ -62,8 +68,9 @@ final class MockSignerCard: SignerCard {
     private(set) var dataObjects: [UInt16: [UInt8]] = [:]
     private(set) var appliedPolicy = false
     /// The pairing manifest as the card holds it. `nil` is a never-written
-    /// (empty) object, which is what a reset leaves behind.
-    private(set) var pairingManifestBytes: [UInt8]?
+    /// (empty) object, which is what a reset leaves behind. Tests seed it directly
+    /// to model a card provisioned by an earlier version or by another app.
+    var pairingManifestBytes: [UInt8]?
     /// Mirrors `CardInventory.pairingManifest`; `false` makes the read throw the
     /// way a card without the optional objects does.
     var supportsPairingManifest = true
@@ -74,6 +81,92 @@ final class MockSignerCard: SignerCard {
     private(set) var pinChangeCount = 0
     /// The Admin PIN last provisioned, used to model per-session VERIFY state.
     private(set) var lastSetAdminPIN: [UInt8] = Array("12345678".utf8)
+    /// The user PIN last provisioned. `VERIFY PW1` succeeds only against this.
+    private(set) var lastSetUserPIN: [UInt8] = Array("246810".utf8)
+
+    // MARK: Signing state
+
+    /// How the card behaves when asked to sign.
+    enum SigningBehaviour: Equatable {
+        case normal
+        /// The PIN is wrong; the card reports the retries it has left.
+        case wrongPIN(retriesRemaining: Int)
+        /// PW1 is blocked (`6983`); no PIN will work until a reset.
+        case pinBlocked
+        /// `6982`: the applet wants a PIN it has not been given in this session.
+        case pinNotVerified
+        /// The card answered `6985`: the touch (UIF) was not completed in time.
+        case touchNotCompleted
+    }
+
+    var signingBehaviour: SigningBehaviour = .normal
+    /// Real cards may return `s > n/2`. The app must normalise it, so the mock can
+    /// be told to mimic that.
+    var returnsHighS = false
+    /// Digests the card was asked to sign, in order. The ceremony must call this
+    /// exactly once per request (design.md §5.2 rule 1).
+    private(set) var signedDigests: [[UInt8]] = []
+    /// PINs presented to `VERIFY PW1`.
+    private(set) var presentedPINs: [[UInt8]] = []
+
+    /// Signatures produced by `tools/derive` (an independent implementation), so
+    /// the ceremony's verification path is exercised for real rather than against
+    /// a stub. See `signing_vectors.json` and PROVENANCE in the fixtures directory.
+    struct SigningFixture: Decodable {
+        struct Signature: Decodable {
+            let name: String
+            let digest: String
+            let r: String
+            let s: String
+            let highS: String
+            let recid: UInt8
+            let recidHighS: UInt8
+            let der: String
+            let derHighS: String
+            let legacyVChain1: UInt64
+            let typedV: UInt64
+
+            enum CodingKeys: String, CodingKey {
+                case name, digest, r, s, recid, der
+                case highS = "high_s"
+                case recidHighS = "recid_high_s"
+                case derHighS = "der_high_s"
+                case legacyVChain1 = "legacy_v_chain_1"
+                case typedV = "typed_v"
+            }
+        }
+
+        let publicKeyCompressed: String
+        let address: String
+        let signatures: [Signature]
+
+        enum CodingKeys: String, CodingKey {
+            case publicKeyCompressed, address, signatures
+        }
+    }
+
+    static let signingFixture: SigningFixture = {
+        guard let data = try? FixtureLoader.data("signing_vectors", extension: "json"),
+              let fixture = try? JSONDecoder().decode(SigningFixture.self, from: data)
+        else {
+            preconditionFailure("signing_vectors.json is missing or malformed")
+        }
+        return fixture
+    }()
+
+    static var signingPublicKey: [UInt8] { [UInt8](try! Hex.decode(signingFixture.publicKeyCompressed)) }
+
+    /// Makes this card look like one provisioned with the fixture key: the
+    /// signature slot holds it and the inventory reports it.
+    func loadSigningFixtureKey() {
+        storedPublicKeyOverride[.signature] = Self.signingPublicKey
+        inventoryResult.occupiedSlots.insert(.signature)
+        inventoryResult.isFactoryFresh = false
+    }
+
+    func signature(named name: String) -> SigningFixture.Signature? {
+        Self.signingFixture.signatures.first { $0.name == name }
+    }
 
     init(
         inventory: CardInventory = MockSignerCard.factoryFreshCard,
@@ -143,6 +236,7 @@ final class MockSignerCard: SignerCard {
         if failurePoint == .setPINs { throw CardError.conditionsNotSatisfied }
         pinChangeCount += 1
         lastSetAdminPIN = adminPIN
+        lastSetUserPIN = userPIN
     }
 
     func applyPolicy(adminPIN: [UInt8]) async throws {
@@ -218,6 +312,56 @@ final class MockSignerCard: SignerCard {
             throw CardError.unexpectedStatusWord(sw1: 0x6A, sw2: 0x88)
         }
         return value
+    }
+
+    /// Models the real constraint: the PIN is verified and the digest signed in
+    /// one session, and the PIN retry counter is decremented by the card itself.
+    func sign(digest: [UInt8], userPIN: [UInt8]) async throws -> [UInt8] {
+        calls.append(.signInSession(digestHex: digest.hexString))
+        try await verifyUserPIN(userPIN)
+        return try await computeDigitalSignature(digest: digest)
+    }
+
+    func verifyUserPIN(_ pin: [UInt8]) async throws {
+        calls.append(.verifyUserPIN)
+        presentedPINs.append(pin)
+        switch signingBehaviour {
+        case .wrongPIN(let retriesRemaining):
+            throw CardError.pinIncorrect(retriesRemaining: retriesRemaining)
+        case .pinBlocked:
+            throw CardError.pinBlocked
+        case .pinNotVerified:
+            throw CardError.conditionsNotSatisfied
+        case .touchNotCompleted, .normal:
+            break
+        }
+        guard pin == lastSetUserPIN else {
+            throw CardError.pinIncorrect(retriesRemaining: 2)
+        }
+    }
+
+    func computeDigitalSignature(digest: [UInt8]) async throws -> [UInt8] {
+        calls.append(.computeDigitalSignature(digestHex: digest.hexString))
+        signedDigests.append(digest)
+        switch signingBehaviour {
+        case .touchNotCompleted:
+            throw CardError.conditionsNotSatisfied
+        case .pinNotVerified:
+            throw CardError.conditionsNotSatisfied
+        case .wrongPIN, .pinBlocked, .normal:
+            break
+        }
+        if failurePoint == .signatureTransport { throw CardError.transportUnavailable("mock") }
+        guard let signature = Self.signingFixture.signatures.first(where: { $0.digest == digest.hexString }) else {
+            // A digest the fixture generator never signed: a real card would sign
+            // it, but a test that reaches this point is testing the wrong thing.
+            throw CardError.signatureFailed
+        }
+        // The card increments its counter when it signs, which is what makes the
+        // counter evidence that a signature happened.
+        counterValue += 1
+        let der = returnsHighS ? signature.derHighS : signature.der
+        return try Hex.decode(der)
     }
 
     func readPairingManifest() async throws -> [UInt8]? {

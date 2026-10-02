@@ -210,6 +210,51 @@ public final class OpenPGPCard: SignerCard {
         try Self.check(response, operation: operation)
     }
 
+    /// `VERIFY PW1` (P2 = 0x81) — the user PIN, which is what signs.
+    public func verifyUserPIN(_ pin: [UInt8]) async throws {
+        try await verify(pin: pin, reference: .user, operation: .verifyUserPIN)
+    }
+
+    /// `VERIFY PW1` then `PSO:CDS`, on **this** session.
+    ///
+    /// This is the `SignerCard` entry point for signing. It exists as one method
+    /// because VERIFY state belongs to a session: a caller that verified on one
+    /// session and signed on another would get `6982` from real hardware.
+    public func sign(digest: [UInt8], userPIN: [UInt8]) async throws -> [UInt8] {
+        try await verifyUserPIN(userPIN)
+        return try await computeDigitalSignature(digest: digest)
+    }
+
+    /// `PSO:CDS` (INS 0x2A, P1 = 0x9E, P2 = 0x9A) over a 32-byte digest.
+    ///
+    /// The applet signs the digest directly (no further hashing), which is what
+    /// makes the "compute the digest in the app, pass it in" contract work
+    /// (design.md §6.1). Returns the card's raw response: a DER-encoded ECDSA
+    /// signature for secp256k1.
+    ///
+    /// **Deliberately no retry, at any layer.** A lost response may still mean the
+    /// card signed and incremented its counter, so a second attempt for the same
+    /// request is forbidden by design (design.md §5.2 rule 1) — the ceremony's job
+    /// is to refuse it, and this method's is not to make it easy.
+    public func computeDigitalSignature(digest: [UInt8]) async throws -> [UInt8] {
+        guard digest.count == 32 else {
+            throw CardError.malformedResponse(
+                "PSO:CDS takes a single 32-byte digest, got \(digest.count) bytes"
+            )
+        }
+        let apdu = CommandAPDU(
+            cla: 0x00, ins: 0x2A,
+            p1: 0x9E, p2: 0x9A,
+            data: digest,
+            // Le = 0x00 (256) covers the largest response this can produce: 72
+            // bytes of DER for a secp256k1 signature.
+            expectedLength: 0
+        )
+        let response = try await transport.exchange(apdu)
+        try Self.check(response, operation: .computeSignature)
+        return response.data
+    }
+
     public func changeReferenceData(
         reference: OpenPGPPinReference,
         oldPIN: [UInt8],

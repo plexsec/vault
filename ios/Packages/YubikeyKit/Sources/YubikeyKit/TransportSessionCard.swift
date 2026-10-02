@@ -73,6 +73,20 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.applyPolicy(adminPIN: adminPIN) }
     }
 
+    /// VERIFY PW1 and PSO:CDS **in the same session**: VERIFY state does not
+    /// survive a session boundary, so splitting them would fail on hardware with
+    /// `6982` while passing against a card that keeps state in memory.
+    ///
+    /// No retry loop, and none is possible: `withSession` runs the two APDUs once
+    /// and any error propagates. A lost response may still have produced a
+    /// signature, and design.md §5.2 rule 1 forbids asking again.
+    public func sign(digest: [UInt8], userPIN: [UInt8]) async throws -> [UInt8] {
+        try await withSession { card in
+            try await card.verifyUserPIN(userPIN)
+            return try await card.computeDigitalSignature(digest: digest)
+        }
+    }
+
     public func importKey(
         slot: KeySlot,
         algorithm: KeyAlgorithm,
