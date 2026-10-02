@@ -81,7 +81,7 @@ Prerequisites: a **brand-new or factory-reset** iPhone, no SIM, airplane mode; a
 1. **Install the app.** Two options: (a) install from the App Store, then immediately disconnect and remain permanently offline; (b) sideload from audited source code via Xcode (reproducible build, hash verified). Option (b) is the recommended path.
 
    The reference build uses a **free personal team**. A free-team provisioning profile expires after 7 days, so the app must be re-signed and re-installed from Xcode weekly to keep launching — which means tethering the "offline" iPhone to a computer once a week (see §10). A paid developer account gives 1-year profiles. Re-installing over the same bundle identifier preserves the app's data container, and since the app persists no secrets at all, an accidental deletion costs only a re-pairing, not funds.
-2. **Reset the YubiKey OpenPGP applet** (`ykman openpgp reset`; may be done on the Desktop, since the YubiKey holds no secrets yet).
+2. **Reset the YubiKey OpenPGP applet** (`ykman openpgp reset`; may be done on the Desktop, since the YubiKey holds no secrets yet). The app can also do it, as `TERMINATE DF` + `ACTIVATE FILE` + re-SELECT, and it does so over whichever transport is in use. `TERMINATE DF` leaves the applet *terminated* — wiped and deactivated — and only `ACTIVATE FILE` brings it back; a transport interruption between the two would therefore strand the card. Two consequences are normative: `SELECT` on a terminated applet (`6985`/`6285`) is answered by sending `ACTIVATE FILE` and re-selecting, so an interrupted reset heals on the operator's next tap; and because iOS refuses a reader session begun while the previous session's sheet is still being dismissed (CoreNFC error 202), consecutive reader sessions are separated by a cooldown (amendment 15).
 3. **Configure YubiKey policies** (done on the iPhone via the app, or in advance on the Desktop):
    - Touch policy `UIF = 0x02` (Fixed: touch permanently required, cannot be disabled later) on **both** signing-capable slots — `0xD6` (signature) and `0xD8` (authentication);
    - `PW1 status (0xC4[0]) = 0x00`: PIN must be re-verified for every signature;
@@ -164,13 +164,14 @@ Using an EVM transaction as the example (PSBT differences are described in §6.3
 ### 5.2 Rules
 
 1. **One transaction = one `PSO:CDS`.** At the specification level, the app is forbidden from retrying a signature for the same request. If the YubiKey returns any error (wrong PIN, touch timeout, NFC disconnect), the entire flow terminates and restarts from the Desktop (which generates a new `requestId`).
+   - *Refined for provisioning* (§4.2, amendment 17): a failure splits into two kinds. A **definitive rejection** — the card answered, and answered no (wrong PIN, unmet preconditions, rejected import) — wrote nothing, so the operator may correct the cause and repeat the step. An **interruption** whose outcome is unknown (a session that ended mid-write) means the card's state is unknown, and the ceremony must return to card inspection before anything else happens. The distinction is enforced in the state machine, not in the view layer.
 2. **Hard rule for users: any single transaction permits exactly one touch.** If the app says "Signing failed, please touch again," the user should treat the app as compromised and stop. This rule must be repeated on the app's first launch, on the Desktop wallet's pairing page, and in the printed quick-start guide.
 3. **The counter is read by a party other than the one that displayed the transaction.** The Desktop, or the iPhone itself over NFC/USB-C, reads `0x93` via `GET DATA 0x7A` (no PIN required). What matters is that the comparison against `expected_counter` is made by something other than the signing screen; a count displayed by the signing app alone is not evidence.
 4. **Counter audit frequency**: at least once at the end of every signing session; for large holdings, once per transaction is recommended. `actual_counter > expected_counter` means the YubiKey produced a signature the Desktop does not know about; migrate assets immediately.
 5. **The iPhone app only displays parsed content and never performs "smart" rewriting.** Undecodable `data` must be shown as raw hex and explicitly labeled "Unable to parse — proceed with caution."
 6. **Address binding.** The app refuses to sign any request whose `address` field does not match the locally paired address, preventing the Desktop from mistakenly sending another account's transaction.
 7. **chainId allowlist.** The app maintains a user-configured list of permitted chains; a chainId not on the list requires a second confirmation.
-8. **NFC session timeout** (about 60 seconds on iOS): if the touch is not completed within the session, it is treated as failure with no automatic retry.
+8. **NFC session timeout** (about 60 seconds on iOS): if the touch is not completed within the session, it is treated as failure with no automatic retry. This governs a session in which an operation was **already sent**. Beginning a *new* reader session is a separate case: iOS can refuse one because the previous session has not finished shutting down (CoreNFC error 202), which is a transport race rather than a decision about the card, and the transport waits out a cooldown and retries it (amendment 15). Operator cancellation and the system timeout are never retried.
 
 ---
 
@@ -223,7 +224,9 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 
 | Operation | APDU | Notes |
 |---|---|---|
-| Select applet | `00 A4 04 00 06 D2 76 00 01 24 01` | OpenPGP AID |
+| Select applet | `00 A4 04 00 06 D2 76 00 01 24 01` | OpenPGP AID. A `6985`/`6285` answer means the DF is terminated (wiped, deactivated): send `ACTIVATE FILE` and re-select, which is what an interrupted reset leaves behind (amendment 16) |
+| Terminate DF (reset) | `00 E6 00 00` | Case-1, requires PW3. Wipes the applet and leaves the DF terminated |
+| Activate file (reset) | `00 44 00 00` | Case-1. The only command a terminated DF accepts besides a re-SELECT; the second half of a reset |
 | Get challenge (entropy) | `00 84 00 00 20` | Hardware RNG; returns 32 random bytes, XORed with the iOS CSPRNG (§4.2 step 4) |
 | Verify signing PIN | `00 20 00 81 Lc <PIN>` | PW1 mode 81 |
 | Sign | `00 2A 9E 9A 20 <32-byte digest> 00` | PSO:COMPUTE DIGITAL SIGNATURE; returns r‖s (64 bytes) |
@@ -240,6 +243,8 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 On iOS, NFC uses CoreNFC `NFCISO7816Tag`, declaring `D27600012401` under `com.apple.developer.nfc.readersession.iso7816.select-identifiers` in Info.plist. The wired path is USB-C CCID through CryptoTokenKit (`TKSmartCard`), which presents the YubiKey as a smart-card slot. The APDUs are identical on both transports.
 
 The CCID transport intentionally uses the low-level `TKSmartCard.transmit(_:)` rather than the high-level `send(ins:p1:p2:data:le:)`: the high-level call throws for any status word other than `0x9000`, which would discard the status-word semantics this scheme depends on (`63Cx` retries remaining, `6983` blocked, `6A88` no key present, `6Cxx` wrong Le).
+
+Every transport failure is reported with the reason it failed, not as one generic string. `NFCReaderError` 200–203 (operator cancelled, session timed out, session ended unexpectedly, system busy) each get their own wording, because a session race that says "Session invalidated unexpectedly" is indistinguishable from a card problem to the operator reading it (amendment 15).
 
 ---
 

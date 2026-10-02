@@ -385,3 +385,105 @@ pinned path is kept, and the UI requires the operator to acknowledge it.
   without it.
 * **§9.3's core argument** is unchanged. Nothing in v1 weakens it; v1 simply does
   not yet exercise it.
+
+## 15. Consecutive NFC reader sessions need a cooldown, and a session loss is not a card error
+
+**Sections:** §4.1, §4.2 step 2, §5.2 rules 1 and 8, §6.5.
+
+*Before:* `NFCTagTransport.close()` invalidated the reader session and returned
+immediately; the next `open()` created a new `NFCTagReaderSession` and began it
+straight away. Every transport failure was reported through one string, so the
+operator saw "The YubiKey could not be reached (Session invalidated
+unexpectedly)" for two very different situations: a card that never answered, and
+iOS refusing to start a session at all.
+
+*After:* three rules the transport now follows:
+
+1. `close()` waits for `didInvalidateWithError` to confirm the session is gone
+   (bounded by a timeout, so a missing callback cannot wedge the ceremony);
+2. a **2-second cooldown** is held after an invalidation before the next
+   `begin()`;
+3. `begin()` is retried, up to a small fixed budget, when the failure is one of
+   the two session *races* — `NFCReaderError` 202 (session ended unexpectedly) or
+   203 (system busy). Operator cancellation (200) and the system timeout (201) are
+   decisions, not races, and are never retried: that is §5.2 rule 8, which still
+   applies to any session in which an operation was already sent.
+
+Each `NFCReaderError` code also gets its own operator-facing wording.
+
+*Why:* the ceremony opens **one reader session per card operation**
+(`TransportSessionCard`), and several steps perform two operations back to back
+with no operator interaction between them — `reset` → `inventory`,
+`applyPolicy` → `inventory`, and both keys' imports and read-backs. iOS fails a
+session begun while the previous session's sheet is still being dismissed, and
+reports that as `NFCReaderError` 202 "Session invalidated unexpectedly". The card
+is not at fault and the previous operation succeeded; the next session simply
+started too early. The reset step was where this surfaced first because it is the
+first back-to-back pair in the ceremony, and because a card that already holds a
+key makes the erase itself slower.
+
+Yubico's own YubiKit hard-codes the same two seconds for the same reason
+(`YubiKit/YubiKit/Connection/SmartCard/NFCSmartCardConnection.swift`):
+
+> iOS fails a reader session begun while the previous session's sheet is still
+> being dismissed (NFCReaderError 202, "Session invalidated unexpectedly"), so
+> wait this long after an invalidation before beginning a new session.
+
+*Consequence:* the policy is pure arithmetic and classification, so it lives in
+`YubikeyKit/NFCSessionPolicy.swift` and is unit-tested on macOS — CoreNFC has no
+simulator, and this is exactly the code that cannot be exercised on a desktop.
+`M0` item 11 covers the on-device confirmation.
+
+## 16. `SELECT` reactivates a terminated DF
+
+**Sections:** §4.2 step 2, §6.5.
+
+*Before:* `OpenPGPCard.select()` treated any non-`9000` answer as a hard error.
+
+*After:* `6985` (`CONDITIONS OF USE NOT SATISFIED`) and `6285` (`NO INPUT DATA`)
+on `SELECT` are handled as "the applet is not activated": the card sends
+`ACTIVATE FILE` (`00 44 00 00`) and then re-selects.
+
+*Why:* a reset is `TERMINATE DF` + `ACTIVATE FILE` + re-SELECT, and the reset
+step sends all three inside one NFC session. If that session drops between the
+first two, the card is left **terminated**: wiped, deactivated, and answering
+`6985` to everything but `ACTIVATE FILE`. Without the recovery, that card could
+not be provisioned by this app again — every later session failed at `SELECT` with
+"preconditions were not met", and only GPG or `ykman` could reactivate it. The
+recovery mirrors `yubikit`'s `OpenPgpSession.__init__`, which treats exactly those
+two status words as "Not activated, activate" and re-selects.
+
+*Consequence:* the simulated card models the terminated state
+(`simulateInterruptedReset()`), so the recovery path — and the fact that a
+completed reset never needs it — is pinned by tests rather than by a device
+session.
+
+## 17. A failed mutating step rewinds only when the card's state is unknown
+
+**Sections:** §4.2 step 2, §5.2 rule 1.
+
+*Before:* `withMutatingStep` cleared its "operation in flight" marker only on
+success, so *every* failure during `reset`, `PIN provisioning`, `policy` or
+`keyImport` was treated as an interruption. The UI, however, never called
+`noteInterruption()` on a failure path at all — it only did so when the app was
+backgrounded — so in practice the operator stayed on the failing screen with the
+gate still armed, which invites the blind retry §5.2 rule 1 forbids.
+
+*After:* two halves, both in the state machine rather than the view layer:
+
+* `CardError.isDefinitiveCardRejection` separates a card that **answered no** —
+  failed or blocked PIN, unmet preconditions, unsupported algorithm or object, a
+  rejected key import — from an outcome that is genuinely unknown (a transport
+  failure, an unparsed status word). Only the unknown kind leaves the marker set;
+* the app's failure path calls `ceremony.noteInterruption()` on every error, and
+  `noteInterruption` remains a no-op unless the marker is set.
+
+*Why:* a wrong Admin PIN writes nothing, and rewinding to the inventory screen
+over a typo costs the operator a card re-read and a second tap for no security
+benefit. The opposite error is worse, which is why the classification defaults to
+"unknown": an unrecognised status word must force a re-read, because a
+half-written key is exactly what the re-inspection rule exists to catch.
+
+*Consequence:* `CardErrorPolicyTests` pins the classification, and the ceremony
+tests assert both directions — a dropped session rewinds, a refused PIN and a
+rejected import do not.

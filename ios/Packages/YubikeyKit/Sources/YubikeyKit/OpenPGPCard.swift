@@ -36,6 +36,19 @@ public final class OpenPGPCard: SignerCard {
 
     // MARK: Commands
 
+    /// `SELECT` the OpenPGP AID, reactivating a terminated DF if necessary.
+    ///
+    /// `TERMINATE DF` puts the applet in the *terminated* state, where every
+    /// command except `ACTIVATE FILE` is refused with `6985` (or `6285`). A reset
+    /// is `TERMINATE DF` + `ACTIVATE FILE` + re-SELECT, and the ceremony's reset
+    /// step runs all three in one NFC session — so a session that drops between
+    /// the two leaves the card terminated, and every later session fails at
+    /// SELECT until something sends `ACTIVATE FILE`.
+    ///
+    /// The recovery below mirrors `yubikit`'s `OpenPgpSession.__init__`, which
+    /// treats those two status words on SELECT as "not activated, activate" and
+    /// then re-selects. Without it, an interrupted reset needs GPG or `ykman` to
+    /// recover a card this app just terminated.
     public func select() async throws {
         let apdu = CommandAPDU(
             cla: 0x00, ins: 0xA4, p1: 0x04, p2: 0x00,
@@ -43,8 +56,24 @@ public final class OpenPGPCard: SignerCard {
             expectedLength: 0
         )
         let response = try await transport.exchange(apdu)
+        if Self.isTerminatedAppletStatus(response.status) {
+            try await activateFile()
+            let reactivated = try await transport.exchange(apdu)
+            try Self.check(reactivated, operation: .select)
+            selected = true
+            return
+        }
         try Self.check(response, operation: .select)
         selected = true
+    }
+
+    /// The status words a *terminated* DF answers SELECT with.
+    ///
+    /// `6985` is `CONDITIONS OF USE NOT SATISFIED`; `6285` is `NO INPUT DATA`.
+    /// Both are what yubikit recognises as "the application is not activated"
+    /// (`SW.NO_INPUT_DATA`, `SW.CONDITIONS_NOT_SATISFIED`).
+    static func isTerminatedAppletStatus(_ status: StatusWord) -> Bool {
+        (status.sw1 == 0x69 || status.sw1 == 0x62) && status.sw2 == 0x85
     }
 
     func applicationData() async throws -> [UInt8] {
@@ -129,8 +158,10 @@ public final class OpenPGPCard: SignerCard {
         try Self.check(response, operation: .terminate)
     }
 
+    /// `ACTIVATE FILE` (INS 0x44) — the second half of an OpenPGP reset, and the
+    /// only command a terminated DF accepts besides a re-SELECT.
     public func activateFile() async throws {
-        // Same: case-1 command, no Le byte (00 44 00 00).
+        // Case-1 command, no Le byte (00 44 00 00).
         let apdu = CommandAPDU(cla: 0x00, ins: 0x44, p1: 0x00, p2: 0x00)
         let response = try await transport.exchange(apdu)
         try Self.check(response, operation: .activate)

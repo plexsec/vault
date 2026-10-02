@@ -141,6 +141,35 @@ public enum CardError: Swift.Error, Equatable {
     case unsupportedKeyType(String)
 
     /// User-facing text. Kept here so every surface reports the same wording.
+    /// Whether this failure leaves the card in a state the ceremony cannot
+    /// predict, and therefore has to re-inspect it before doing anything else.
+    ///
+    /// The distinction is what stops a mistyped Admin PIN from sending the
+    /// operator back to the inventory screen (nothing was written), while an
+    /// interrupted `PUT DATA` still forces a re-read. Anything not listed as a
+    /// definitive rejection is treated as unknown, which is the conservative
+    /// reading: a wrong "unknown" costs one card read, a wrong "known" could
+    /// hide a half-written key.
+    ///
+    /// The definitive rejections are exactly the status words that mean the card
+    /// *refused* the operation: a failed or blocked PIN, unmet preconditions, an
+    /// unsupported algorithm or object, and a rejected key import. In each case
+    /// the card answered, and answered "no".
+    public var isDefinitiveCardRejection: Bool {
+        switch self {
+        case .pinIncorrect, .pinBlocked, .adminPinBlocked:
+            return true
+        case .conditionsNotSatisfied, .unsupportedFirmware, .keyImportRejected:
+            return true
+        case .unsupportedFeature, .unsupportedKeyType:
+            return true
+        case .transportUnavailable, .cardNotSelected, .malformedResponse:
+            return false
+        case .unexpectedStatusWord, .signatureFailed:
+            return false
+        }
+    }
+
     public var userFacingDescription: String {
         switch self {
         case .transportUnavailable(let detail):

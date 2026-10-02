@@ -624,12 +624,51 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         XCTAssertEqual(ceremony.step, .reset)
 
-        // The NFC session drops mid-`PUT DATA`: the card state is now unknown.
-        card.failurePoint = .reset
+        // The NFC session drops mid-reset: the card state is now unknown.
+        card.failurePoint = .resetTransport
         await XCTAssertThrowsErrorAsync { try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true) }
         ceremony.noteInterruption()
         XCTAssertEqual(ceremony.step, .cardInventory, "must re-inspect before retrying a mutating step")
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("re-inspect") })
+    }
+
+    /// The complement of the test above: a card that *answered* with a refusal
+    /// wrote nothing, so the operator stays where they are. Rewinding here would
+    /// send them back to the inventory screen over a mistyped Admin PIN.
+    func testDefinitiveCardRejectionDuringMutatingStepDoesNotRewind() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .reset)
+
+        // A wrong Admin PIN: the card refused, and nothing was written.
+        card.failurePoint = .reset
+        await XCTAssertThrowsErrorAsync {
+            try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        } verify: { error in
+            XCTAssertEqual(error as? CardError, .pinIncorrect(retriesRemaining: 2))
+        }
+        ceremony.noteInterruption()
+        XCTAssertEqual(ceremony.step, .reset, "a refused PIN must not force a card re-read")
+        XCTAssertFalse(ceremony.report.warnings.contains { $0.contains("re-inspect") })
+    }
+
+    /// A rejected key import is likewise definitive: `PUT DATA 3F FF` answered
+    /// `6A80`, so the slot is untouched and the ceremony can carry on from there.
+    func testRejectedKeyImportDoesNotRewind() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+        XCTAssertEqual(ceremony.step, .keyImport)
+
+        card.failurePoint = .keyImport
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() } verify: { error in
+            XCTAssertEqual(error as? CardError, .keyImportRejected)
+        }
+        ceremony.noteInterruption()
+        XCTAssertEqual(ceremony.step, .keyImport, "a rejected import must not force a card re-read")
     }
 
     func testInterruptionDuringReadOnlyStepDoesNotRewind() async throws {

@@ -27,7 +27,11 @@ final class MockSignerCard: SignerCard {
     enum FailurePoint: Equatable {
         case none
         case inventory
+        /// The card answered with a definitive rejection (a wrong PIN).
         case reset
+        /// The card never answered: the session dropped mid-reset, so the
+        /// card's state is unknown.
+        case resetTransport
         case setPINs
         case applyPolicy
         case keyImport
@@ -95,6 +99,9 @@ final class MockSignerCard: SignerCard {
     func reset(adminPIN: [UInt8]) async throws {
         calls.append(.reset)
         if failurePoint == .reset { throw CardError.pinIncorrect(retriesRemaining: 2) }
+        if failurePoint == .resetTransport {
+            throw CardError.transportUnavailable("the NFC session ended unexpectedly, so this operation did not complete")
+        }
         resetCount += 1
         storedPrivateKeys = [:]
         storedFingerprints = [:]

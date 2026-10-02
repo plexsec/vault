@@ -29,7 +29,7 @@ tools/
   generate-bip39-wordlist.sh  regenerate the pinned wordlist (asserts its SHA-256)
 docs/
   provisioning-checklist.md   the operator procedure, including Appendix B
-  m0-hardware-verification.md the four items only real hardware can settle
+  m0-hardware-verification.md the checks only real hardware can settle
   reproducible-build.md       what "reproducible" means here, and what it does not
   v1-threat-notes.md          v0.1 scope, deviations, and residual risk
 ```
@@ -41,8 +41,8 @@ docs/
 tools/verify.sh
 
 # individual pieces
-cd ios/Packages/VaultKit  && swift test      # 92 tests: crypto (RFC 8032 + SLIP-0010), BIP39/BIP32, addresses, BC-UR, ceremony
-cd ios/Packages/YubikeyKit && swift test     # 34 tests: APDU codec, both OpenPGP slots, transports, end-to-end
+cd ios/Packages/VaultKit  && swift test      # 98 tests: crypto (RFC 8032 + SLIP-0010), BIP39/BIP32, addresses, BC-UR, ceremony
+cd ios/Packages/YubikeyKit && swift test     # 53 tests: APDU codec, both OpenPGP slots, transports, NFC session policy, end-to-end
 cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 6 UI tests
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest

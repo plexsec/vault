@@ -1,6 +1,6 @@
 # Hardware verification (milestone M0)
 
-Four things cannot be settled by reading specifications, and each one is written
+Some things cannot be settled by reading specifications, and each one is written
 into the code as an explicit, documented assumption rather than a guess. This is
 the procedure to settle them. Nothing in v0.1 depends on getting these right for
 its *security* argument, because a wrong assumption fails visibly — that is by
@@ -285,3 +285,44 @@ screen, never a silently wrong key; the read-back comparison (§4.2 step 7) is
 unaffected and still voids the ceremony on any mismatch. The fix only changes how
 an empty slot is recognised before any key exists.
 
+## 11. An interrupted NFC reset is recoverable, and back-to-back reader sessions survive
+
+**Assumption in code** (`YubikeyKit/NFCSessionPolicy.swift`,
+`YubikeyKitNFC/NFCTagTransport.swift`, `OpenPGPCard.select`). Three linked claims:
+
+1. iOS refuses a reader session begun while the previous session's sheet is still
+   being dismissed, reporting `NFCReaderError` 202; waiting
+   `NFCSessionPolicy.cooldown` (2 s, matching Yubico's YubiKit) and retrying
+   `begin()` absorbs it.
+2. `ACTIVATE FILE` (`00 44 00 00`) reactivates an OpenPGP DF that `TERMINATE DF`
+   left terminated, and `SELECT` answers `6985`/`6285` in that state.
+3. A card terminated by an interrupted reset can therefore be provisioned by this
+   app again, on the operator's next tap, with no GPG or `ykman` involved.
+
+**How to verify.**
+
+1. Build to a device. Use a YubiKey that **already holds a key**, which is the
+   case that produced "The YubiKey could not be reached (Session invalidated
+   unexpectedly)" at the reset step, and run the ceremony to the reset step.
+2. Confirm the reset completes and the ceremony advances to the PIN step with no
+   error banner. Probe the console (`[CoreNFC]`, `NFCError Code=202`) to see
+   whether a 202 occurred at all: if it did, the retry must have absorbed it, and
+   the ceremony must still have advanced.
+3. Interrupt deliberately: from the reset confirmation, pull the key away so the
+   session dies mid-reset. The app must return to *Inspect YubiKey* (the
+   interruption rule, amendment 17), not sit on the reset screen.
+4. Confirm the recovery of a terminated applet with an independent tool — on a
+   desktop, `ykman openpgp info` will report the applet as inactive/unselectable
+   while it is terminated. Re-tap in the app: the session must select (sending
+   `ACTIVATE FILE` first) and the ceremony must continue. `ykman openpgp info`
+   afterwards must report a factory-fresh applet.
+5. Check the banner wording: every `NFCReaderError` code must produce a distinct,
+   card-independent sentence. "Session invalidated unexpectedly" on its own is
+   the string this item exists to remove.
+
+**Why it is safe to be wrong.** The cooldown can only delay a session start, and
+the retry budget is bounded (`maximumBeginAttempts`). The recovery path can only
+send `ACTIVATE FILE` — a command every reset already sends — and it fires only
+when `SELECT` answers `6985`/`6285`, status words that mean the applet is not
+usable in that state anyway. Every one of these failures is visible rather than
+silent: a wrong assumption here costs a re-tap, never a silently different key.

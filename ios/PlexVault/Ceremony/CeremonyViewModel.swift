@@ -453,6 +453,13 @@ public final class CeremonyViewModel {
             step = ceremony.step
             report = ceremony.report
         } catch {
+            // A failed step may have left a mutating operation half-done. The
+            // ceremony decides whether that is the case (`noteInterruption` is a
+            // no-op unless a mutating step was in flight and its outcome is
+            // unknown); without this, the operator is left on the same screen
+            // with the gate still armed, which invites the blind retry
+            // design.md §5.2 rule 1 forbids.
+            ceremony.noteInterruption()
             step = ceremony.step
             report = ceremony.report
             fail(error)
@@ -468,6 +475,7 @@ public final class CeremonyViewModel {
             step = ceremony.step
             report = ceremony.report
         } catch {
+            ceremony.noteInterruption()
             step = ceremony.step
             report = ceremony.report
             fail(error)

@@ -51,6 +51,15 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private var adminRetriesRemaining = 3
     private var slots: [KeySlot: SlotState] = [.signature: SlotState(), .authentication: SlotState()]
     private var pwStatus: [UInt8] = [0x00]
+    /// True between `TERMINATE DF` and `ACTIVATE FILE`. A real applet in this
+    /// state is wiped and deactivated: it answers `6985` to everything except
+    /// `ACTIVATE FILE` and a re-SELECT. Modelled because an interrupted reset
+    /// (TERMINATE sent, ACTIVATE never delivered) leaves exactly this behind.
+    private var isAppletTerminated = false
+    /// Status word `SELECT` answers while the applet is terminated. `6985` is
+    /// what YubiKey firmware 5.4.x reports; `6285` is the other form the
+    /// OpenPGP spec allows and that yubikit also accepts.
+    public var terminatedSelectStatusWord = StatusWord(sw1: 0x69, sw2: 0x85)
     public private(set) var signatureCounter: UInt32 = 0
     private let serial: UInt32
     private let openPGPVersion: String
@@ -129,6 +138,11 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private func respond(to command: CommandAPDU) throws -> ResponseAPDU {
         if command.ins == 0xC0 { return ResponseAPDU(data: [], status: .success) }
 
+        // A terminated DF accepts only ACTIVATE FILE and a re-SELECT.
+        if isAppletTerminated, command.ins != 0x44, command.ins != 0xA4 {
+            return status(0x69, 0x85)
+        }
+
         switch (command.ins, command.p1, command.p2) {
         case (0xA4, _, _):
             return select(command)
@@ -143,9 +157,15 @@ public final class MockYubikeyTransport: YubikeyTransport {
         case (0xE6, _, _):
             guard pw3Verified else { return status(0x69, 0x82) }
             resetApplet()
+            // TERMINATE DF wipes the applet *and* deactivates the DF; only
+            // ACTIVATE FILE brings it back.
+            isAppletTerminated = true
             return status(0x90, 0x00)
         case (0x44, _, _):
-            guard !isSelected else { return status(0x69, 0x85) }
+            // ACTIVATE FILE is accepted on a terminated DF regardless of the
+            // selection state, and is what clears the terminated state.
+            guard isAppletTerminated || !isSelected else { return status(0x69, 0x85) }
+            isAppletTerminated = false
             isSelected = true
             return status(0x90, 0x00)
         case (0x47, _, _):
@@ -159,6 +179,9 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     private func select(_ command: CommandAPDU) -> ResponseAPDU {
         guard command.data == OpenPGPCard.openPGPAID else { return status(0x6A, 0x82) }
+        guard !isAppletTerminated else {
+            return ResponseAPDU(data: [], status: terminatedSelectStatusWord)
+        }
         isSelected = true
         return ResponseAPDU(data: [0x6F, 0x00], status: .success)
     }
@@ -432,6 +455,16 @@ public final class MockYubikeyTransport: YubikeyTransport {
     }
 
     // MARK: Test affordances
+
+    /// True while the simulated applet is in the terminated state.
+    public var appletIsTerminated: Bool { isAppletTerminated }
+
+    /// Puts the simulated applet where an interrupted reset leaves it: wiped and
+    /// deactivated by `TERMINATE DF`, with `ACTIVATE FILE` never delivered.
+    public func simulateInterruptedReset() {
+        resetApplet()
+        isAppletTerminated = true
+    }
 
     /// Simulates a signature the card made without the desktop knowing, which is
     /// what the counter audit is designed to catch.

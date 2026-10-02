@@ -421,7 +421,9 @@ public final class ProvisioningCeremony {
     /// flight: that is the case where the card may have received a `PUT DATA`
     /// whose effect is unknown. An interruption while merely idling between
     /// read-only steps leaves the position alone (design.md §5.2 rule 1 forbids
-    /// blind retries, not resumption of reads).
+    /// blind retries, not resumption of reads), and a failure the card answered
+    /// with a definitive rejection has already cleared the marker in
+    /// `withMutatingStep`, because nothing was written.
     public func noteInterruption() {
         guard let inFlight = mutatingStepInFlight else { return }
         report.warnings.append(
@@ -431,13 +433,26 @@ public final class ProvisioningCeremony {
         step = .cardInventory
     }
 
-    /// Marks a mutating card operation as in flight; cleared only on success, so
-    /// a throw leaves it pending for `noteInterruption()`.
+    /// Marks a mutating card operation as in flight; cleared on success, and on a
+    /// failure that proves the card did not act — so that a throw leaves it
+    /// pending for `noteInterruption()` exactly when the card's state is
+    /// genuinely unknown.
+    ///
+    /// Without the second half, a mistyped Admin PIN at the reset step would send
+    /// the operator back to the inventory screen even though nothing was written;
+    /// with it, only a transport failure (or an unrecognised one) rewinds.
     private func withMutatingStep<T>(_ step: CeremonyStep, _ body: () async throws -> T) async throws -> T {
         mutatingStepInFlight = step
-        let result = try await body()
-        mutatingStepInFlight = nil
-        return result
+        do {
+            let result = try await body()
+            mutatingStepInFlight = nil
+            return result
+        } catch {
+            if let cardError = error as? CardError, cardError.isDefinitiveCardRejection {
+                mutatingStepInFlight = nil
+            }
+            throw error
+        }
     }
 
     // MARK: Step 1 — preflight
