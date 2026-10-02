@@ -356,10 +356,11 @@ and writable with PW3. That is the combination the feature stands on.
 
 1. `PUT DATA 0x0102` with a **194-byte** manifest produced by this repository's
    own encoder answered `9000`; `GET DATA 0x0102` returned exactly those bytes,
-   byte for byte.
+   byte for byte. Re-measured at **198 bytes** after the layout gained a master
+   fingerprint per entry (version 2, amendment 19): written, read back, identical.
 2. A **254-byte** value was accepted; a **255-byte** value answered `6A80`. The
    applet enforces the spec's 254-byte limit, so `PairingManifest` must stay
-   inside it (currently 194 bytes, asserted by a test).
+   inside it (currently 198 bytes, asserted by a test).
 3. The application data (`GET DATA 0x6E`) is **319 bytes and arrives chained**:
    the card answered `613F`, i.e. "63 more bytes available", and the full object
    only arrived after a `GET RESPONSE` (`00 C0 00 00 3F`). The shared
@@ -388,3 +389,28 @@ uses, it happens after the keys are verified, and a failure is reported and
 non-fatal: the ceremony still finishes, and the only consequence is that a later
 re-pair needs the mnemonic. A `TERMINATE DF` clears the object, so a wrong
 assumption cannot leave a card advertising keys it no longer holds.
+
+**And the read side, on the same card.** The re-pair path (§4.2 step 7c) was
+exercised against this card too, by reading the object with no PIN presented and
+running this repository's own decoder over the bytes:
+
+1. The card's reader session was dropped after the write (so no PW3 state
+   survived in the daemon), and `GET DATA 0x0102` presented **no PIN of any kind**.
+   It answered `9000` with the 198 bytes, byte for byte; in the same PIN-free
+   session the control object `0x0103` answered `6982`. Those bytes — read off the
+   card, not out of our encoder — were then handed to `PairingManifest.decode` and
+   `verify(against:)`, which parsed them and accepted them against the card's real
+   public keys and serial.
+2. The same store with **one bit flipped** was written to the card, read back the
+   same PIN-free way, and refused by the checksum before any field was trusted. A
+   store naming a different serial is refused by `.cardSerialMismatch`, and one
+   naming a different account key by `.cardKeyMismatch`.
+3. Afterwards the object was emptied (zero-length `PUT DATA 0x0102` → `9000`, and a
+   following read returns no data), so the card is as it was found.
+
+**Still to confirm on a card this app provisioned.** As in item 12 above, and for
+the same reason: the manifest was written by hand with synthetic chain codes
+because the card was provisioned by something else. Storage, the binding check, the
+refusal paths, and the read-back are measured; *whether a real wallet accepts a
+code produced from a manifest this app wrote* is not, and needs a card provisioned
+end to end by the app.

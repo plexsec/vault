@@ -126,6 +126,13 @@ final class MockSignerCard: SignerCard {
         storedPrivateKeys = [:]
         storedFingerprints = [:]
         dataObjects = [:]
+        // `TERMINATE DF` erases the whole data file, private-use objects included.
+        // A mock that kept the manifest across a reset would let a re-pair test
+        // pass on a card that in reality has nothing left to pair from. The
+        // *capability* survives, though: an applet with no private-use objects
+        // still has none after a reset, it is merely empty of data.
+        pairingManifestBytes = nil
+        inventoryResult.pairingManifest = supportsPairingManifest ? .absent : .unsupported
         inventoryResult.occupiedSlots = []
         inventoryResult.isFactoryFresh = true
         counterValue = 0

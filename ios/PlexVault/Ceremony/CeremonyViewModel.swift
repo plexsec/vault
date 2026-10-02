@@ -88,6 +88,11 @@ public final class CeremonyViewModel {
     public private(set) var pairingManifestStored: Bool?
     /// Why it did not, when it did not.
     public private(set) var pairingManifestNote: String?
+    /// Re-pair only: the key records the card's stored manifest describes, once it
+    /// has been checked against the card. Empty means the step has not run.
+    public private(set) var repairedKeys: [KeyAlgorithm: KeyRecord] = [:]
+    /// Re-pair only: the serial the manifest was read from, for the screen.
+    public private(set) var repairedFromSerial: String?
     public private(set) var pairingURStrings: [KeyAlgorithm: String] = [:]
     public private(set) var counterBaseline: UInt32?
     public private(set) var report: CeremonyReport?
@@ -427,6 +432,20 @@ public final class CeremonyViewModel {
                 if case .declined(let reason) = outcome { return reason }
                 return nil
             }
+        }
+    }
+
+    /// Reads the pairing manifest off the card, checks it, and records what it
+    /// describes. Read-only: no PIN is requested and none can be used.
+    public func readPairingManifest() async {
+        await run { ceremony in
+            _ = try await ceremony.readPairingManifestFromCard()
+            self.repairedKeys = Dictionary(
+                uniqueKeysWithValues: ceremony.report.keys.compactMap { record in
+                    record.keyAlgorithm.map { ($0, record) }
+                }
+            )
+            self.repairedFromSerial = ceremony.report.cardSerial
         }
     }
 

@@ -546,8 +546,89 @@ key in the signature slot is readable without a PIN under any circumstances
 (`GENERATE ASYMMETRIC KEY PAIR P1=0x81` is "read always"). Recorded in §10 item 13
 rather than argued away.
 
-*Not yet done, and deliberately not claimed:* the ceremony **writes** the manifest
-and verifies it; a read-only *re-pair* mode that reads it off an already
-provisioned card and rebuilds the QR codes without touching the card is the next
-change. Until it lands, the manifest is a verified, on-card record, and a re-pair
-still means running the ceremony.
+*Read side:* delivered as §4.2 step 7c in amendment 19, which also corrects the
+layout this amendment first wrote (198 bytes, version 2 — one master fingerprint
+**per entry**).
+
+## 19. Re-pair is a read-only mode, and a wallet has two master fingerprints
+
+**Sections:** §4.2 (new step 7c, step 7b's format), §10 item 13. Supersedes the
+"not yet done" note at the end of amendment 18.
+
+*Before:* amendment 18 put the pairing material on the card, but the app could
+only ever **write** it: the operator still had no way to get the codes back off a
+card that was already provisioned. The one stored number that could not carry the
+load turned out to be the master fingerprint.
+
+*After — the read side.* A third `CeremonyMode` (`rePair`) with its own five-step
+route (`cardInventory → rePairRead → pairingExport → counterBaseline → teardown`)
+reads the manifest with `GET DATA 0x0102`, reads both public keys back out of the
+card, and runs amendment 18's binding check before any code exists. No PIN is
+presented, no mnemonic is entered, and nothing is written.
+
+*Why "cannot write" is a property and not a promise.* Every mutating entry point in
+`ProvisioningCeremony` already begins with `requireCurrent(<its own step>)`, and
+this route never reaches those steps, so an accidental write would require a bug
+in the step machine rather than a mistake at a call site. The route itself is data
+(`CeremonyMode.path`) and a test asserts that **no step on it** is one of
+`isMutatingCardState`'s. A separate test calls each mutating entry point during a
+re-pair and requires `stepOutOfOrder`; another requires the destructive route to
+still be the one a provisioning ceremony takes.
+
+*The defect this work found.* Writing the read side meant comparing a re-pair's
+printed record against the one the ceremony produced, and the comparison failed on
+two fields — which is how a formatting assumption made in amendment 18 turned out
+to be wrong.
+
+A wallet has **two** master fingerprints, and they are different numbers:
+
+| key | master | source |
+|---|---|---|
+| secp256k1 (`m/44'/0'/0'/0/0`) | `5436d724` | BIP32 master |
+| Ed25519 (`m/44'/501'/0'/0'`) | `b2160abd` | SLIP-0010 master |
+
+(Those two values are for the all-zero-entropy test mnemonic and were produced by
+`tools/derive`, the independent Python oracle — not read off the app's output. The
+oracle computes them in different functions to this day:
+`describe_secp256k1` uses `fingerprint(master_key(seed))`, `describe_ed25519` uses
+`slip10_fingerprint(slip10_master_key(seed))`.)
+
+Version 1 of the manifest stored one fingerprint for the whole object, and the
+re-pair rewrote the UR builder to take that single value from the first key. That
+silently changed the **Ed25519** UR's `source-fingerprint` from the SLIP-0010
+master to the BIP32 master: a code describing an origin that does not exist, with
+no test failing, because the only place the value was asserted was the ceremony's
+own output. The fix is per-entry fingerprints, which is what a *reader* needs:
+without them a re-pair cannot reconstruct the Ed25519 code at all, since SLIP-0010
+is all-hardened and no fingerprint can be derived upward from the stored child key.
+
+So the format is version 2 — one master fingerprint inside each entry, 198 bytes
+for two entries — and version 1 objects are **refused**, not read: a v1 object
+cannot express the Ed25519 key's source fingerprint, so any code built from one
+would be wrong. The two oracle values are now pinned as literals in the pairing
+test, and the read-path test compares the whole record a re-pair prints against the
+record the ceremony printed, field for field.
+
+*Three smaller things the read side had to get right.*
+
+1. **The record's `parentFingerprintHex` is the leaf's parent, not the origin's.**
+   The UR field 8 and the printed record look like the same thing and are not: for
+   the secp256k1 export the UR names the *account* path's parent, while the record
+   names the parent of the key in the card (`…/0/0`). The second is recoverable
+   from a public key only because the pinned path is non-hardened, so
+   `cardLeafParentFingerprint(for:)` derives it rather than copying the entry's.
+2. **A re-pair must not stop on a non-zero counter.** Step 9's zero check is a
+   provisioning rule ("the card may already have signed"); a card that is in use is
+   the normal case here, so the value is recorded and the operator is told to
+   compare it against the wallet's `expected_counter`.
+3. **A reset erases the manifest — including in the mock.** `MockSignerCard.reset`
+   was not clearing the stored object, so a re-pair test could have passed on a card
+   that in reality has nothing left. It now clears it (keeping the *capability*
+   flag, since an applet without private-use objects still has none after a reset),
+   and a test asserts that a reset card cannot be re-paired.
+
+*Consequences.* An operator can pair a second wallet, or re-pair after losing the
+codes, without touching a working card. The exposure is unchanged from amendment
+18 and is recorded in §10 item 13. A card that was reset, or provisioned before
+this feature existed, has no manifest and needs the mnemonic — the app says so
+before the ceremony ends, and refuses rather than inventing codes.

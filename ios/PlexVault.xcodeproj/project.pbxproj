@@ -21,6 +21,7 @@
 		8B5D86C3F45244809462FF44 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42A82FC3A8ECF99D53C02C8F /* SetupView.swift */; };
 		9FDFBCB352CCAC63FBF913D5 /* UITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D658ED9348FB1E4C071545C1 /* UITestSupport.swift */; };
 		A4ADF89D1FD15205C30AFDFF /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */; };
+		B40BB0B42016EAAF6CF0067C /* RePairUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */; };
 		C322294583EFF8589E7BEDC8 /* CeremonyRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1249F80D8E8A09D2B2FDC701 /* CeremonyRootView.swift */; };
 		D5DEC7C15C9EE6A2216A8A68 /* SimulatedCardTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F98F251A835F19EC957B06E /* SimulatedCardTransport.swift */; };
 		E1220D992627CC16822B2D2B /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = C6834C84E5CF504892BA8E71 /* VaultKit */; };
@@ -58,6 +59,7 @@
 		C56C3AD3CE58AE21CA21E813 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		C6B653D5F78724154C95A233 /* CeremonySteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonySteps.swift; sourceTree = "<group>"; };
 		D658ED9348FB1E4C071545C1 /* UITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestSupport.swift; sourceTree = "<group>"; };
+		DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RePairUITests.swift; sourceTree = "<group>"; };
 		DAFD014B49A22E0EA73A737B /* MockYubikeyTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockYubikeyTransport.swift; sourceTree = "<group>"; };
 		E9FBCA011DBFBE29906CDC5D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F8809A236D2A19B5D0D92541 /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
@@ -117,6 +119,7 @@
 			isa = PBXGroup;
 			children = (
 				427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */,
+				DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */,
 				7029409A50A278443DA04717 /* SetupFlowUITests.swift */,
 				D658ED9348FB1E4C071545C1 /* UITestSupport.swift */,
 			);
@@ -325,6 +328,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3C3C3F780EDB321F5DE73F51 /* CeremonyFlowUITests.swift in Sources */,
+				B40BB0B42016EAAF6CF0067C /* RePairUITests.swift in Sources */,
 				68FEC43B7DE9BE061CDF0821 /* SetupFlowUITests.swift in Sources */,
 				9FDFBCB352CCAC63FBF913D5 /* UITestSupport.swift in Sources */,
 			);

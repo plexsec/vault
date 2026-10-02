@@ -19,8 +19,8 @@ design.md                     the design specification (amended; see docs/design
 ios/
   project.yml                 XcodeGen source of truth; PlexVault.xcodeproj is generated and committed
   PlexVault/                  the SwiftUI app
-  Packages/VaultKit/          pure logic: crypto (secp256k1 + Ed25519), BIP39, BIP32, SLIP-0010, addresses, BC-UR, ceremony state machine
-  Packages/YubikeyKit/        ISO 7816 / OpenPGP APDU layer + NFC, USB-C and simulated transports
+  Packages/VaultKit/          pure logic: crypto (secp256k1 + Ed25519), BIP39, BIP32, SLIP-0010, addresses, BC-UR, ceremony state machine, pairing manifest
+  Packages/YubikeyKit/        ISO 7816 / OpenPGP APDU layer + NFC, USB-C and simulated transports, private-use data objects
 tools/
   derive/                     independent Python oracle for the differential-testing fixtures
   verify.sh                   every off-hardware check in one command
@@ -29,6 +29,7 @@ tools/
   generate-bip39-wordlist.sh  regenerate the pinned wordlist (asserts its SHA-256)
 docs/
   provisioning-checklist.md   the operator procedure, including Appendix B
+                              (and the read-only re-pair route, design.md §4.2 step 7c)
   m0-hardware-verification.md the checks only real hardware can settle
   reproducible-build.md       what "reproducible" means here, and what it does not
   v1-threat-notes.md          v0.1 scope, deviations, and residual risk
@@ -41,9 +42,10 @@ docs/
 tools/verify.sh
 
 # individual pieces
-cd ios/Packages/VaultKit  && swift test      # 122 tests: crypto (RFC 8032 + SLIP-0010), BIP39/BIP32 incl. ckd_pub, addresses, BC-UR, pairing manifest, ceremony
+cd ios/Packages/VaultKit  && swift test      # 134 tests: crypto, BIP39/BIP32 incl. ckd_pub, addresses, BC-UR, pairing manifest,
+                                             #            ceremony, read-only re-pair
 cd ios/Packages/YubikeyKit && swift test     # 67 tests: APDU codec, both OpenPGP slots, private-use data objects, transports, NFC session policy, end-to-end
-cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 6 UI tests
+cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 7 UI tests
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest
 

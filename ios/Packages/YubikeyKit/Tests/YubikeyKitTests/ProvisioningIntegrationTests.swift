@@ -151,7 +151,10 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try ceremony.advance()
         let stored = try XCTUnwrap(manifest)
         XCTAssertEqual(transport.storedPairingManifest, stored.encoded())
-        XCTAssertEqual(stored.encoded().count, 194)
+        // Version 2 carries one master fingerprint per entry: a wallet has two
+        // masters (BIP32 and SLIP-0010) and they differ, so a re-pair cannot
+        // rebuild the Ed25519 code from a single stored value.
+        XCTAssertEqual(stored.encoded().count, 198)
         XCTAssertLessThanOrEqual(stored.encoded().count, PrivateUseDataObject.maximumValueLength)
         XCTAssertEqual(stored.entries.count, 2)
         XCTAssertTrue(

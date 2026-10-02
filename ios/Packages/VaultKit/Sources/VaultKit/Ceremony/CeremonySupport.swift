@@ -368,6 +368,10 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case notStarted = 0
     case preflight
     case cardInventory
+    /// Read-only re-pair: reads the manifest out of the card and checks it
+    /// against the keys the card reports. Replaces the whole destructive path in
+    /// `CeremonyMode.rePair` — no reset, no PINs, no writes.
+    case rePairRead
     case reset
     case pinProvisioning
     case policy
@@ -394,6 +398,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .notStarted: return "Not started"
         case .preflight: return "Preflight and consent"
         case .cardInventory: return "Inspect YubiKey"
+        case .rePairRead: return "Read the pairing manifest"
         case .reset: return "Reset OpenPGP applet"
         case .pinProvisioning: return "Set PINs"
         case .policy: return "Apply touch and PIN policy"
@@ -425,6 +430,42 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
     case freshGeneration
     /// Recovery/restore of an existing mnemonic (design.md §8.2, §8.3 drill).
     case restoreFromMnemonic
+    /// Re-pair from the card alone: reads the manifest the provisioning ceremony
+    /// wrote into the private-use data object and reproduces the pairing codes
+    /// **without** resetting the applet or asking for the mnemonic.
+    ///
+    /// This mode cannot write: every mutating entry point is gated on the step
+    /// that puts it in the ceremony, and this mode never reaches those steps.
+    case rePair
+
+    /// The steps this mode visits, in order.
+    ///
+    /// The UI reads it for its progress indicator, and — more importantly — it is
+    /// the mode's central promise expressed as data that a test can assert on: the
+    /// re-pair path contains no mutating step, because the operator chose this mode
+    /// precisely so that nothing would be written.
+    public var path: [CeremonyStep] {
+        switch self {
+        case .freshGeneration, .restoreFromMnemonic:
+            return [
+                .cardInventory, .reset, .pinProvisioning, .policy, .entropy, .mnemonic,
+                .derivation, .keyImport, .readBackCheck, .pairingManifest, .pairingExport,
+                .counterBaseline, .teardown,
+            ]
+        case .rePair:
+            return [.cardInventory, .rePairRead, .pairingExport, .counterBaseline, .teardown]
+        }
+    }
+
+    /// Short name for the operator. The app shows longer copy in the mode picker;
+    /// this is what error messages use, so it must stay recognisable on its own.
+    public var displayName: String {
+        switch self {
+        case .freshGeneration: return "new wallet"
+        case .restoreFromMnemonic: return "restore"
+        case .rePair: return "re-pair"
+        }
+    }
 }
 
 public enum CeremonyError: Swift.Error, Equatable {
@@ -450,6 +491,11 @@ public enum CeremonyError: Swift.Error, Equatable {
     case unsupportedAlgorithm(KeyAlgorithm, String)
     case unsupportedAppletVersion(version: String)
     case systemEntropyUnavailable(Int32)
+    /// Re-pair was asked for, but the card has nothing usable to pair from.
+    case noPairingManifest(reason: String)
+    /// A manifest was read but does not describe the keys in this card.
+    case pairingManifestRejected(reason: String)
+    case wrongCeremonyMode(expected: CeremonyMode, actual: CeremonyMode)
 
     public var userFacingDescription: String {
         switch self {
@@ -485,6 +531,15 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "Restore is not possible here: \(detail)."
         case .unsupportedAlgorithm(let algorithm, let detail):
             return "\(algorithm.displayName) cannot be provisioned on this YubiKey: \(detail)."
+        case .noPairingManifest(let reason):
+            return "This YubiKey has no pairing manifest to read: \(reason) "
+                + "Re-pairing it needs the mnemonic, so run the provisioning ceremony."
+        case .pairingManifestRejected(let reason):
+            return "The pairing manifest on this YubiKey was not used: \(reason) "
+                + "Pairing from it would give the wallet keys this card cannot sign for."
+        case .wrongCeremonyMode(let expected, let actual):
+            return "This ceremony is running in \(actual.displayName) mode; that action belongs to "
+                + "\(expected.displayName) mode."
         case .unsupportedAppletVersion(let version):
             return "This YubiKey's OpenPGP applet is version \(version), which does not support secp256k1 or Ed25519. A YubiKey with applet 3.4 or newer (firmware 5.2.3+) is required, and the firmware cannot be upgraded."
         case .systemEntropyUnavailable(let status):

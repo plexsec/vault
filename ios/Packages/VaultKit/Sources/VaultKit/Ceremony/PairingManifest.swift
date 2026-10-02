@@ -103,7 +103,14 @@ public enum PrivateUseDataObject: UInt16, CaseIterable, Sendable {
 public struct PairingManifest: Equatable, Sendable {
     /// Bumped if the encoding below ever changes; a reader must refuse a version
     /// it does not know rather than guess at the layout.
-    public static let currentVersion: UInt8 = 1
+    ///
+    /// Version 2 moved the master fingerprint into each entry. Version 1 held one
+    /// for the whole manifest, which cannot express the truth: a wallet has a
+    /// BIP32 master and a SLIP-0010 master, and they are different numbers
+    /// (`5436d724` vs `b2160abd` for the test mnemonic, per tools/derive). A v1
+    /// object is refused rather than read, because a code built from it would name
+    /// the wrong source fingerprint for the Ed25519 key.
+    public static let currentVersion: UInt8 = 2
 
     public struct Entry: Equatable, Sendable {
         public let algorithm: KeyAlgorithm
@@ -111,6 +118,11 @@ public struct PairingManifest: Equatable, Sendable {
         public let publicKey: [UInt8]
         public let chainCode: [UInt8]
         public let parentFingerprint: [UInt8]
+        /// The master fingerprint **this key's** UR names as its
+        /// `source-fingerprint`. Per key, not per wallet: secp256k1 keys are
+        /// measured against the BIP32 master and Ed25519 keys against the
+        /// SLIP-0010 master, and those are different numbers.
+        public let masterFingerprint: [UInt8]
         /// The path written into the UR's `origin` field.
         public let originPath: DerivationPath
         /// `children` — present only when the exported key is an ancestor of the
@@ -123,6 +135,7 @@ public struct PairingManifest: Equatable, Sendable {
             publicKey: [UInt8],
             chainCode: [UInt8],
             parentFingerprint: [UInt8],
+            masterFingerprint: [UInt8],
             originPath: DerivationPath,
             childrenPath: DerivationPath?
         ) {
@@ -130,6 +143,7 @@ public struct PairingManifest: Equatable, Sendable {
             self.publicKey = publicKey
             self.chainCode = chainCode
             self.parentFingerprint = parentFingerprint
+            self.masterFingerprint = masterFingerprint
             self.originPath = originPath
             self.childrenPath = childrenPath
         }
@@ -139,12 +153,15 @@ public struct PairingManifest: Equatable, Sendable {
         /// manifest", not "abort a ceremony whose keys are already in the card".
         public init?(export: PairingExport) {
             guard let parentFingerprint = try? Hex.decode(export.parentFingerprintHex),
-                  parentFingerprint.count == 4
+                  parentFingerprint.count == 4,
+                  let masterFingerprint = try? Hex.decode(export.masterFingerprintHex),
+                  masterFingerprint.count == 4
             else { return nil }
             self.algorithm = export.algorithm
             self.publicKey = export.publicKey
             self.chainCode = export.chainCode
             self.parentFingerprint = parentFingerprint
+            self.masterFingerprint = masterFingerprint
             self.originPath = export.path
             self.childrenPath = export.childrenPath
         }
@@ -153,20 +170,15 @@ public struct PairingManifest: Equatable, Sendable {
     public let version: UInt8
     /// The card this manifest was written for, from the OpenPGP application data.
     public let cardSerial: [UInt8]
-    /// The BIP32 master fingerprint, which every exported key names as its
-    /// `source-fingerprint`. Keystone refuses a key without one.
-    public let masterFingerprint: [UInt8]
     public let entries: [Entry]
 
     public init(
         version: UInt8 = PairingManifest.currentVersion,
         cardSerial: [UInt8],
-        masterFingerprint: [UInt8],
         entries: [Entry]
     ) {
         self.version = version
         self.cardSerial = cardSerial
-        self.masterFingerprint = masterFingerprint
         self.entries = entries
     }
 
@@ -186,11 +198,11 @@ public struct PairingManifest: Equatable, Sendable {
     /// Fixed-layout, checksummed, self-describing.
     ///
     /// ```text
-    /// version(1) | cardSerial(4) | masterFingerprint(4) |
-    ///   entry* | checksum(4)
+    /// version(1) | cardSerial(4) | entry* | checksum(4)
     ///
     /// entry := algorithm(1) | pubkeyLen(1) | pubkey | chainCode(32) |
-    ///          parentFingerprint(4) | originCount(1) | origin(4 each) |
+    ///          parentFingerprint(4) | masterFingerprint(4) |
+    ///          originCount(1) | origin(4 each) |
     ///          childrenCount(1) | children(4 each)
     /// ```
     ///
@@ -199,18 +211,18 @@ public struct PairingManifest: Equatable, Sendable {
     /// read back by a *later* build: a future version that moves a path must
     /// still re-pair a card written by this one.
     ///
-    /// Two entries encode to 194 bytes, comfortably inside the 254-byte limit;
+    /// Two entries encode to 198 bytes, comfortably inside the 254-byte limit;
     /// `PairingManifestTests` asserts that a full manifest still fits.
     public func encoded() -> [UInt8] {
         var out: [UInt8] = [version]
         out += cardSerial
-        out += masterFingerprint
         for entry in entries {
             out.append(entry.algorithm.manifestTag)
             out.append(UInt8(entry.publicKey.count))
             out += entry.publicKey
             out += entry.chainCode
             out += entry.parentFingerprint
+            out += entry.masterFingerprint
             out.append(UInt8(entry.originPath.components.count))
             for component in entry.originPath.components {
                 out += Self.uint32Bytes(component.index)
@@ -226,7 +238,7 @@ public struct PairingManifest: Equatable, Sendable {
     }
 
     public static func decode(_ bytes: [UInt8]) throws -> PairingManifest {
-        guard bytes.count >= 4 + 1 + 4 + 4 + 4 else { throw DecodeError.tooShort(bytes.count) }
+        guard bytes.count >= 4 + 1 + 4 + 4 else { throw DecodeError.tooShort(bytes.count) }
 
         let body = Array(bytes.dropLast(4))
         let checksum = Array(bytes.suffix(4))
@@ -239,7 +251,6 @@ public struct PairingManifest: Equatable, Sendable {
         let version = try cursor.byte()
         guard version == PairingManifest.currentVersion else { throw DecodeError.unknownVersion(version) }
         let serial = try cursor.bytes(4)
-        let masterFingerprint = try cursor.bytes(4)
 
         var entries: [Entry] = []
         while cursor.remaining > 0 {
@@ -251,6 +262,7 @@ public struct PairingManifest: Equatable, Sendable {
             let publicKey = try cursor.bytes(publicKeyLength)
             let chainCode = try cursor.bytes(32)
             let parentFingerprint = try cursor.bytes(4)
+            let masterFingerprint = try cursor.bytes(4)
             let originPath = DerivationPath(components: try cursor.path())
             let childrenComponents = try cursor.path()
             let childrenPath = childrenComponents.isEmpty ? nil : DerivationPath(components: childrenComponents)
@@ -269,6 +281,7 @@ public struct PairingManifest: Equatable, Sendable {
                     publicKey: publicKey,
                     chainCode: chainCode,
                     parentFingerprint: parentFingerprint,
+                    masterFingerprint: masterFingerprint,
                     originPath: originPath,
                     childrenPath: childrenPath
                 )
@@ -276,12 +289,7 @@ public struct PairingManifest: Equatable, Sendable {
         }
         guard !entries.isEmpty else { throw DecodeError.malformed("no key entries") }
 
-        return PairingManifest(
-            version: version,
-            cardSerial: serial,
-            masterFingerprint: masterFingerprint,
-            entries: entries
-        )
+        return PairingManifest(version: version, cardSerial: serial, entries: entries)
     }
 
     // MARK: - Verification
@@ -307,19 +315,39 @@ public struct PairingManifest: Equatable, Sendable {
     public func cardLeafPublicKey(for algorithm: KeyAlgorithm) throws -> [UInt8] {
         guard let entry = entry(for: algorithm) else { throw VerificationError.missingEntry(algorithm) }
         guard let children = entry.childrenPath else { return entry.publicKey }
+        do {
+            return try node(for: entry).derived(children).publicKey
+        } catch {
+            throw VerificationError.derivationFailed(algorithm)
+        }
+    }
 
-        let node = try ExtendedPublicKey(
+    /// The fingerprint of the leaf key's *parent* — what the printed record shows
+    /// beside the leaf path, since BIP32 stores a parent fingerprint and not a
+    /// child one.
+    ///
+    /// `nil` when the entry is already the leaf (Ed25519), where the entry's own
+    /// `parentFingerprint` is the answer.
+    public func cardLeafParentFingerprint(for algorithm: KeyAlgorithm) throws -> [UInt8]? {
+        guard let entry = entry(for: algorithm) else { throw VerificationError.missingEntry(algorithm) }
+        guard let children = entry.childrenPath, !children.components.isEmpty else { return nil }
+        do {
+            let parent = DerivationPath(components: Array(children.components.dropLast()))
+            return try node(for: entry).derived(parent).fingerprint()
+        } catch {
+            throw VerificationError.derivationFailed(algorithm)
+        }
+    }
+
+    /// The export's origin node, as an extended public key.
+    private func node(for entry: Entry) throws -> ExtendedPublicKey {
+        try ExtendedPublicKey(
             publicKey: entry.publicKey,
             chainCode: entry.chainCode,
             depth: UInt8(min(entry.originPath.components.count, 255)),
             parentFingerprint: entry.parentFingerprint,
             childNumber: entry.originPath.components.last?.index ?? 0
         )
-        do {
-            return try node.derived(children).publicKey
-        } catch {
-            throw VerificationError.derivationFailed(algorithm)
-        }
     }
 
     /// Checks the manifest against the keys the card actually reports.
@@ -433,6 +461,28 @@ extension PairingManifest {
                 )
             }
             return components
+        }
+    }
+}
+
+// MARK: - Operator-facing reasons
+
+extension PairingManifest.VerificationError {
+    /// These reasons are shown verbatim when a re-pair refuses to produce codes,
+    /// which is the moment the operator has to decide what to do instead — so
+    /// "why" matters more than the case name.
+    public var userFacingDescription: String {
+        switch self {
+        case .missingEntry(let algorithm):
+            return "it does not describe the \(algorithm.displayName) key."
+        case .cardSerialMismatch(let manifest, let card):
+            return "it was written for a different YubiKey (serial \(manifest); this card is \(card))."
+        case .cardKeyMismatch(let algorithm, let expected, let found):
+            return "it describes a \(algorithm.displayName) key that this card does not hold "
+                + "(the manifest derives \(expected), the card reports \(found))."
+        case .derivationFailed(let algorithm):
+            return "the pinned child of its \(algorithm.displayName) key cannot be derived from a public "
+                + "key, so it cannot be checked against this card."
         }
     }
 }

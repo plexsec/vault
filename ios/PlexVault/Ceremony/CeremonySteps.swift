@@ -40,10 +40,14 @@ struct InventoryStepView: View {
 
     private var hasInventory: Bool { viewModel.inventory != nil }
 
+    private var isRePair: Bool { viewModel.mode == .rePair }
+
     var body: some View {
         StepScaffold(
-            why: "Read the card before changing anything. This records the applet version, the serial number, which key slots are already occupied, and the signature-counter baseline in your provisioning record.",
-            caution: viewModel.cardHoldsAnyKey
+            why: isRePair
+                ? "Read the card before trusting anything on it. This records the applet version and serial number, and confirms both key slots are occupied — the manifest is only worth reading from a card that holds the keys it describes."
+                : "Read the card before changing anything. This records the applet version, the serial number, which key slots are already occupied, and the signature-counter baseline in your provisioning record.",
+            caution: !isRePair && viewModel.cardHoldsAnyKey
                 ? "This YubiKey already holds a key. Continuing will erase it."
                 : nil,
             actionTitle: hasInventory ? "Continue" : "Read YubiKey",
@@ -76,7 +80,9 @@ struct InventoryStepView: View {
                     .foregroundStyle(.orange)
                 }
 
-                Text("Check the serial number against the key you intend to provision, then continue.")
+                Text(isRePair
+                     ? "Check the serial number against the card you intend to re-pair. Nothing will be written to it."
+                     : "Check the serial number against the key you intend to provision, then continue.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -527,6 +533,58 @@ struct ReadBackStepView: View {
                 }
             } else {
                 Text("No PIN is required for this read. The card returns public keys, which are public data.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Re-pair: read the manifest off the card
+
+/// The read-only mode's whole surface. No PIN, no mnemonic, no writes: the card
+/// already holds everything a wallet needs, because the provisioning ceremony put
+/// it there — and the codes are only shown after the manifest has been checked
+/// against the keys the card reports for itself.
+struct RepairStepView: View {
+    @Bindable var viewModel: CeremonyViewModel
+
+    var body: some View {
+        StepScaffold(
+            why: "Reads the pairing keys out of the YubiKey itself — the account-level public keys and chain codes a desktop wallet needs — and checks them against the keys the card reports for its own slots. Nothing is written and the mnemonic is not needed, so the keys stay in the card.",
+            actionTitle: viewModel.repairedKeys.isEmpty ? "Read pairing manifest" : "Continue",
+            isBusy: viewModel.busy,
+            action: {
+                if viewModel.repairedKeys.isEmpty {
+                    Task { await viewModel.readPairingManifest() }
+                } else {
+                    viewModel.advance()
+                }
+            }
+        ) {
+            if !viewModel.repairedKeys.isEmpty {
+                Label("The stored manifest matches the keys in this YubiKey.", systemImage: "checkmark.seal.fill")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+                ForEach(KeyAlgorithm.allCases, id: \.self) { algorithm in
+                    if let key = viewModel.repairedKeys[algorithm] {
+                        KeySection(
+                            title: algorithm.displayName,
+                            subtitle: KeySlot(rawValue: key.slot)?.displayName ?? key.slot,
+                            rows: [
+                                ("Source fingerprint", key.masterFingerprintHex ?? "—"),
+                                ("Pairing path", key.pairingPath ?? "—"),
+                                ("Key in the card", key.publicKeyHex ?? "—"),
+                                ("Identity from that key", key.identity),
+                            ]
+                        )
+                    }
+                }
+                if let note = viewModel.repairedFromSerial {
+                    Text("Read from YubiKey \(note). The card has not been modified; the next screen produces the pairing codes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("This read needs no PIN. If the card has no stored manifest — it was reset, or provisioned before the manifest existed — there is nothing to re-pair from, and the ceremony with the mnemonic is the only way back.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

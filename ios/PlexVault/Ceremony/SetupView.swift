@@ -192,6 +192,7 @@ struct SetupView: View {
         switch mode {
         case .freshGeneration: return "Generate a new wallet"
         case .restoreFromMnemonic: return "Restore from a mnemonic"
+        case .rePair: return "Re-pair this YubiKey"
         }
     }
 
@@ -201,6 +202,8 @@ struct SetupView: View {
             return "Creates new entropy and a new 24-word mnemonic."
         case .restoreFromMnemonic:
             return "Re-imports an existing mnemonic into a fresh YubiKey. The words are typed into this app, so only do this on a device you trust."
+        case .rePair:
+            return "Reads the pairing codes back off a YubiKey this app has already provisioned. Nothing is written and no mnemonic is needed, so the keys stay in the card."
         }
     }
 

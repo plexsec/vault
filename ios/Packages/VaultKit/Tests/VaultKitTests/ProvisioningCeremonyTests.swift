@@ -199,12 +199,12 @@ final class ProvisioningCeremonyTests: XCTestCase {
             // The manifest write and the read-back that proves it landed. The
             // byte count is asserted so a format change that would overflow the
             // applet's 254-byte private-use object fails here, not on a card.
-            .writePairingManifest(byteCount: 194),
+            .writePairingManifest(byteCount: 198),
             .readPairingManifest,
             .signatureCounter,
         ])
         XCTAssertEqual(ceremony.report.pairingManifestStored, true)
-        XCTAssertEqual(card.pairingManifestBytes?.count, 194)
+        XCTAssertEqual(card.pairingManifestBytes?.count, 198)
     }
 
     /// The two keys must be independent: the same mnemonic at one path must not
@@ -534,6 +534,12 @@ final class ProvisioningCeremonyTests: XCTestCase {
                        "children must pin the derivation to the leaf, with no wildcard")
         XCTAssertEqual(secp256k1.useInfo?.type, 0)
         XCTAssertFalse(secp256k1.isEd25519)
+        // `source-fingerprint` is per key, and this is the assertion that says so:
+        // the secp256k1 key names the BIP32 master, the Ed25519 key below names
+        // the SLIP-0010 master, and the two differ. Both values were produced by
+        // the independent oracle (tools/derive) for this mnemonic, so this is a
+        // cross-implementation check and not a reading of the app's own output.
+        XCTAssertEqual(secp256k1.origin?.sourceFingerprint, 0x5436_d724)
         // Field 9 is not decorative: MetaMask's `getAccountLabel()` does
         // `name[0].toUpperCase()` on the keyring name, which is only ever
         // restored from this field and is otherwise left `undefined` by
@@ -549,6 +555,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(ed25519.useInfo?.type, 501)
         XCTAssertTrue(ed25519.isEd25519)
         XCTAssertEqual(ed25519.name, PairingPolicy.deviceName)
+        // The SLIP-0010 master, from the oracle. If this ever equals the
+        // secp256k1 value above, one of the two keys is naming a master it does
+        // not belong to, and a wallet that trusts it will derive from nothing.
+        XCTAssertEqual(ed25519.origin?.sourceFingerprint, 0xb216_0abd)
 
         XCTAssertTrue(ceremony.report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.report.warnings.contains(PairingPolicy.chainCodeWarning))

@@ -46,7 +46,7 @@ struct CeremonyRootView: View {
                         Button("Abort", role: .destructive) { viewModel.abort() }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        StepProgressBadge(step: viewModel.step)
+                        StepProgressBadge(step: viewModel.step, mode: viewModel.mode)
                     }
                 }
             }
@@ -90,6 +90,8 @@ struct CeremonyRootView: View {
         switch viewModel.step {
         case .notStarted, .preflight, .cardInventory:
             InventoryStepView(viewModel: viewModel)
+        case .rePairRead:
+            RepairStepView(viewModel: viewModel)
         case .reset:
             ResetStepView(viewModel: viewModel)
         case .pinProvisioning:
@@ -234,10 +236,15 @@ struct SessionBanner: View {
 
 struct StepProgressBadge: View {
     let step: CeremonyStep
+    /// The progress is the mode's own path, not the union of all steps: re-pair
+    /// visits five of them, and counting the reset it will never run would tell
+    /// the operator they are at the start of a long ceremony.
+    let mode: CeremonyMode
 
     var body: some View {
-        let total = CeremonyStep.allCases.count - 2
-        let current = max(0, step.rawValue - 1)
+        let path = mode.path
+        let total = max(1, path.count)
+        let current = (path.firstIndex(of: step) ?? 0) + 1
         Text("\(min(current, total))/\(total)")
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)

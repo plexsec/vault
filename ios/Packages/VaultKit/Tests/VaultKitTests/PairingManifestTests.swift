@@ -28,13 +28,13 @@ final class PairingManifestTests: XCTestCase {
 
         return PairingManifest(
             cardSerial: serial,
-            masterFingerprint: try master.fingerprint(),
             entries: [
                 .init(
                     algorithm: .secp256k1,
                     publicKey: try account.publicKey(),
                     chainCode: account.chainCode,
                     parentFingerprint: account.parentFingerprint,
+                    masterFingerprint: try master.fingerprint(),
                     originPath: accountPath,
                     childrenPath: childrenPath
                 ),
@@ -43,6 +43,7 @@ final class PairingManifestTests: XCTestCase {
                     publicKey: try ed25519.publicKey(),
                     chainCode: ed25519.chainCode,
                     parentFingerprint: ed25519.parentFingerprint,
+                    masterFingerprint: try ed25519Master.fingerprint(),
                     originPath: ed25519Path,
                     childrenPath: nil
                 ),
@@ -83,7 +84,7 @@ final class PairingManifestTests: XCTestCase {
         )
         // Asserted exactly, not just bounded: a format change that grows this
         // silently eats the headroom the applet gives us.
-        XCTAssertEqual(encoded.count, 194)
+        XCTAssertEqual(encoded.count, 198)
     }
 
     func testEncodingRoundTrips() throws {
@@ -93,7 +94,14 @@ final class PairingManifestTests: XCTestCase {
 
         XCTAssertEqual(decoded, original)
         XCTAssertEqual(decoded.cardSerial, [0x00, 0xAB, 0xCD, 0xEF])
-        XCTAssertEqual(decoded.masterFingerprint.count, 4)
+        XCTAssertEqual(decoded.entry(for: .secp256k1)?.masterFingerprint.count, 4)
+        // Per key, and different: the secp256k1 entry names the BIP32 master, the
+        // Ed25519 entry the SLIP-0010 master. A wallet has both, and a UR that
+        // names the wrong one describes an origin that does not exist.
+        XCTAssertNotEqual(
+            decoded.entry(for: .secp256k1)?.masterFingerprint,
+            decoded.entry(for: .ed25519)?.masterFingerprint
+        )
         XCTAssertEqual(decoded.entry(for: .secp256k1)?.originPath.description, "m/44'/0'/0'")
         XCTAssertEqual(decoded.entry(for: .secp256k1)?.childrenPath?.description, "m/0/0")
         XCTAssertNil(decoded.entry(for: .ed25519)?.childrenPath, "Ed25519 has no derivable children")
@@ -109,12 +117,12 @@ final class PairingManifestTests: XCTestCase {
                 .derived(try DerivationPath("m/44'/0'/0'")).publicKey(),
             chainCode: [UInt8](repeating: 1, count: 32),
             parentFingerprint: [0xDE, 0xAD, 0xBE, 0xEF],
+            masterFingerprint: [5, 6, 7, 8],
             originPath: try DerivationPath("m/44'/0'/0'"),
             childrenPath: try DerivationPath("m/0/0")
         )
         let manifest = PairingManifest(
             cardSerial: [1, 2, 3, 4],
-            masterFingerprint: [5, 6, 7, 8],
             entries: [entry]
         )
 
@@ -123,6 +131,7 @@ final class PairingManifestTests: XCTestCase {
         XCTAssertEqual(decoded.entries[0].originPath.components, entry.originPath.components)
         XCTAssertEqual(decoded.entries[0].originPath.indices, [0x8000_002C, 0x8000_0000, 0x8000_0000])
         XCTAssertEqual(decoded.entries[0].parentFingerprint, [0xDE, 0xAD, 0xBE, 0xEF])
+        XCTAssertEqual(decoded.entries[0].masterFingerprint, [5, 6, 7, 8])
     }
 
     func testCorruptBytesAreRejectedRatherThanGuessedAt() throws {
@@ -252,7 +261,6 @@ final class PairingManifestTests: XCTestCase {
         let full = try manifest(seedHex: seedA)
         let single = PairingManifest(
             cardSerial: full.cardSerial,
-            masterFingerprint: full.masterFingerprint,
             entries: [try XCTUnwrap(full.entry(for: .secp256k1))]
         )
 

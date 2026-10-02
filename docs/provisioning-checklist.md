@@ -63,6 +63,10 @@ step completed rather than trusting the flow.
         - Public key from this device: `______________________________________`
 - [ ] **Import** completed without a second touch request
 - [ ] **Read-back** verified: the YubiKey's public key matches the derived key ✔
+- [ ] **Pairing manifest stored** on the card, and read back byte-for-byte ✔
+      - [ ] If the app instead warns that it could **not** be stored, write down
+            that re-pairing this card later will need the mnemonic. The keys and
+            the mnemonic are unaffected — only the shortcut is missing
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
       - [ ] The wallet shows the same Ed25519 public key as the app ✔
@@ -74,6 +78,37 @@ step completed rather than trusting the flow.
             audit below covers secp256k1 chains only
 - [ ] **Teardown** — secrets wiped, provisioning record saved
 - [ ] Restart the app before any further ceremony
+
+## Part 3b — Re-pairing later (read-only, no reset)
+
+Use this when the pairing codes are lost, or when a second desktop wallet has to
+be paired, and the YubiKey is already provisioned. It is the mode to prefer over
+re-running Part 3: **nothing is written and the card is not reset**, so the keys
+stay in the card. It is also the recovery route when the app has been reinstalled
+(the app stores nothing, so a fresh install can still re-pair).
+
+- [ ] Confirm the card is the one you think it is (serial from Part 3:
+      `________________`)
+- [ ] Choose **Re-pair this YubiKey** in the app
+- [ ] **Card inventory** read — the app must *not* warn about erasing a key; if it
+      does, you are in the provisioning flow, not this one. Stop
+- [ ] **Read pairing manifest** — no PIN is asked for. This is expected: the object
+      is readable without one by design
+      - [ ] The app shows *"The stored manifest matches the keys in this YubiKey"*.
+            **If it refuses instead, do not proceed**: the manifest is stale, was
+            written for another card, or the card was reset. Re-pairing means
+            re-running Part 3 with the steel plate, which resets the card
+      - [ ] The serial shown matches the card in your hand
+- [ ] **Pairing** — the same acknowledgements as Part 3: two QRs, addresses
+      compared against the wallet
+- [ ] **Counter** — the value is *recorded*, not required to be 0 here. Compare it
+      against the counter your wallet reports for this key before sending funds
+- [ ] Nothing to restore afterwards: no secrets were entered, and the card was not
+      modified
+
+> A card that has been **reset** has no manifest — `TERMINATE DF` erases it with the
+> keys — so it cannot be re-paired from old material. That is the intended way to
+> "forget" a pairing.
 
 ## Part 4 — Afterwards
 

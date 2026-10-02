@@ -149,6 +149,11 @@ public struct PairingExport: Equatable, Sendable {
     public let chainCode: [UInt8]
     /// `parent-fingerprint` (field 8).
     public let parentFingerprintHex: String
+    /// `source-fingerprint` inside `crypto-keypath` (field 6). Per key, because a
+    /// wallet has two masters: secp256k1 keys are measured against the BIP32
+    /// master, Ed25519 keys against the SLIP-0010 master (tools/derive computes
+    /// both, and they differ).
+    public let masterFingerprintHex: String
     /// `children` keypath (field 7), relative to `path`. Non-nil for secp256k1:
     /// the fixed path (`0/0`) that reaches the card's leaf, with no wildcard, so
     /// a wallet enumerating account indices cannot offer a sibling.
@@ -367,7 +372,18 @@ public final class ProvisioningCeremony {
             if inventory.isDefinitelyUnsupported {
                 throw CeremonyError.unsupportedAppletVersion(version: inventory.openPGPVersion)
             }
-            step = .reset
+            // The one place the two ceremonies diverge: re-pair reads what is
+            // already in the card, provisioning overwrites it.
+            step = mode == .rePair ? .rePairRead : .reset
+
+        case .rePairRead:
+            guard pairingManifest != nil else {
+                throw CeremonyError.stepIncomplete(
+                    step: .rePairRead,
+                    detail: "the pairing manifest has not been read off the card yet"
+                )
+            }
+            step = .pairingExport
 
         case .reset, .pinProvisioning, .policy, .keyImport:
             // Action-only steps advance themselves once the card accepts them.
@@ -825,6 +841,7 @@ public final class ProvisioningCeremony {
             publicKey: try accountNode.publicKey(),
             chainCode: accountNode.chainCode,
             parentFingerprintHex: Hex.encode(accountNode.parentFingerprint),
+            masterFingerprintHex: Hex.encode(try master.fingerprint()),
             childrenPath: DerivationPath(
                 components: Array(DerivationPath.secp256k1Default.components.dropFirst(accountPath.components.count))
             ),
@@ -867,6 +884,7 @@ public final class ProvisioningCeremony {
             publicKey: publicKey,
             chainCode: node.chainCode,
             parentFingerprintHex: Hex.encode(node.parentFingerprint),
+            masterFingerprintHex: Hex.encode(try master.fingerprint()),
             childrenPath: nil,
             isAccountLevel: false
         )
@@ -1075,7 +1093,12 @@ public final class ProvisioningCeremony {
     /// Records that the manifest is not on the card, says why, and lets the step
     /// advance. Every declining path in `writePairingManifest` goes through here,
     /// so none of them can forget to record the outcome and strand the operator.
-    @discardableResult
+    private func requireMode(_ expected: CeremonyMode) throws {
+        guard mode == expected else {
+            throw CeremonyError.wrongCeremonyMode(expected: expected, actual: mode)
+        }
+    }
+
     private func decline(_ reason: String) -> PairingManifest? {
         addWarning(reason)
         pairingManifestOutcome = .declined(reason: reason)
@@ -1085,15 +1108,10 @@ public final class ProvisioningCeremony {
 
     /// The public material the card needs in order to be re-paired later.
     private func makePairingManifest() -> PairingManifest? {
-        guard let keys = derivedKeys else { return nil }
+        guard derivedKeys != nil else { return nil }
         let exports = KeyAlgorithm.allCases.compactMap { pairingExports[$0] }
         guard exports.count == KeyAlgorithm.allCases.count else { return nil }
 
-        // The master fingerprint is per-mnemonic, not per-key; every summary
-        // carries the same value.
-        guard let master = keys.all.first?.masterFingerprintHex,
-              let masterBytes = try? Hex.decode(master), masterBytes.count == 4
-        else { return nil }
         // The serial is what ties a manifest to one card, so a manifest copied to
         // another YubiKey is refused with a reason the operator can act on.
         guard let serial = inventory?.serial,
@@ -1102,11 +1120,7 @@ public final class ProvisioningCeremony {
         let entries = exports.compactMap(PairingManifest.Entry.init(export:))
         guard entries.count == exports.count else { return nil }
 
-        return PairingManifest(
-            cardSerial: serialBytes,
-            masterFingerprint: masterBytes,
-            entries: entries
-        )
+        return PairingManifest(cardSerial: serialBytes, entries: entries)
     }
 
     /// What the card reports about its own keys, for a manifest check.
@@ -1128,25 +1142,26 @@ public final class ProvisioningCeremony {
         chainCodeAcknowledged: Bool
     ) throws -> [KeyAlgorithm: UR] {
         try requireCurrent(.pairingExport)
-        guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
+        guard !pairingExports.isEmpty else { throw CeremonyError.keysNotDerived }
         guard chainCodeAcknowledged else { throw CeremonyError.pairingPolicyNotAcknowledged }
 
         var urs: [KeyAlgorithm: UR] = [:]
-        for summary in keys.all {
-            guard let export = pairingExports[summary.algorithm] else {
+        for algorithm in KeyAlgorithm.allCases {
+            guard let export = pairingExports[algorithm] else {
                 throw CeremonyError.keysNotDerived
             }
-            let origin = URKeyPath(
-                path: export.path,
-                sourceFingerprint: UInt32(summary.masterFingerprintHex.prefix(8), radix: 16) ?? 0
-            )
+            // Per key, not per ceremony: the two keys name different masters.
+            guard let sourceFingerprint = UInt32(export.masterFingerprintHex.prefix(8), radix: 16) else {
+                throw CeremonyError.keysNotDerived
+            }
+            let origin = URKeyPath(path: export.path, sourceFingerprint: sourceFingerprint)
             // `children` is written only when the export is an ancestor of the
             // leaf: it pins a deriving wallet to the card's one signable key.
             let children = export.childrenPath.map { URKeyPath(path: $0) }
             let key = HDKey(
                 keyData: export.publicKey,
                 chainCode: export.chainCode,
-                useInfo: CoinInfo(type: summary.algorithm.slip44CoinType, network: 0),
+                useInfo: CoinInfo(type: algorithm.slip44CoinType, network: 0),
                 origin: origin,
                 children: children,
                 parentFingerprint: UInt32(export.parentFingerprintHex.prefix(8), radix: 16),
@@ -1155,8 +1170,8 @@ public final class ProvisioningCeremony {
                 name: PairingPolicy.deviceName
             )
             let ur = try key.ur(style: style)
-            urs[summary.algorithm] = ur
-            if let index = report.keys.firstIndex(where: { $0.algorithm == summary.algorithm.rawValue }) {
+            urs[algorithm] = ur
+            if let index = report.keys.firstIndex(where: { $0.algorithm == algorithm.rawValue }) {
                 report.keys[index].pairingURType = ur.type
                 report.keys[index].pairingIncludedChainCode = true
                 report.keys[index].pairingPath = export.path.description
@@ -1177,6 +1192,147 @@ public final class ProvisioningCeremony {
 
     // MARK: Step 12 — counter baseline (design.md §4.2 step 9)
 
+    /// Read-only re-pair: recovers the pairing codes from the card alone.
+    ///
+    /// Nothing is written, no PIN is presented and the applet is not reset — the
+    /// keys stay where they are, which is the only reason the manifest was stored
+    /// in the first place. What comes back is the same public material the
+    /// provisioning ceremony exported, so a wallet pairing now sees exactly the
+    /// account it would have seen then.
+    ///
+    /// The object is treated as untrusted input until it has been checked against
+    /// the keys the card reports: a stale, foreign or corrupt manifest produces an
+    /// error rather than codes for a wallet that could never spend them.
+    @discardableResult
+    public func readPairingManifestFromCard() async throws -> PairingManifest {
+        try requireCurrent(.rePairRead)
+        try requireMode(.rePair)
+
+        let stored: [UInt8]?
+        do {
+            stored = try await card.readPairingManifest()
+        } catch let error as CardError {
+            throw CeremonyError.noPairingManifest(reason: error.userFacingDescription.lowercased())
+        }
+        guard let encoded = stored, !encoded.isEmpty else {
+            throw CeremonyError.noPairingManifest(
+                reason: "the card's private-use data object is empty. It is written by a provisioning "
+                    + "ceremony and erased by an applet reset, so this card was either provisioned "
+                    + "before the manifest existed, or reset since."
+            )
+        }
+
+        let manifest: PairingManifest
+        do {
+            manifest = try PairingManifest.decode(encoded)
+        } catch {
+            throw CeremonyError.pairingManifestRejected(
+                reason: "the \(encoded.count) bytes stored on the card are not a valid pairing "
+                    + "manifest (\(error))."
+            )
+        }
+
+        // Ask the card first. The object's contents are a claim; the keys in the
+        // slots are the fact the claim has to match.
+        var publicKeys: [KeyAlgorithm: [UInt8]] = [:]
+        for algorithm in KeyAlgorithm.allCases {
+            do {
+                publicKeys[algorithm] = try await card.readPublicKey(slot: algorithm.slot)
+            } catch let error as CardError {
+                throw CeremonyError.pairingManifestRejected(
+                    reason: "the \(algorithm.displayName) slot did not return a public key "
+                        + "(\(error.userFacingDescription.lowercased())), so the stored manifest cannot be "
+                        + "checked against it."
+                )
+            }
+        }
+        let serial = (try? Hex.decode(inventory?.serial ?? "")).flatMap { $0.count == 4 ? $0 : nil }
+        do {
+            try manifest.verify(against: CardKeyReport(cardSerial: serial, publicKeys: publicKeys))
+        } catch let error as PairingManifest.VerificationError {
+            throw CeremonyError.pairingManifestRejected(reason: error.userFacingDescription)
+        }
+
+        var results: [KeyAlgorithm: ReadBackResult] = [:]
+        var exports: [KeyAlgorithm: PairingExport] = [:]
+        var records: [KeyRecord] = []
+        for entry in manifest.entries {
+            guard let cardPublicKey = publicKeys[entry.algorithm] else { continue }
+            let leaf = try manifest.cardLeafPublicKey(for: entry.algorithm)
+            results[entry.algorithm] = ReadBackResult(
+                algorithm: entry.algorithm,
+                slot: entry.algorithm.slot,
+                cardPublicKeyHex: cardPublicKey.hexString,
+                // The manifest's derivation, not a locally derived key: in this
+                // mode the mnemonic is nowhere near the device.
+                derivedPublicKeyHex: leaf.hexString,
+                matches: cardPublicKey == leaf,
+                identityFromCardKey: try Self.identity(for: entry.algorithm, publicKey: cardPublicKey)
+            )
+            exports[entry.algorithm] = PairingExport(
+                algorithm: entry.algorithm,
+                path: entry.originPath,
+                publicKey: entry.publicKey,
+                chainCode: entry.chainCode,
+                parentFingerprintHex: Hex.encode(entry.parentFingerprint),
+                masterFingerprintHex: Hex.encode(entry.masterFingerprint),
+                childrenPath: entry.childrenPath,
+                isAccountLevel: entry.childrenPath != nil
+            )
+
+            // Same record shape as a provisioning ceremony, so the printed record
+            // and the wallet agree line for line.
+            let leafPath = DerivationPath(
+                components: entry.originPath.components + (entry.childrenPath?.components ?? [])
+            )
+            var record = KeyRecord(
+                algorithm: entry.algorithm,
+                slot: entry.algorithm.slot,
+                path: leafPath.description,
+                identity: try Self.identity(for: entry.algorithm, publicKey: cardPublicKey)
+            )
+            record.publicKeyHex = cardPublicKey.hexString
+            record.fingerprintHex = Self.fingerprintHex(for: entry.algorithm, publicKey: cardPublicKey)
+            // The leaf's parent, not the origin path's: the record prints the path
+            // of the key in the card (`…/0/0`), so the fingerprint beside it has to
+            // be that node's parent. For an export that pins children this is one
+            // level below the entry's own `parentFingerprint`; it is derivable
+            // because the pinned path is non-hardened.
+            record.parentFingerprintHex = try manifest.cardLeafParentFingerprint(for: entry.algorithm)
+                .map(Hex.encode) ?? Hex.encode(entry.parentFingerprint)
+            record.masterFingerprintHex = Hex.encode(entry.masterFingerprint)
+            record.readBackVerified = true
+            if entry.algorithm == .secp256k1 {
+                record.evmAddress = try EVMAddress.checksummed(fromPublicKey: cardPublicKey)
+                record.bitcoinAddress = try BitcoinAddress.p2wpkh(publicKeyCompressed: cardPublicKey)
+            }
+            records.append(record)
+        }
+
+        pairingManifest = manifest
+        pairingExports = exports
+        readBackResults = results
+        report.keys = records
+        report.pairingManifestStored = true
+        // Deliberately does NOT advance: the operator has to see which keys were
+        // found and which addresses they produce before any code is shown.
+        return manifest
+    }
+
+    /// Key fingerprint, in the convention each algorithm's derivation uses:
+    /// BIP32 hashes the compressed public key, SLIP-0010 prefixes a `0x00` byte
+    /// to it. The distinction matters because the provisioning record prints this
+    /// value for both keys — a re-pair must print the same number the ceremony
+    /// did, or the two records disagree about one of the keys they describe.
+    static func fingerprintHex(for algorithm: KeyAlgorithm, publicKey: [UInt8]) -> String {
+        switch algorithm {
+        case .secp256k1:
+            return Array(RIPEMD160.hash160(publicKey).prefix(4)).hexString
+        case .ed25519:
+            return Array(RIPEMD160.hash160([0x00] + publicKey).prefix(4)).hexString
+        }
+    }
+
     @discardableResult
     public func readCounterBaseline() async throws -> UInt32 {
         try requireCurrent(.counterBaseline)
@@ -1185,9 +1341,20 @@ public final class ProvisioningCeremony {
         report.warnings.append(
             "The Ed25519 key sits in the authentication slot, which has no hardware signature counter; the counter audit covers the secp256k1 key only."
         )
-        guard counter == 0 else { throw CeremonyError.counterNotZero(counter) }
-        // Deliberately does NOT advance: a non-zero counter is a stop condition
-        // and the operator must record the value either way.
+        // A non-zero counter means the card has signed. That is a stop condition
+        // before provisioning ("the card may already have signed something") but
+        // the expected state when re-pairing a card that is in use, where the
+        // number is recorded so the operator can compare it against the wallet's
+        // `expected_counter`.
+        if mode == .rePair {
+            addWarning(
+                "Signature counter is \(counter). Compare it against the counter your wallet reports for "
+                    + "this key before sending funds."
+            )
+        } else {
+            guard counter == 0 else { throw CeremonyError.counterNotZero(counter) }
+        }
+        // Deliberately does NOT advance: the operator must record the value either way.
         return counter
     }
 
