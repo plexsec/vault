@@ -71,6 +71,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.plexsec.vault
         PRODUCT_NAME: PlexVault
+        # The icon comes from Assets.xcassets/AppIcon.appiconset. Set explicitly:
+        # XcodeGen does not infer it from the catalog, and without it the built
+        # app ships with a blank icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "0.1.0"
         CODE_SIGN_STYLE: Automatic

@@ -26,6 +26,7 @@
 		E1220D992627CC16822B2D2B /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = C6834C84E5CF504892BA8E71 /* VaultKit */; };
 		E779B12C4CFD586022163D58 /* QRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8809A236D2A19B5D0D92541 /* QRCodeView.swift */; };
 		EBBAD967C4AB3EF33F4D5E43 /* YubikeyKitCCID in Frameworks */ = {isa = PBXBuildFile; productRef = 5148AB7BCC6FBDC80A2B9896 /* YubikeyKitCCID */; };
+		FCD7FE0B8ABF6E45E95357C4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 63784F625FBF780F134CEC0B /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +46,7 @@
 		427E55E1AB69E25850347277 /* CeremonyFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyFlowUITests.swift; sourceTree = "<group>"; };
 		42A82FC3A8ECF99D53C02C8F /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		4C86391DCA17B1F914EB9256 /* CeremonyViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyViewModel.swift; sourceTree = "<group>"; };
+		63784F625FBF780F134CEC0B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlexVaultApp.swift; sourceTree = "<group>"; };
 		6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
 		7029409A50A278443DA04717 /* SetupFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupFlowUITests.swift; sourceTree = "<group>"; };
@@ -183,6 +185,7 @@
 				F77FCBCB805EC934F1496794 /* Debug */,
 				BFE2A8DF3DAC8A16F1262937 /* Report */,
 				8C0FDC85574A1396DCB0C4A1 /* Support */,
+				63784F625FBF780F134CEC0B /* Assets.xcassets */,
 				E9FBCA011DBFBE29906CDC5D /* Info.plist */,
 				0309A73C9494EC5D851C7CA2 /* PlexVault.entitlements */,
 				637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */,
@@ -206,6 +209,7 @@
 			buildConfigurationList = 03FF73BE79A76AC6A1B112DB /* Build configuration list for PBXNativeTarget "PlexVault" */;
 			buildPhases = (
 				91C3CD535ECCC5A65AF0B8EB /* Sources */,
+				5481F7B00C6F5AB138FB5F42 /* Resources */,
 				02875D707CE9C0D99123519A /* Frameworks */,
 			);
 			buildRules = (
@@ -285,6 +289,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5481F7B00C6F5AB138FB5F42 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FCD7FE0B8ABF6E45E95357C4 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		91C3CD535ECCC5A65AF0B8EB /* Sources */ = {
