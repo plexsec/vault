@@ -511,3 +511,19 @@ a device: the metadata-output delegate firing, the hop to the main actor, and th
 - [ ] Scan a code while the app is on the scanner screen but *after* a previous refusal, to
       confirm the second code is read (the state machine's retry path).
 
+## 17. A request from a real wallet reaches the signature
+
+The request *format* is now covered off-hardware by a fixture from MetaMask's own library
+(amendment 25), so what is left is the last hop: that the wallet accepts the signature this app
+returns.
+
+- [ ] Scan a real MetaMask `eth-sign-request` (Polygon, EIP-1559, small value): the review screen
+      must show the recipient, the value in POL and the chain, and the digest must be the one the
+      app signs.
+- [ ] Scan the signature back: MetaMask must accept it (no "Signature request ID is missing", no
+      recovery failure) and broadcast.
+- [ ] Confirm the counter moved by exactly one, and that the wallet shows the same address the app
+      displayed before signing.
+- [ ] Repeat once with `personal_sign` from a dapp, to confirm the refusal reads as a *policy*
+      refusal ("this app signs transactions only") rather than as a parse failure.
+

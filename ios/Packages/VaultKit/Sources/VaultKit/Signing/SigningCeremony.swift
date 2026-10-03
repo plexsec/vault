@@ -56,6 +56,12 @@ public enum SigningError: Swift.Error, Equatable {
     case chainNotConfirmed(chainID: String)
     case chainIDMissing
     case unsupportedDataType(String)
+    /// The request could not be read at all. Carries the parser's own explanation, because the
+    /// parser knows what is wrong: reporting a malformed request as a *policy* refusal ("this
+    /// app does not sign messages") sends the operator looking in the wrong place — which is
+    /// exactly what happened when a real wallet's request was refused for its CBOR shape
+    /// (amendment 25).
+    case requestNotReadable(String)
     case chainIDMismatch(request: String, transaction: String)
     case signatureTooLarge(Int)
     case pinRejected(reason: String)
@@ -95,6 +101,8 @@ public enum SigningError: Swift.Error, Equatable {
         case .unsupportedDataType(let dataType):
             return "The request asks for \(dataType). This app signs transactions only; it does not "
                 + "sign messages or EIP-712 typed data."
+        case .requestNotReadable(let reason):
+            return reason
         case .chainIDMismatch(let request, let transaction):
             return "The request says chain \(request) but the transaction payload is built for chain "
                 + "\(transaction). Refusing: that mismatch changes the bytes that would be signed."
@@ -262,7 +270,9 @@ public final class SigningCeremony {
         do {
             request = try EthSignRequest(ur: requestUR)
         } catch let error as EthSignRequestError {
-            throw SigningError.unsupportedDataType(error.userFacingDescription)
+            // The parser's own words, not a policy refusal: a request this app cannot read is
+            // not the same as a request it declines to sign (amendment 25).
+            throw SigningError.requestNotReadable(error.userFacingDescription)
         }
         guard request.dataType.isTransaction else {
             throw SigningError.unsupportedDataType(request.dataType.displayName)

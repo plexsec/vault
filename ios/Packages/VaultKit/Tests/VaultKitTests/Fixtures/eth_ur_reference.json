@@ -1,0 +1,43 @@
+{
+ "note": "generated from the reference implementation; do not hand-edit",
+ "generator": {
+  "script": "tools/interop/gen-eth-ur-fixture.cjs",
+  "libraries": {
+   "@keystonehq/bc-ur-registry-eth": "0.22.1",
+   "@keystonehq/bc-ur-registry": "0.7.0",
+   "@ngraveio/bc-ur": "1.1.13"
+  }
+ },
+ "outerTag": "absent",
+ "request": {
+  "inputs": {
+   "requestId": "00112233445566778899aabbccddeeff",
+   "signData": "02f1818901843b9aca008506fc23ac008252089435353535353535353535353535353535353535358814d1120d7b16000080c0",
+   "dataType": 4,
+   "path": [
+    44,
+    0,
+    0,
+    0,
+    0
+   ],
+   "hardened": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ],
+   "sourceFingerprint": "5436d724",
+   "chainId": 137,
+   "signature": "ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+   "origin": "PlexVault"
+  },
+  "ur": "ur:eth-sign-request/onadtpdagdaebycpeofygoiyktlonlpkrksfutwyzmaohdeoaownlyldadlrfrnysgaelpamztcnpsaelfgmaymwececececececececececececececececececececlobbttbgbtkgcmaeaelartaxaaaacsldahtaaddyoeadlecsdwykaeykaeykaewkaewkaocyghentsdkpkvyamvw",
+  "cborHex": "a501d8255000112233445566778899aabbccddeeff02583302f1818901843b9aca008506fc23ac008252089435353535353535353535353535353535353535358814d1120d7b16000080c0030404188905d90130a2018a182cf500f500f500f400f4021a5436d724"
+ },
+ "signature": {
+  "ur": "ur:eth-signature/otadtpdagdaebycpeofygoiyktlonlpkrksfutwyzmaohdfppypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypypyaxingdjzihkshfhskpjzjyjywpaelb",
+  "cborHex": "a301d8255000112233445566778899aabbccddeeff025841ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab0369506c65785661756c74"
+ }
+}

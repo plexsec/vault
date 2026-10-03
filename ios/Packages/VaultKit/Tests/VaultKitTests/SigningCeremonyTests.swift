@@ -260,6 +260,38 @@ final class SigningCeremonyTests: XCTestCase {
         XCTAssertEqual(exported.requestID, [UInt8](repeating: 0xab, count: 16))
     }
 
+    /// A request **encoded by the reference implementation** goes through the whole ceremony
+    /// and comes back verified.
+    ///
+    /// The fixture's payload hashes to the digest `tools/derive` signed for
+    /// `fee_market_chain_137`, so this really does sign a MetaMask-shaped request with a real
+    /// signature — as close to a wallet as this can get without one. It is also the regression
+    /// test for the tag bug: the fixture's CBOR is untagged, as every wallet's is.
+    func testSignsARequestEncodedByTheReferenceImplementation() async throws {
+        let fixture = try EthURReferenceFixture.load()
+        let card = makeCard()
+        let ceremony = ceremony(card: card)
+        try await ceremony.readCard()
+        try ceremony.accept(requestUR: try UR(urString: fixture.request.ur))
+        ceremony.confirmChainID("137")
+        try ceremony.verifyRequest()
+
+        let transaction = try XCTUnwrap(ceremony.transaction)
+        XCTAssertEqual(transaction.chainId, EVMQuantity(137))
+        XCTAssertEqual(ceremony.report.chainDisplay, "Polygon (chain id 137)")
+        XCTAssertEqual(ceremony.report.nativeValueDisplay, "1.5 POL (1500000000000000000 wei)")
+        // The wallet's bytes produce the digest the fixture signature was made over.
+        XCTAssertEqual(transaction.signingDigest.hexString, "d73a406535cfc8e2d29a38fe3ebfdd94c36ddb2b0f9a761011a3c1eb9752aaf0")
+
+        try ceremony.approve(acknowledgingDigestHex: transaction.signingDigest.hexString)
+        try ceremony.verifySignature(cardResponse: try await ceremony.sign(userPIN: Self.userPIN))
+        let exported = try EthSignature(ur: try ceremony.exportSignature())
+
+        XCTAssertTrue(ceremony.report.signatureVerified)
+        XCTAssertEqual(exported.requestID, try Hex.decode(fixture.request.requestID))
+        XCTAssertEqual(exported.signature.count, 65)
+    }
+
     /// The chain table is a display convenience, and this is the test that keeps it that
     /// way: a chain id nobody has heard of is confirmed and signed exactly like a named
     /// one. If someone ever turns the table into a whitelist, this fails.

@@ -931,3 +931,57 @@ route was made to enter at the same door. The remaining camera-specific behaviou
 `AVCaptureMetadataOutput` delegate hop and the callback actually fire on a device — is item 16
 in docs/m0-hardware-verification.md.
 
+## 25. v0.2: nothing could read a real request, and the tests all passed
+
+**Sections:** §5.3 (the wire format).
+
+**The report.** Scan a MetaMask QR code and the app refuses it with a message about messages
+and EIP-712: *"The request asks for the QR code carries the signing-request type name but the
+CBOR tag 0, which is not the tag a wallet uses… This app signs transactions only; it does not
+sign messages or EIP-712 typed data."* Every clause of that is wrong about what happened.
+
+**Two defects, and the second is why the first was unreadable.**
+
+1. **The decoder required an outer CBOR tag that no wallet emits.** `EthSignRequest.init(cbor:)`
+   began `guard let tagged = cbor.taggedValue, tagged.tag == 401`, and threw
+   `.wrongTag(found: 0)` for an untagged map — `0` being a hole where the tag would be, not a
+   tag. ERC-4527 assigns these types tags, but the type name travels in the UR
+   (`ur:eth-sign-request/…`) and the payload is a bare map. Measured against
+   `@keystonehq/bc-ur-registry-eth` 0.22.1, `EthSignRequest.constructETHRequest(…).toUR().cbor`
+   begins `0xa5`, and a signature's begins `0xa3`; `0xd9` (a CBOR tag header) never appears.
+2. **A parse failure was reported as a policy refusal.** `SigningCeremony.accept` wrapped *any*
+   `EthSignRequestError` into `SigningError.unsupportedDataType(...)`, whose text is about this
+   app not signing messages or EIP-712. So the operator — and the person they reported it to —
+   was told the request was the wrong *kind* when in fact it could not be *read*. There is now a
+   separate case, `requestNotReadable`, carrying the parser's own words.
+
+**Why no test noticed, which is the part worth keeping.** Both directions were wrong in the same
+way: the app's encoder wrote tag 401/402, the app's decoder required it, and the round trip —
+including the DEBUG sample that drives the whole UI suite — was perfectly self-consistent. Every
+fixture was the app's own output. A second, independent implementation is the only thing that
+finds this, which is what `tools/interop/gen-eth-ur-fixture.cjs` now provides: it encodes a
+request and a signature with the library MetaMask itself uses, records the bytes and the library
+versions, and both are committed. `EthURReferenceTests` then checks the app against them in both
+directions:
+
+* it decodes the reference's request UR (the reported bug, as a test) and a whole ceremony signs
+  it — its payload hashes to the digest `tools/derive` signed for `fee_market_chain_137`, so this
+  is a real signature over a wallet-shaped request;
+* the app's encoder produces the reference's bytes exactly, for both the request and the
+  signature, so the DEBUG sample can no longer exercise a shape no wallet sends;
+* a wrong tag is still refused, and the expected tag is still tolerated.
+
+While writing the fixture it caught its own first draft: the hand-written payload in the
+generator said chain 1 and 1 ETH while the fixture claimed chain 137 and 1.5 POL, and the new
+decode test failed on the inconsistency. That is the difference a fixture from somewhere else
+makes.
+
+**Evidence.** Restoring the tag requirement fails four tests, including
+`testSignsARequestEncodedByTheReferenceImplementation` with the operator-visible string above —
+the reported symptom reproduced in a test rather than described. VaultKit 239 → 247.
+
+**What is still only a wallet's word.** That MetaMask accepts the signature the app produces. The
+bytes now match its own library's, and the wallet's reader is quoted in the test
+(`ETHSignature.fromCBOR`, which throws "Signature request ID is missing" without field 1), but a
+real wallet is still docs/m0-hardware-verification.md item 14.
+

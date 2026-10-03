@@ -46,3 +46,40 @@ enum FixtureLoader {
         }
     }
 }
+
+/// The reference implementation's `eth-sign-request`, as a wallet writes it.
+///
+/// Loaded here rather than inside one test class because two things need the same bytes: that
+/// the app can read them, and that it can sign them.
+struct EthURReferenceFixture: Decodable {
+    struct Request: Decodable {
+        let ur: String
+        let requestID: String
+
+        enum CodingKeys: String, CodingKey {
+            case ur, inputs
+        }
+        enum InputKeys: String, CodingKey {
+            case requestId
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            ur = try container.decode(String.self, forKey: .ur)
+            let inputs = try container.nestedContainer(keyedBy: InputKeys.self, forKey: .inputs)
+            requestID = try inputs.decode(String.self, forKey: .requestId)
+        }
+    }
+
+    struct Signature: Decodable {
+        let ur: String
+    }
+
+    let request: Request
+    let signature: Signature
+
+    static func load() throws -> EthURReferenceFixture {
+        let data = try FixtureLoader.data("eth_ur_reference", extension: "json")
+        return try JSONDecoder().decode(EthURReferenceFixture.self, from: data)
+    }
+}

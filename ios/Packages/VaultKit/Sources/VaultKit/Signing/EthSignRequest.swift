@@ -76,7 +76,40 @@ public enum EthSignRequestError: Swift.Error, Equatable {
     }
 }
 
-/// `eth-sign-request` (UR type `eth-sign-request`, CBOR tag 401).
+/// The payload inside a UR of this protocol, and what the CBOR tag is (not) for.
+///
+/// **The tag is not on the wire.** ERC-4527 gives these types CBOR tags — 401 for a request,
+/// 402 for a signature — but the reference implementation carries the type in the *UR*
+/// (`ur:eth-sign-request/…`) and encodes the payload as a bare map. Measured against
+/// `@keystonehq/bc-ur-registry-eth` 0.22.1, the library `@metamask/eth-qr-keyring` uses:
+/// `EthSignRequest.constructETHRequest(…).toUR().cbor` begins `0xa5` (a five-entry map), not
+/// `0xd9 0x01 0x91` (tag 401), and a signature's begins `0xa3`, not `0xd9 0x01 0x92`. The bytes
+/// are committed in Fixtures/eth_ur_reference.json.
+///
+/// Requiring the tag made this app refuse every real signing request, and no test noticed —
+/// because the app's own encoder wrote the tag too, so encode→decode agreed with itself while
+/// disagreeing with every wallet (amendment 25).
+///
+/// A payload is therefore accepted with no tag (what wallets send) or with the expected tag
+/// (some encoders add it, and MetaMask's decoder strips it), and refused with any other, since a
+/// different tag is a different thing rather than something to guess about.
+enum EthURPayload {
+    static func map(from cbor: CBOR, expecting tag: UInt64) throws -> [CBORMapEntry] {
+        switch cbor {
+        case .map(let entries):
+            return entries
+        case .tagged(let found, let value):
+            guard found == tag else { throw EthSignRequestError.wrongTag(found: found) }
+            guard let entries = value.mapValue else { throw EthSignRequestError.notAMap }
+            return entries
+        default:
+            throw EthSignRequestError.notAMap
+        }
+    }
+}
+
+/// `eth-sign-request` (UR type `eth-sign-request`; the CBOR tag 401 is nominal — see
+/// `EthURPayload`).
 ///
 /// The watch-only wallet builds this; the app consumes it. Fields are exactly
 /// the ones the reference implementation writes:
@@ -147,9 +180,7 @@ public struct EthSignRequest: Equatable, Sendable {
     }
 
     public init(cbor: CBOR) throws {
-        guard let tagged = cbor.taggedValue else { throw EthSignRequestError.wrongTag(found: 0) }
-        guard tagged.tag == Self.cborTag else { throw EthSignRequestError.wrongTag(found: tagged.tag) }
-        guard let map = tagged.value.mapValue else { throw EthSignRequestError.notAMap }
+        let map = try EthURPayload.map(from: cbor, expecting: Self.cborTag)
 
         for entry in map {
             guard let key = entry.key.unsignedValue, Field(rawValue: key) != nil else {
@@ -255,7 +286,8 @@ public struct EthSignRequest: Equatable, Sendable {
         if let origin {
             entries.append(CBORMapEntry(.unsigned(Field.origin.rawValue), .text(origin)))
         }
-        return .tagged(Self.cborTag, .map(entries))
+        // Untagged, like the reference: see `EthURPayload`.
+        return .map(entries)
     }
 
     public func ur() throws -> UR {
@@ -263,7 +295,8 @@ public struct EthSignRequest: Equatable, Sendable {
     }
 }
 
-/// `eth-signature` (UR type `eth-signature`, CBOR tag 402).
+/// `eth-signature` (UR type `eth-signature`; the CBOR tag 402 is nominal — see
+/// `EthURPayload`).
 ///
 /// ```
 /// 1: #6.37(bytes .size 16)  request-id  (required: the wallet matches on it)
@@ -310,10 +343,7 @@ public struct EthSignature: Equatable, Sendable {
 
     public init(ur: UR) throws {
         guard ur.type == Self.urType else { throw EthSignRequestError.notAnEthSignRequest(type: ur.type) }
-        guard let tagged = ur.cbor.taggedValue, tagged.tag == Self.cborTag else {
-            throw EthSignRequestError.wrongTag(found: ur.cbor.taggedValue?.tag ?? 0)
-        }
-        guard let map = tagged.value.mapValue else { throw EthSignRequestError.notAMap }
+        let map = try EthURPayload.map(from: ur.cbor, expecting: Self.cborTag)
         for entry in map {
             guard let key = entry.key.unsignedValue, Field(rawValue: key) != nil else {
                 throw EthSignRequestError.unknownField(entry.key.unsignedValue ?? UInt64.max)
@@ -352,7 +382,8 @@ public struct EthSignature: Equatable, Sendable {
         if let origin {
             entries.append(CBORMapEntry(.unsigned(Field.origin.rawValue), .text(origin)))
         }
-        return .tagged(Self.cborTag, .map(entries))
+        // Untagged, like the reference: see `EthURPayload`.
+        return .map(entries)
     }
 
     public func ur() throws -> UR {

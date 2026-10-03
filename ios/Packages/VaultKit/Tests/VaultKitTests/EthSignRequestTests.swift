@@ -113,9 +113,17 @@ final class EthSignRequestTests: XCTestCase {
         }
     }
 
-    func testWrongTagIsRefused() throws {
-        refuse("tag 402", .tagged(402, .map([]))) { $0 == .wrongTag(found: 402) }
-        refuse("untagged", .map([])) { $0 == .wrongTag(found: 0) }
+    func testOnlyAWrongTagIsRefused() throws {
+        // The tag is nominal: the type name is in the UR, and wallets send the payload bare.
+        // Accepting the untagged form is what makes a real MetaMask request readable at all
+        // (amendment 25); an empty one still fails, for the honest reason.
+        refuse("untagged, empty", .map([])) { $0 == .missingField(2) }
+        refuse("tag 402 on a request", .tagged(402, .map([]))) { $0 == .wrongTag(found: 402) }
+        refuse("tag 0", .tagged(0, .map([]))) { $0 == .wrongTag(found: 0) }
+        // The expected tag is tolerated, for encoders that do add it.
+        XCTAssertThrowsError(try EthSignRequest(cbor: .tagged(401, .map([])))) {
+            XCTAssertEqual($0 as? EthSignRequestError, .missingField(2))
+        }
     }
 
     func testUnknownFieldIsRefused() throws {
