@@ -822,3 +822,68 @@ normalisation and exports the flipped recovery value. The assertion that caught 
 mine being wrong, not the app's; the vector is left uncanonicalised on purpose, because that
 coverage is worth more than a tidier fixture, and the generator now says so.
 
+## 23. v0.2: the scanner's state outlived its camera
+
+**Sections:** §5.1 (new paragraph on the scanner's lifecycle), §5.2 rule 8 (applied to it).
+
+**The report.** "Tap *Read the YubiKey*, the camera opens, tap *Cancel*, come back — and the
+camera never comes back."
+
+**The cause.** `QRScanModel.stop()` stopped the capture session but left `state == .scanning`,
+and `start()` treated `scanning` as proof that the camera was already running:
+
+```swift
+switch state {
+case .received, .failed, .scanning: return   // ← the second visit stopped here
+case .idle: break
+}
+```
+
+So the claim "the camera is on" outlived the camera. It was wrong in three separate paths,
+all of which end in the same symptom, and all of which the operator can reach:
+
+* **Cancel** — `SigningViewModel.abort()` called `scan.stop()`, which stopped the session and
+  left the state claiming it was still on. The next visit did nothing at all.
+* **Backgrounding** — `applicationDidBackground()` did the same, and nothing restarted the
+  camera on the way back, so returning to the scanner showed a preview of nothing.
+* **A stale request** — `abort()` never cleared what the decoder had read, so a request
+  decoded during the previous visit stayed in `.received` and would have been carried into
+  the next one (this is amendment 20's rule again, one layer out from the ceremony: a flow
+  inherits nothing from the previous run).
+
+A fourth, smaller contributor: `configureIfNeeded()` set `isConfigured = true` *before*
+checking whether a camera existed, so a failed configuration was cached — the second attempt
+would claim `scanning` with no input attached, i.e. a dark preview with no explanation, and
+would not report the reason again.
+
+**The fix.** The lifecycle rules moved into a pure type, `VaultKit.QRScanSession`, for the
+same reason `NFCSessionPolicy` lives in YubikeyKit: a camera is needed to *see* this failure,
+but not to notice it, and a rule that can only be checked while holding a phone is a rule
+that breaks again. The type makes the invariant explicit — `scanning` *is* a claim that the
+camera is on, so a cancel withdraws it (`suspend()` → `.idle`), while a result or a failure
+stays on screen; `begin()` is what says whether a start is meaningful, and `reset()` is what
+makes a second attempt possible at all. `QRScanModel` is now the AVFoundation shell:
+capture session, fountain decoder, counters, plus the camera's transitions **serialised**
+through one task chain, because a cancel immediately followed by re-entry could otherwise
+interleave `stopRunning` with `startRunning` and have the second start skipped as "already
+running" — the same dark preview, from a race rather than from a lie. Cancel now calls
+`scan.reset()`, the app restarts the camera when it returns to the foreground with the
+scanner on screen, and a failed configuration is no longer cached.
+
+**Evidence.** `QRScanSessionTests` (8 tests): the reported sequence run five times over
+(begin → suspend → begin), the background/foreground pair, that a second `begin()` while
+scanning is refused, that a result and a failure each survive a cancel but not a reset, and
+that a reset forgets the previous visit's request. The tests were confirmed to fail without
+the rule — neutering `suspend()` produces 12 failures. VaultKit 231 → 239.
+
+**What is *not* covered, and why.** The UI suite cannot see this bug: a simulator has no
+camera, so the first visit already ends in `failed("No camera is available on this device.")`,
+and with the bug the second visit shows the same stale banner. A UI test that passed either
+way would be decoration, so none was added and the visible behaviour is a hardware item
+instead — docs/m0-hardware-verification.md item 15.
+
+**One line of honesty while in there.** The scanner's `.idle` label read "Starting the
+camera…", which is not what `.idle` means (it means the camera is not running — it is also
+the state of the screen *behind* the card-read step, which briefly shows the same view). It
+now says "Camera is off".
+

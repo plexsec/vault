@@ -58,9 +58,9 @@ docs/
 tools/verify.sh
 
 # individual pieces
-cd ios/Packages/VaultKit  && swift test      # 231 tests: crypto, BIP39/BIP32 incl. ckd_pub, addresses, BC-UR, pairing manifest,
+cd ios/Packages/VaultKit  && swift test      # 239 tests: crypto, BIP39/BIP32 incl. ckd_pub, addresses, BC-UR, pairing manifest,
                                              #            ceremony, read-only re-pair, RLP, transactions, signatures,
-                                             #            chain naming and asset labelling
+                                             #            chain naming and asset labelling, scanner lifecycle
 cd ios/Packages/YubikeyKit && swift test     # 78 tests: APDU codec, both OpenPGP slots, private-use data objects, PSO:CDS,
                                              #            transports, NFC session policy, end-to-end signing
 cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 9 UI tests (~4 min each for the two that walk a whole flow)

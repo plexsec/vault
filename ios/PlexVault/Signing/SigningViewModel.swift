@@ -84,7 +84,11 @@ public final class SigningViewModel {
     // MARK: Lifecycle
 
     public func abort() {
-        scan.stop()
+        // `reset` rather than `stop`: leaving the flow must not carry the previous attempt's
+        // decoded request (or its camera state) into the next one. See design.md §5.2 rule 8
+        // — a ceremony inherits nothing from the previous one — which applies to the scanner
+        // in front of it for the same reason.
+        scan.reset()
         ceremony = nil
         scannedUR = nil
         card = nil
@@ -104,6 +108,18 @@ public final class SigningViewModel {
     public func applicationDidBackground() {
         ceremony?.noteInterruption()
         scan.stop()
+    }
+
+    /// The app is in the foreground again.
+    ///
+    /// A capture session does not survive being backgrounded, so if the operator is on the
+    /// scanner the camera is started again — otherwise the screen shows a preview of
+    /// nothing until they cancel and come back, which is the same symptom as cancelling and
+    /// returning used to produce (amendment 23). Nothing is restarted over a result or a
+    /// failure: `QRScanSession.begin()` refuses those.
+    public func applicationDidForeground() async {
+        guard phase == .running, screen == .scan else { return }
+        await scan.start()
     }
 
     // MARK: Step 1 — read the card

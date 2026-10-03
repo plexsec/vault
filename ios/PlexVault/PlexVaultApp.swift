@@ -13,7 +13,11 @@ struct PlexVaultApp: App {
             HomeView(ceremonyViewModel: viewModel, signingViewModel: signingViewModel)
                 .onChange(of: scenePhase) { _, phase in
                     viewModel.screenIsCaptured = Self.activeScreen?.isCaptured ?? false
-                    if phase != .active {
+                    if phase == .active {
+                        // The scanner's camera session does not survive the background, so
+                        // it is started again when the operator comes back to it.
+                        Task { await signingViewModel.applicationDidForeground() }
+                    } else {
                         signingViewModel.applicationDidBackground()
                         // Leaving the foreground is treated as an interruption: a
                         // mutating APDU may have been in flight, and the mnemonic

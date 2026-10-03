@@ -473,3 +473,23 @@ feature is usable at all.
       after; the wallet's own read is the independent one).
 - [ ] A **wrong** PIN, then sign: the app must report the retry count the card gave, and the
       wallet must never receive a signature.
+
+## 15. The camera comes back (lifecycle on a real device)
+
+A simulator has no camera, so every path below needs the phone. The logic is unit-tested
+(`QRScanSessionTests`); what a device adds is that `AVCaptureSession` really starts again,
+which is the part no test can hold.
+
+- [ ] Signing flow → *Read the YubiKey* → the camera opens. Tap **Cancel**, then *Read the
+      YubiKey* again: the preview must come back. Repeat four or five times — this is the
+      reported bug, and it was a state that outlived the camera rather than a one-off.
+- [ ] While scanning (no code in view yet), send the app to the background and bring it back:
+      the preview must restart on its own.
+- [ ] Deny camera access, then re-enter the scanner: the reason must be shown again rather
+      than a dark rectangle. Enable it in Settings, cancel out of the flow, come back: the
+      camera must work.
+- [ ] Interrupt mid-scan with an incoming call (or the Control Centre), then return: the
+      preview must be live again, with no partial progress from before.
+- [ ] Confirm that a request decoded in one visit is *not* still on screen after leaving the
+      flow and coming back with a different (or no) request.
+

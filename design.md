@@ -210,6 +210,16 @@ Step 16.5 stays where it is: the wallet is the independent party. The app's own 
 step 14 protects against a card that signs with another slot; it cannot protect against
 the app itself.
 
+**The scanner is stopped whenever the flow leaves it, and carries nothing across.** A
+cancel and the app going to the background both stop the camera; returning starts it again,
+because a capture session does not survive the background. A request decoded during a
+previous visit is discarded rather than offered to the ceremony, for the same reason §5.2
+rule 8 gives for ceremonies: a flow that inherits the last run's results shows the operator
+something that is no longer true. The one thing that *does* stay on screen is a result or a
+failure, since restarting over either would hide what the operator has to read. `scanning`
+means the camera is on and nothing else — a state that outlives its camera is how a second
+visit to the scanner came to show no picture at all (amendment 23).
+
 ### 5.2 Rules
 
 1. **One transaction = one `PSO:CDS`.** At the specification level, the app is forbidden from retrying a signature for the same request. If the YubiKey returns any error (wrong PIN, touch timeout, NFC disconnect), the entire flow terminates and restarts from the Desktop (which generates a new `requestId`).

@@ -71,7 +71,10 @@ struct ScanningView: View {
                 Label("Read a \(ur.type)", systemImage: "checkmark.circle")
                     .foregroundStyle(.green)
             case .idle:
-                Text("Starting the camera…").font(.footnote).foregroundStyle(.secondary)
+                // `.idle` means "not running", which for one moment is also the state of a
+                // camera that is about to start. Saying "Starting…" here was a claim the
+                // state does not make; the scanner says what is true instead.
+                Text("Camera is off").font(.footnote).foregroundStyle(.secondary)
             case .failed:
                 EmptyView()
             }
