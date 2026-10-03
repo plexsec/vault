@@ -1,8 +1,10 @@
-// The CryptoTokenKit transport is built for iOS only: `makeSmartCard()` and
-// `getSlot(withName:)` are async on iOS and synchronous on macOS, and the USB-C
-// CCID path only exists on iOS/iPadOS hardware anyway. The iOS compile check is
-// the app build (Xcode builds this package for the iphoneos SDK).
-#if os(iOS)
+// Built wherever CryptoTokenKit exists, which is iOS **and macOS**. The USB-C
+// CCID path is the app's, but the same code compiles and runs on a Mac, which is
+// the only way a hardware check can drive the *shipping* transport instead of a
+// desktop APDU replay (docs/m0-hardware-verification.md item 18). No call site
+// needs a platform branch: with the macOS 26 SDK, `getSlot(withName:)` and
+// `makeSmartCard()` are async on both platforms, so the code below is unchanged.
+#if canImport(CryptoTokenKit)
 
 import CryptoTokenKit
 import Foundation

@@ -1108,3 +1108,42 @@ item 19.
 (`00f2000003 040404 00`) and the UI walk now chooses 4 through the picker, so the number really
 travels. VaultKit 249 → 253, YubikeyKit 81 → 83.
 
+## 28. v0.2: the app cannot reset a card whose Admin PIN is blocked
+
+**Sections:** §4.2 (steps 2 and 3), §6.5. Measured on hardware, recorded in
+docs/m0-hardware-verification.md item 20.
+
+**What was measured.** The card's Admin PIN was blocked during hardware probing (a malformed
+`CHANGE REFERENCE DATA` in a probe script, not the app — the script now aborts on the first failed
+VERIFY, and the episode is written up as a trap). That state turned out to be useful: with
+`C4 = 01 7F 7F 7F 03 00 00`, every `VERIFY PW3` answering `6983`, a bare
+`TERMINATE DF` + `ACTIVATE FILE` **without any VERIFY** reset the applet and returned the PINs to
+their factory values. Spec 3.4.1 says why ("TERMINATE DF: VERIFY of PW3 or Always if PW3 is
+blocked"), and `ykman openpgp reset` is built on the same clause — it takes no Admin PIN at all.
+
+**The gap this exposes.** The app's reset step is `SignerCard.reset(adminPIN:)`: it verifies PW3 and
+then terminates. On a card whose Admin PIN is blocked that verification fails, the reset never
+happens, and the operator is told `pinBlocked`. So the one state in which the applet deliberately
+lowers the barrier is the one state in which this app cannot use it — and the app is the tool the
+operator is holding when it happens.
+
+**Not fixed here, deliberately.** Sending `TERMINATE DF` without a PIN is a destructive path that
+erases both private keys, and it is only *safe* because the applet restricts it to the blocked-PW3
+state. Offering it in the app means offering "erase this card" as a recovery, which belongs
+together with the PIN-unblock feature of amendment 27: the pair is what turns a blocked PIN from a
+re-provisioning into a repair. Both are recorded in m0 item 19 rather than half-built. What changed
+now is only the wording:
+
+* the blocked-Admin-PIN message no longer claims the card "can no longer be provisioned" — it says
+  what is true, that the applet can still be reset (by a tool that does not need PW3) and that this
+  erases both keys;
+* the blocked-User-PIN message no longer recommends "terminate and re-activate", which destroys the
+  keys rather than recovering them;
+* the retry-limit step says the same thing in the operator's words before they choose a number.
+
+**Also measured, and now recorded so nobody re-derives it:** a fresh applet reports
+`01 7F 7F 7F 03 00 03`; `SET PIN RETRIES 5 5 5` reads back `05 00 05` and survives the key import;
+importing a key clears that slot's touch policy (reproduced four times); and the EC private-key
+template needs **no** public key — yubikit's optional `0x99` component is not required by this
+firmware, which accepts the `92`-only form our code sends.
+

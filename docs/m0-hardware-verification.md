@@ -594,3 +594,76 @@ Admin PIN, the card is blocked, the PIN has to be replaced — and it is not in 
 it is, the blocked-PIN message says what is actually true: the card has to be set up again from the
 mnemonic.
 
+## 20. The fixed sequence, run against the card (and what could not be run)
+
+**Measured on the YubiKey 5C NFC in hand (firmware 5.8.0, applet 3.4)** by replaying the bytes the
+app now sends, in the order the ceremony now uses. This is the evidence behind amendment 26 and
+amendment 27; it is *not* the app's own run (see the bottom of this item).
+
+* **A fresh applet reports `01 7F 7F 7F 03 00 03`** — PW1 status `0x01`, then 3/0/3 attempts for
+  PW1 / resetting code / PW3. So `0xC4[0] = 0x00` on a card is evidence the policy step ran, and
+  the "3 attempts" default is the card's, not ours.
+* **`SET PIN RETRIES 5 5 5` works and reads back**: the write answers `9000` and `C4` then reads
+  `00 7F 7F 7F 05 00 05`, i.e. PW1 and PW3 at 5 and the never-set resetting code at 0. The value
+  survives later sessions, is visible in `0x6E`, and **survives the key import**.
+* **Importing a key discards that slot's touch policy** — observed four separate times. Writing
+  `D6 = 02 20` and then importing a secp256k1 key into that slot leaves `D6 = 00 20`; applying
+  `02 20` after the import leaves `02 20` through the manifest write and every read that followed.
+  This is the bug of amendment 26, reproduced on demand.
+* **`TERMINATE DF` works while the Admin PIN is blocked.** The probe burned the admin attempts by
+  accident (see the traps below), which put the card in exactly the state that clause is for:
+  `C4 = 01 7F 7F 7F 03 00 00`, every VERIFY answering `63C0`/`6983`. `00 E6 00 00 00` +
+  `00 44 00 00 00` **without any VERIFY** reset the applet and returned the PINs to their factory
+  values. Spec 3.4.1 states the condition ("VERIFY of PW3 or Always if PW3 is blocked"), `ykman
+  openpgp reset` takes no Admin PIN, and now this card has confirmed it.
+* **The EC private-key template needs no public key.** yubikit's `EcKeyTemplate` optionally adds
+  the public key as tag `0x99` next to the `0x92` scalar; this firmware accepts the
+  private-key-only form our code sends (`4D .. B6 00 7F48(92 20) 5F48(<32-byte scalar>)`), which
+  returned `9000` and produced a readable public key. Recorded so that nobody "fixes" it, and so
+  the next person does not spend an hour on `0x99` as I did.
+
+**Still not verified: the app's own provisioning on a pristine card.** Three attempts to drive the
+*shipping* code from this Mac failed for transport reasons, every one of them worth knowing:
+
+* `TKSmartCardSlotManager.default` is **nil** in a command-line binary, and still nil when the same
+  binary is wrapped in a minimal `.app` bundle — even though `system_profiler SPSmartCardsDataType`
+  lists the reader (`Yubico YubiKey FIDO+CCID`) and `scdaemon` talks to the card happily. So the
+  CCID transport cannot be exercised from a plain macOS process here; the "directly attached CCID
+  device without an additional entitlement" question of item 12 needs the iOS app, an entitled
+  macOS app, or a reader-hosted card.
+* The `PCSC` framework on this OS ships **no headers and no binary** (only `XPCServices`), so a
+  PC/SC-based probe cannot be built against it either. `scdaemon` reaches the card through its own
+  built-in CCID driver, not through that framework.
+* Wrapping the certificate's own transport at least compiles now: `SmartCardTransport` is guarded by
+  `canImport(CryptoTokenKit)` rather than `os(iOS)`, so the package build type-checks it on macOS
+  instead of only during the iOS app build.
+
+**Probe traps, all of which cost time and one of which cost the Admin PIN:**
+
+1. **`scdaemon` caches a successful VERIFY PW3** and silently re-sends it in later sessions, so a
+   protected write looks unprotected. Kill the agent before drawing conclusions about access
+   conditions (already recorded in item 18).
+2. **A burst of raw APDUs wedges the reader.** Sessions then return nothing at all
+   (`ERR 100663406 Card removed`) while the card is fine; `gpgconf --kill scdaemon` recovers it.
+   Multi-command bundles are the worst case, which is why the ceremony's own "one session per
+   operation" shape is the right one for the app and the wrong one for a shell probe.
+3. **A wedged or half-written slot answers `6A80` to a re-import and `6581` to a key read**, which
+   is indistinguishable from a malformed template. I chased that as a missing-public-key bug until
+   the same bytes succeeded on a clean slot. A probe must read the slot back before concluding
+   anything about a rejected import.
+4. **A probe that guesses PINs burns attempts.** One malformed `CHANGE REFERENCE DATA` (an `Lc`
+   that was two bytes too large) left the Admin PIN unchanged while the script went on to verify
+   with the new one — three times — and blocked it. The card was recoverable (trap 5's rule), but
+   the script now aborts on the first failed VERIFY, and any future probe should.
+
+**Consequence for the app: it cannot reset a card whose Admin PIN is blocked.** The applet allows
+`TERMINATE DF` without PW3 in exactly that state, and `ykman openpgp reset` relies on it — but this
+app's reset step verifies PW3 first, so as written it cannot rescue such a card and would report
+`pinBlocked` instead. That is recorded rather than fixed: offering a no-PIN reset is a destructive
+path (it erases both keys) and belongs with the unblock feature of item 19, in a version that can
+also replace the PINs afterwards.
+
+The card was left **factory-fresh**: reset, default PINs, no keys, `UIF = 00 20`, `C4 = 01 7F 7F 7F
+03 00 03`. Nothing the probe wrote is still there, and the app's next provisioning run starts from
+a reset in any case.
+
