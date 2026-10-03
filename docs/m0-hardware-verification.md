@@ -527,3 +527,44 @@ returns.
 - [ ] Repeat once with `personal_sign` from a dapp, to confirm the refusal reads as a *policy*
       refusal ("this app signs transactions only") rather than as a parse failure.
 
+## 18. The touch policy survives provisioning — and how it was measured
+
+**Resolved on hardware (YubiKey 5C NFC, firmware 5.8.0, applet 3.4).** Two behaviours of this
+applet are now measured rather than assumed, and both had silently broken provisioning
+(amendment 26).
+
+* **Writing a slot's algorithm attributes discards that slot's touch policy.** Replaying the
+  ceremony's own APDUs: `PUT DATA 0xD6 = 02 20` reads back `02 20`; the very next write of
+  `0xC1 = ECDSA/secp256k1` makes it `00 20` — touch off — and the key upload, fingerprint and
+  generation-time writes leave it there. Applying `02 20` *after* the import reads back `02 20`
+  and survives every later write in the ceremony, including the manifest object and `0xC4`.
+  Independently reported for `gpg keytocard` in yubikey-manager#693.
+* **Ed25519 attributes: the OID matters.** `0xC3 = 16 || 2B 06 01 04 01 DA 47 0F 01` (GnuPG's
+  OID) is refused with `6A80`; `0xC3 = 16 || 2B 65 70` (RFC 8410 `id-Ed25519`) is accepted and
+  the key imports.
+* **`YYYY` `0xC4` after a reset is `01`, not `00`.** A freshly terminated applet reads
+  `01 7F 7F 7F 03 00 03`, so `0xC4[0] = 0x00` on a card is evidence that the policy step ran.
+  That is what made the missing touch policy a contradiction rather than an unexplained state.
+* **The UIF write is protected by PW3.** `PUT DATA 0xD6` without a verified Admin PIN answers
+  `6982`.
+
+- [ ] Run the app's own provisioning end to end against this card (not an APDU replay), then
+      read the card back and confirm: `0xD6`/`0xD8` = `02 20`, `0xC4[0]` = `0x00`, both keys
+      readable, manifest present, and both pairing codes reproduce the addresses the wallet
+      shows.
+- [ ] Confirm a signature attempt on the provisioned card actually waits for a touch, and that
+      refusing to touch produces no signature and no counter increment.
+
+### Probing trap: `gpg-connect-agent` caches the Admin PIN
+
+`scdaemon` remembers a successful `VERIFY PW3` and silently re-sends it when a new card session
+starts. A probe that sends `PUT DATA 0xD6` in a fresh session therefore appears to succeed
+*without* any PIN, and looks like "these objects are not protected" — the opposite of the truth
+(`6982` once `gpgconf --kill scdaemon` is run). Every conclusion in this document that depends
+on an access condition was re-checked after killing the agent.
+
+Note also that a long or repeated run of raw APDUs over CCID can wedge the reader:
+`ERR 100663406 Card removed` from `scdaemon` while the card itself is fine. It recovers with
+`gpgconf --kill scdaemon`; a Swift probe using the app's own transport (CryptoTokenKit) does not
+show this at all, which is why item 18 asks for the app's path rather than more APDU replay.
+

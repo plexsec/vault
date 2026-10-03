@@ -318,6 +318,41 @@ public enum PairingManifestState: Equatable, Sendable {
 }
 
 /// What the ceremony learns about the card before touching it.
+/// The card policy the ceremony requires, stated once for the read-back.
+///
+/// These are the values `design.md` §4.2/§6.5 mandate, and they are what
+/// `YubikeyKit` writes (`OpenPGPTouchPolicy.fixedEncoded`, the single PW1-status
+/// byte). The read-back compares the card's own report against them, because a
+/// write that answered `9000` and stored nothing is a real failure mode — the
+/// applet discards a slot's UIF when that slot's algorithm attributes are written
+/// (amendment 26).
+public enum CardPolicy {
+    /// UIF policy byte for "touch required for every use, not relaxable".
+    public static let touchFixed: UInt8 = 0x02
+    /// UIF policy byte for "no touch required" — what a factory-fresh slot reports.
+    public static let touchOff: UInt8 = 0x00
+    /// PW1 status: the User PIN must be re-entered for every signature.
+    public static let pw1StatusPerSignature: UInt8 = 0x00
+
+    public static func isTouchFixed(_ value: UInt8?) -> Bool { value == touchFixed }
+
+    /// Human-readable form for an error message, naming what the card said rather
+    /// than only what it should have said.
+    public static func describeTouchPolicy(_ value: UInt8?) -> String {
+        guard let value else { return "nothing the card will report" }
+        let name: String
+        switch value {
+        case touchOff: name = "off"
+        case 0x01: name = "on (relaxable)"
+        case touchFixed: name = "fixed"
+        case 0x03: name = "cached"
+        case 0x04: name = "cached-fixed"
+        default: name = "unknown"
+        }
+        return "\(name) (0x\(String(format: "%02x", value)))"
+    }
+}
+
 public struct CardInventory: Equatable, Sendable {
     public var openPGPVersion: String
     public var manufacturer: String?
@@ -326,6 +361,9 @@ public struct CardInventory: Equatable, Sendable {
     public var algorithmAttributes: [KeySlot: [UInt8]]
     /// Raw 0xC4 PW status bytes, if present.
     public var pwStatusBytes: [UInt8]?
+    /// Touch policy (UIF) per slot, as the card reports it. Only the slots the
+    /// ceremony writes appear here.
+    public var touchPolicy: [KeySlot: UInt8]
     /// Slots that already hold a key.
     public var occupiedSlots: Set<KeySlot>
     /// `GET DATA 0x7A` -> 0x93 counter, if readable without a PIN.
@@ -349,6 +387,7 @@ public struct CardInventory: Equatable, Sendable {
         serial: String? = nil,
         algorithmAttributes: [KeySlot: [UInt8]] = [:],
         pwStatusBytes: [UInt8]? = nil,
+        touchPolicy: [KeySlot: UInt8] = [:],
         occupiedSlots: Set<KeySlot> = [],
         signatureCounter: UInt32? = nil,
         isFactoryFresh: Bool = true,
@@ -360,6 +399,7 @@ public struct CardInventory: Equatable, Sendable {
         self.serial = serial
         self.algorithmAttributes = algorithmAttributes
         self.pwStatusBytes = pwStatusBytes
+        self.touchPolicy = touchPolicy
         self.occupiedSlots = occupiedSlots
         self.signatureCounter = signatureCounter
         self.isFactoryFresh = isFactoryFresh
@@ -413,12 +453,21 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case rePairRead
     case reset
     case pinProvisioning
-    case policy
     case entropy
     case mnemonic
     case derivation
     case keyImport
     case readBackCheck
+    /// Writes the touch policy (UIF fixed on both signing-capable slots) and the
+    /// PIN policy (PW1 status), then **reads both back** and fails if the card does
+    /// not report them.
+    ///
+    /// It sits after the key import because writing a slot's algorithm attributes
+    /// resets that slot and the applet drops its touch policy with it, so a policy
+    /// written earlier is silently discarded — the bug this order exists to prevent
+    /// (amendment 26). Nothing after this step writes to those slots except the
+    /// private-use object, which does not disturb the UIF objects.
+    case policy
     /// Writes the pairing manifest into the card's private-use data object, so
     /// that the pairing codes can be produced again later without resetting the
     /// applet. Sits after the read-back check on purpose: nothing is advertised
@@ -440,12 +489,12 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .rePairRead: return "Read the pairing manifest"
         case .reset: return "Reset OpenPGP applet"
         case .pinProvisioning: return "Set PINs"
-        case .policy: return "Apply touch and PIN policy"
         case .entropy: return "Generate entropy"
         case .mnemonic: return "Write down the mnemonic"
         case .derivation: return "Derive the signing keys"
         case .keyImport: return "Import keys into YubiKey"
-        case .readBackCheck: return "Verify read-back keys"
+        case .readBackCheck: return "Verify the keys in the card"
+        case .policy: return "Apply touch and PIN policy"
         case .pairingManifest: return "Store the pairing manifest"
         case .pairingExport: return "Pair with the desktop wallet"
         case .counterBaseline: return "Record signature counter baseline"
@@ -486,10 +535,15 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
     public var path: [CeremonyStep] {
         switch self {
         case .freshGeneration, .restoreFromMnemonic:
+            // The policy step sits **after** the key import on purpose. Writing a
+            // slot's algorithm attributes resets that slot, and the applet drops
+            // its touch policy with it, so a policy applied before the import does
+            // not survive it — verified on hardware and reported for `gpg
+            // keytocard` in ykman#693 (amendment 26).
             return [
-                .cardInventory, .reset, .pinProvisioning, .policy, .entropy, .mnemonic,
-                .derivation, .keyImport, .readBackCheck, .pairingManifest, .pairingExport,
-                .counterBaseline, .teardown,
+                .cardInventory, .reset, .pinProvisioning, .entropy, .mnemonic,
+                .derivation, .keyImport, .readBackCheck, .policy,
+                .pairingManifest, .pairingExport, .counterBaseline, .teardown,
             ]
         case .rePair:
             return [.cardInventory, .rePairRead, .pairingExport, .counterBaseline, .teardown]
@@ -522,6 +576,8 @@ public enum CeremonyError: Swift.Error, Equatable {
     case diceRollsOutOfRange
     case keysNotDerived
     case readBackMismatch(algorithm: KeyAlgorithm, local: String, card: String)
+    /// The touch/PIN policy was written and the card did not report it back.
+    case policyNotApplied(detail: String)
     case pairingPolicyNotAcknowledged
     case destructiveResetNotAcknowledged
     case cardNotFactoryFresh
@@ -558,6 +614,8 @@ public enum CeremonyError: Swift.Error, Equatable {
         case .keysNotDerived: return "The signing keys have not been derived yet."
         case .readBackMismatch(let algorithm, _, _):
             return "The \(algorithm.displayName) public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
+        case .policyNotApplied(let detail):
+            return "The YubiKey did not accept the security policy: \(detail). This card must not be used as provisioned — restart from the card reset."
         case .pairingPolicyNotAcknowledged:
             return "The pairing code carries a chain code, which Keystone/MetaMask require. Confirm you understand that only the address shown on this screen can be signed for."
         case .destructiveResetNotAcknowledged:

@@ -985,3 +985,75 @@ bytes now match its own library's, and the wallet's reader is quoted in the test
 (`ETHSignature.fromCBOR`, which throws "Signature request ID is missing" without field 1), but a
 real wallet is still docs/m0-hardware-verification.md item 14.
 
+## 26. v0.2: the provisioning ceremony wrote a policy the applet threw away
+
+**Sections:** §4.2 (steps 3 and 6), §5.2 (rule 7d), §6.5 (the UIF and Ed25519 rows).
+
+**The report.** "This YubiKey was provisioned by the app, and the touch policy is wrong."
+`ykman openpgp info`-equivalent reads of the card showed `UIF = 00 20` — **touch off** — on
+both signing-capable slots, on a card whose private-use object held this app's 198-byte v2
+pairing manifest and whose `0xC4[0]` was `0x00`. Three of those four facts are produced by the
+ceremony; only the touch policy disagreed.
+
+**Two defects, both in the same step, both silent.**
+
+1. **The policy was applied before the key import, and the import discards it.** Writing a
+   slot's algorithm attributes resets that slot, and the applet drops the slot's touch policy
+   with it. Measured on the YubiKey 5C NFC in hand (firmware 5.8.0, applet 3.4), replaying the
+   ceremony's own APDUs:
+
+   | Step | `0xD6` (signature) after it |
+   | --- | --- |
+   | reset (`TERMINATE DF` + `ACTIVATE FILE`) | `00 20` (factory) |
+   | `PUT DATA 0xD6 = 02 20` | `02 20` ✓ |
+   | `PUT DATA 0xC1 = ECDSA/secp256k1` (algorithm attributes) | **`00 20`** |
+   | key upload, fingerprint `0xC7`, generation time `0xCE` | `00 20` |
+   | `PUT DATA 0xD6 = 02 20` **again**, after the import | `02 20` ✓, and it survives every later write (fingerprint, generation time, the manifest object, `0xC4`) |
+
+   The same interaction is reported for `gpg keytocard` in Yubico's own tracker
+   (yubikey-manager#693: "openpgp touch policy is reset to OFF" after `keytocard`). Note what
+   did *not* move: the PW1 status byte (`0xC4[0] = 0x00`, written by the same step, moments
+   earlier) survived the import — which is why the card looked configured and why the
+   contradiction was invisible.
+2. **The Ed25519 algorithm attributes were the wrong OID.** The app wrote GnuPG's OID for
+   Ed25519 (1.3.6.1.4.1.11591.15.1). This firmware rejects it with `6A80` and accepts RFC
+   8410's `id-Ed25519` (1.3.101.112, `2B 65 70`). The authentication slot's key therefore
+   could not be imported at all. The code had carried this as an open M0 question ("which one
+   the applet expects is an M0 hardware-verification item") — it is now answered, and answered
+   the other way around.
+
+**Why no test noticed.** The simulated card stored whatever it was given and never modelled the
+key-slot reset, so `applyPolicy` followed by `importKey` looked exactly like `importKey`
+followed by `applyPolicy`. Every write answered `9000`. This is the same shape as amendment 25:
+a self-consistent model (there, an encoder and a decoder; here, an applet model and the app)
+agrees with itself while disagreeing with the device.
+
+**The fixes.**
+
+* The policy is applied **after** the key import (`CeremonyMode.path` puts `.policy` between
+  `.readBackCheck` and `.pairingManifest`), because the algorithm attributes write is a
+  key-slot reset and the policy must be the last thing that touches those slots.
+* The policy step **reads both policies back** (`0x6E` carries `0xD6`/`0xD8`, with no extra
+  round trip and no PIN) and fails the ceremony with `CeremonyError.policyNotApplied` unless the
+  card reports `02 20` on both slots and `0xC4[0] = 0x00`. `CeremonyReport.touchPolicyVerified`
+  records that it was checked, and is only ever set from the card's own answer.
+* The Ed25519 attributes now carry RFC 8410's OID, which is also what the simulated card
+  requires — the mock compares the attributes byte-for-byte, so writing the GnuPG OID fails a
+  test instead of a provisioning run.
+* The simulated card now models the key-slot reset (an algorithm-attributes write drops that
+  slot's UIF) and a factory-fresh applet's `0xC4[0] = 0x01`, and can be told to answer `9000`
+  to a UIF write while storing nothing (`uifWritesAreIgnored`), which is the failure the
+  read-back exists to catch.
+
+**Evidence.** Reordering the path back (policy before the import) fails
+`testThePolicyStepComesAfterTheKeyImport`; removing the read-back fails
+`testAPolicyTheCardDoesNotReportBackFailsTheCeremony` with "expected an error to be thrown" and
+the step advanced to `pairingManifest` anyway. With the fixes, VaultKit 247 → 249 and YubikeyKit
+78 → 81.
+
+**What is still only a card's word.** Both fixes were found by replaying APDUs from a desktop
+probe, not by the app driving the card over its own transport. The app must be run end to end
+against the real YubiKey once and the card then read back
+(docs/m0-hardware-verification.md item 18) — that is what turns "the APDUs are right" into "the
+app provisions correctly".
+

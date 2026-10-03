@@ -41,7 +41,6 @@ final class RePairTests: XCTestCase {
             acknowledgingDestruction: true
         )
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.applyPolicy()
         try await ceremony.generateEntropy()
         try ceremony.advance()
         let words = try ceremony.mnemonicForDisplay()
@@ -51,6 +50,7 @@ final class RePairTests: XCTestCase {
         try await ceremony.importKeys()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
+        try await ceremony.applyPolicy()
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)

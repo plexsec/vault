@@ -59,6 +59,9 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     /// reset, the object was already occupied by something else, or the applet
     /// has no private-use objects at all.
     public var pairingManifestStored: Bool?
+    /// Both slots reported the touch policy the ceremony asked for. Only ever set
+    /// after reading the UIF objects back off the card (amendment 26).
+    public var touchPolicyVerified: Bool?
     /// Ordered: secp256k1, then Ed25519. Empty until derivation.
     public var keys: [KeyRecord] = []
     public var warnings: [String] = []
@@ -413,7 +416,7 @@ public final class ProvisioningCeremony {
             guard report.readBackVerified else {
                 throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public keys have not been verified yet")
             }
-            step = .pairingManifest
+            step = .policy
 
         case .pairingManifest:
             guard pairingManifestOutcome != nil else {
@@ -627,11 +630,19 @@ public final class ProvisioningCeremony {
         }
         sessionAdminPIN?.zeroize()
         sessionAdminPIN = SensitiveBytes(copying: adminPIN)
-        advance(to: .policy)
+        advance(to: .entropy)
     }
 
-    // MARK: Step 5 — policy
+    // MARK: Step 8 — policy (after the keys, see CeremonyStep.policy)
 
+    /// Writes the touch policy and the PIN policy, then **reads them back**.
+    ///
+    /// A policy the card does not actually report is not a policy: the whole
+    /// scheme rests on "no signature without a touch" (design.md §2), so a write
+    /// that did not stick has to stop the ceremony rather than produce a card that
+    /// looks provisioned. This is not a hypothetical failure — the applet discards
+    /// a slot's UIF when that slot's algorithm attributes are written, which is
+    /// exactly what the previous order did (amendment 26).
     public func applyPolicy() async throws {
         try requireCurrent(.policy)
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
@@ -642,12 +653,22 @@ public final class ProvisioningCeremony {
         }
         let after = try await card.inventory()
         inventory = after
-        if let status = after.pwStatusBytes, let first = status.first, first != 0x00 {
-            report.warnings.append(
-                "PW1 status reads 0x\(String(format: "%02x", first)) instead of 0x00; the card may not require the PIN for every signature."
-            )
+
+        var problems: [String] = []
+        if !CardPolicy.isTouchFixed(after.touchPolicy[.signature]) {
+            problems.append("the signature slot's touch policy reads \(CardPolicy.describeTouchPolicy(after.touchPolicy[.signature]))")
         }
-        advance(to: .entropy)
+        if !CardPolicy.isTouchFixed(after.touchPolicy[.authentication]) {
+            problems.append("the authentication slot's touch policy reads \(CardPolicy.describeTouchPolicy(after.touchPolicy[.authentication]))")
+        }
+        if let status = after.pwStatusBytes, let first = status.first, first != CardPolicy.pw1StatusPerSignature {
+            problems.append("the PW1 status reads 0x\(String(format: "%02x", first))")
+        }
+        if !problems.isEmpty {
+            throw CeremonyError.policyNotApplied(detail: problems.joined(separator: "; "))
+        }
+        report.touchPolicyVerified = true
+        advance(to: .pairingManifest)
     }
 
     // MARK: Step 6 — entropy

@@ -295,6 +295,12 @@ public final class MockYubikeyTransport: YubikeyTransport {
             if let fingerprint = slots[slot]?.fingerprint {
                 discretionary += TLV(tag: objects.fingerprint, value: fingerprint).encoded
             }
+            // The real applet carries the UIF objects inside 0x6E (seen on a
+            // YubiKey 5C NFC: `... d6 02 00 20 d7 02 00 20 d8 02 00 20 d9 02 00 20`),
+            // which is what lets the policy read-back cost no extra round trip.
+            if let uif = slots[slot]?.uif {
+                discretionary += TLV(tag: objects.uif, value: uif).encoded
+            }
         }
         discretionary += TLV(tag: OpenPGPDataObject.pwStatusBytes, value: pwStatus).encoded
 
@@ -332,11 +338,23 @@ public final class MockYubikeyTransport: YubikeyTransport {
         switch tag {
         case OpenPGPDataObject.algorithmAttributesSignature, OpenPGPDataObject.algorithmAttributesAuthentication:
             guard let slot = Self.slot(forAlgorithmAttributesTag: tag) else { return status(0x6A, 0x88) }
-            // The attributes must match the algorithm whose key was just written,
-            // so a slot/algorithm mix-up fails here rather than silently.
-            let expectedFirst: UInt8 = slot == .signature ? 0x13 : 0x16
-            guard command.data.first == expectedFirst else { return status(0x6A, 0x80) }
+            // The attributes must be exactly the ones this firmware accepts for
+            // that slot's algorithm — not merely start with the right algorithm
+            // id. Real hardware (YubiKey 5C NFC, firmware 5.8.0) rejects an
+            // EdDSA/Ed25519 attributes object that carries GnuPG's OID with
+            // `6A80`, and accepts RFC 8410's. Checking the bytes here is what
+            // makes that a failing test rather than a failed provisioning run.
+            let algorithm: KeyAlgorithm = slot == .signature ? .secp256k1 : .ed25519
+            guard command.data == KeyImportTemplate.algorithmAttributes(for: algorithm) else {
+                return status(0x6A, 0x80)
+            }
             slots[slot]?.algorithmAttributes = command.data
+            // Writing a slot's algorithm attributes is a key-slot reset: the
+            // applet drops that slot's touch policy with it. Observed on hardware
+            // (amendment 26) and reported for `gpg keytocard` in ykman#693: a
+            // policy applied *before* the import is gone afterwards. Modelling
+            // this is the whole reason the ceremony applies the policy last.
+            slots[slot]?.uif = OpenPGPTouchPolicy.offEncoded
         case OpenPGPDataObject.fingerprintSignature, OpenPGPDataObject.fingerprintAuthentication:
             guard let slot = Self.slot(forFingerprintTag: tag) else { return status(0x6A, 0x88) }
             guard command.data.count == 20 else { return status(0x6A, 0x80) }
@@ -346,6 +364,9 @@ public final class MockYubikeyTransport: YubikeyTransport {
             pwStatus = command.data
         case OpenPGPDataObject.uifSignature, OpenPGPDataObject.uifAuthentication:
             guard let slot = Self.slot(forUIFTag: tag) else { return status(0x6A, 0x88) }
+            // A card that answers `9000` and stores nothing is exactly the failure
+            // this flag reproduces, so the ceremony's read-back can be tested.
+            guard !uifWritesAreIgnored else { return status(0x90, 0x00) }
             slots[slot]?.uif = command.data
         case OpenPGPDataObject.generationTimeSignature, OpenPGPDataObject.generationTimeAuthentication:
             // The simulation accepts the tags design.md specifies.
@@ -569,7 +590,11 @@ public final class MockYubikeyTransport: YubikeyTransport {
         userRetriesRemaining = 3
         adminRetriesRemaining = 3
         slots = [.signature: SlotState(), .authentication: SlotState()]
-        pwStatus = [0x00]
+        // The factory default is 0x01 ("PIN once per session"), not the 0x00 the
+        // ceremony writes. Observed on real hardware: a freshly terminated applet
+        // reads `01 7F 7F 7F 03 00 03`, which is how the policy step's write can
+        // be told apart from a card that was never configured.
+        pwStatus = [0x01]
         signatureCounter = 0
         // TERMINATE DF wipes the private-use objects along with everything else,
         // which is why the manifest has to be written *after* a reset and why a
@@ -598,6 +623,14 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     public var currentPWStatus: [UInt8] { pwStatus }
     public func currentUIF(_ slot: KeySlot) -> [UInt8] { slots[slot]?.uif ?? [] }
+
+    /// When set, `PUT DATA` of a UIF object answers `9000` and stores nothing.
+    ///
+    /// This is the failure mode the touch-policy read-back exists to catch, and it
+    /// is not hypothetical: the ceremony used to write the policy before the key
+    /// import, and the applet's key-slot reset then discarded it while reporting
+    /// success at every step (amendment 26).
+    public var uifWritesAreIgnored = false
     public func currentFingerprint(_ slot: KeySlot) -> [UInt8] { slots[slot]?.fingerprint ?? [] }
     public func hasKey(in slot: KeySlot) -> Bool { slots[slot]?.isOccupied ?? false }
     public func storedPrivateKey(_ slot: KeySlot) -> [UInt8]? { slots[slot]?.privateKey }

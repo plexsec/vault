@@ -245,11 +245,6 @@ extension XCTestCase {
         typeSecret(adminPIN, into: "Repeat Admin PIN", in: app, file: file, line: line)
         tapWhenVisible(app.buttons["Set PINs"], in: app, file: file, line: line)
 
-        // Policy.
-        let applyPolicy = app.buttons["Apply policy"]
-        XCTAssertTrue(applyPolicy.waitForExistence(timeout: 10), "policy step missing", file: file, line: line)
-        tapWhenVisible(applyPolicy, in: app, file: file, line: line)
-
         // Entropy: generate, record the commitment, then continue.
         let generate = app.buttons["Generate entropy"]
         XCTAssertTrue(generate.waitForExistence(timeout: 10), "entropy step missing", file: file, line: line)
@@ -335,6 +330,12 @@ extension XCTestCase {
         // Read-back: verify, then continue.
         tapStepAction("Verify read-back", in: app, file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
+
+        // Policy: last, because writing a slot's algorithm attributes resets that
+        // slot and the applet drops its touch policy with it (amendment 26). The
+        // step reads both policies back off the card, so reaching the manifest step
+        // at all means the card reported them.
+        tapStepAction("Apply policy", in: app, file: file, line: line)
 
         // The manifest write is new in this version: assert it actually happened,
         // because every later re-pair depends on it.

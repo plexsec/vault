@@ -58,12 +58,13 @@ docs/
 tools/verify.sh
 
 # individual pieces
-cd ios/Packages/VaultKit  && swift test      # 247 tests: crypto, BIP39/BIP32 incl. ckd_pub, addresses, BC-UR, pairing manifest,
+cd ios/Packages/VaultKit  && swift test      # 249 tests: crypto, BIP39/BIP32 incl. ckd_pub, addresses, BC-UR, pairing manifest,
                                              #            ceremony, read-only re-pair, RLP, transactions, signatures,
                                              #            chain naming and asset labelling, scanner lifecycle,
                                              #            interoperability with the reference implementation
-cd ios/Packages/YubikeyKit && swift test     # 78 tests: APDU codec, both OpenPGP slots, private-use data objects, PSO:CDS,
-                                             #            transports, NFC session policy, end-to-end signing
+cd ios/Packages/YubikeyKit && swift test     # 81 tests: APDU codec, both OpenPGP slots, private-use data objects, PSO:CDS,
+                                             #            transports, NFC session policy, end-to-end signing, and the
+                                             #            applet behaviours that broke provisioning (amendment 26)
 cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 9 UI tests (~4 min each for the two that walk a whole flow)
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest

@@ -138,10 +138,22 @@ public enum OpenPGPPinDefaults {
 /// confirms against `ykman openpgp info`. v1 writes exactly what design.md
 /// §6.5 specifies and verifies the read-back.
 public enum OpenPGPTouchPolicy {
+    /// `0x00` off: the applet does not require a touch for that slot's key.
+    public static let off: UInt8 = 0x00
     /// `0x02` fixed: touch required for every use and cannot be relaxed later.
     public static let fixed: UInt8 = 0x02
     /// Encoded value for the UIF data object (2 bytes, per design.md §6.5).
     public static let fixedEncoded: [UInt8] = [0x02, 0x20]
+    /// What a factory-fresh applet reports for every slot.
+    public static let offEncoded: [UInt8] = [0x00, 0x20]
+
+    /// Whether the card reports the policy the ceremony asked for.
+    ///
+    /// The second byte is the general-feature-management button flag, which the
+    /// applet carries along; only the policy byte is ours to assert on.
+    public static func isFixed(_ value: [UInt8]?) -> Bool {
+        value?.first == fixed
+    }
 }
 
 /// Parsed view of the OpenPGP card's application data (GET DATA 0x6E) and
@@ -155,6 +167,11 @@ public struct OpenPGPApplicationData: Equatable {
     public var extendedCapabilities: [UInt8]?
     public var algorithmAttributesSignature: [UInt8]?
     public var algorithmAttributesAuthentication: [UInt8]?
+    /// Touch policy (UIF) per slot. Read back after the policy step: the applet
+    /// **drops** a slot's UIF when that slot's algorithm attributes are written, so
+    /// a policy written before the key import does not survive it (amendment 26).
+    public var uifSignature: [UInt8]?
+    public var uifAuthentication: [UInt8]?
     public var pwStatusBytes: [UInt8]?
     public var fingerprintSignature: [UInt8]?
     public var combinedFingerprints: [UInt8]?
@@ -179,6 +196,8 @@ public struct OpenPGPApplicationData: Equatable {
         result.extendedCapabilities = TLVParser.find(OpenPGPDataObject.extendedCapabilities, in: objects)?.value
         result.algorithmAttributesSignature = TLVParser.find(OpenPGPDataObject.algorithmAttributesSignature, in: objects)?.value
         result.algorithmAttributesAuthentication = TLVParser.find(OpenPGPDataObject.algorithmAttributesAuthentication, in: objects)?.value
+        result.uifSignature = TLVParser.find(OpenPGPDataObject.uifSignature, in: objects)?.value
+        result.uifAuthentication = TLVParser.find(OpenPGPDataObject.uifAuthentication, in: objects)?.value
         result.pwStatusBytes = TLVParser.find(OpenPGPDataObject.pwStatusBytes, in: objects)?.value
         result.fingerprintSignature = TLVParser.find(OpenPGPDataObject.fingerprintSignature, in: objects)?.value
         result.combinedFingerprints = TLVParser.find(OpenPGPDataObject.fingerprintsCombined, in: objects)?.value
@@ -260,15 +279,18 @@ public enum KeyImportTemplate {
     ]
 
     /// Algorithm attributes for EdDSA over Ed25519: `0x16` (EdDSA) followed by
-    /// the OID 1.3.6.1.4.1.11591.15.1 that GnuPG uses for Ed25519. No trailing
-    /// format byte.
+    /// RFC 8410's `id-Ed25519` OID 1.3.101.112 (`2B 65 70`).
     ///
-    /// RFC 8410's `id-Ed25519` (1.3.101.112) is the other candidate; which one
-    /// the applet expects is an M0 hardware-verification item, and a wrong OID
-    /// fails visibly at the import or read-back step.
+    /// **Resolved against real hardware** (YubiKey 5C NFC, firmware 5.8.0, OpenPGP
+    /// applet 3.4), which is what settled the open question this comment used to
+    /// carry: GnuPG's OID for Ed25519 (1.3.6.1.4.1.11591.15.1, `2B 06 01 04 01 DA 47
+    /// 0F 01`) is **rejected with `6A80`**, and `2B 65 70` is accepted with `9000`.
+    /// Writing the GnuPG OID meant the authentication slot's key could not be
+    /// imported at all on this firmware, so provisioning could not complete
+    /// (amendment 26, docs/m0-hardware-verification.md).",
     public static let eddsaEd25519AlgorithmAttributes: [UInt8] = [
         0x16,                   // algorithm id: EdDSA
-        0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01, // OID 1.3.6.1.4.1.11591.15.1
+        0x2B, 0x65, 0x70,       // OID 1.3.101.112 (RFC 8410 id-Ed25519)
     ]
 
     public static func algorithmAttributes(for algorithm: KeyAlgorithm) -> [UInt8] {

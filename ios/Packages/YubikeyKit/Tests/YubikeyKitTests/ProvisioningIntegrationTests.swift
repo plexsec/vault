@@ -65,7 +65,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
             userPIN: Array(Self.userPIN.utf8),
             adminPIN: Array(Self.adminPIN.utf8)
         )
-        try await ceremony.applyPolicy()
 
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
@@ -79,6 +78,21 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let keys = try ceremony.deriveKeys()
         try ceremony.advance()
         return (words, keys)
+    }
+
+    /// The tail of the ceremony, in the order design.md §4.2 now mandates: import
+    /// the keys, verify them off the card, and only then apply the policy.
+    ///
+    /// The policy cannot be applied any earlier: writing a slot's algorithm
+    /// attributes resets that slot and the applet drops its touch policy with it,
+    /// so the write is silently discarded (amendment 26).
+    @discardableResult
+    private func finishProvisioning(_ ceremony: ProvisioningCeremony) async throws -> [KeyAlgorithm: ReadBackResult] {
+        try await ceremony.importKeys()
+        let readBack = try await ceremony.verifyReadBack()
+        try ceremony.advance()
+        try await ceremony.applyPolicy()
+        return readBack
     }
 
     /// The complete §4.2 flow, with no protocol-level mocking.
@@ -101,13 +115,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
             userPIN: Array(Self.userPIN.utf8),
             adminPIN: Array(Self.adminPIN.utf8)
         )
-        try await ceremony.applyPolicy()
-
-        // The policy must have landed on both slots, not just in the ceremony.
-        XCTAssertEqual(transport.currentUIF(.signature), [0x02, 0x20])
-        XCTAssertEqual(transport.currentUIF(.authentication), [0x02, 0x20])
-        XCTAssertEqual(transport.currentPWStatus.first, 0x00)
-        XCTAssertEqual(transport.currentPWStatus.count, 1)
 
         try await ceremony.generateEntropy()
         try ceremony.advance()
@@ -144,6 +151,17 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(readBack[.ed25519]?.matches, true)
         XCTAssertEqual(readBack[.secp256k1]?.cardPublicKeyHex, keys.secp256k1.publicKeyHex)
         XCTAssertEqual(readBack[.ed25519]?.cardPublicKeyHex, keys.ed25519.publicKeyHex)
+
+        // The policy is applied **after** the import, and the ceremony reads it
+        // back off the card. Writing a slot's algorithm attributes resets that
+        // slot, and the applet drops its touch policy with it: this order is the
+        // fix for a card that reported `9000` for every write and ended up with
+        // touch disabled (amendment 26).
+        try await ceremony.applyPolicy()
+        XCTAssertEqual(transport.currentUIF(.signature), [0x02, 0x20])
+        XCTAssertEqual(transport.currentUIF(.authentication), [0x02, 0x20])
+        XCTAssertEqual(transport.currentPWStatus.first, 0x00)
+        XCTAssertEqual(ceremony.report.touchPolicyVerified, true)
 
         // The manifest goes to the card itself, through the real APDU layer — this
         // is the write that makes a later re-pair possible without a reset.
@@ -212,6 +230,75 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00da00d802022000") })
     }
 
+    // MARK: The touch policy and the key import (amendment 26)
+
+    /// Writing a slot's algorithm attributes resets that slot, and the applet
+    /// drops its touch policy with it.
+    ///
+    /// This is the behaviour that made a provisioned card report `00 20` — touch
+    /// off — while every write in the ceremony answered `9000`. It is reproduced
+    /// here because the mock has to be able to fail the ordering test below; a
+    /// mock that kept the policy across an import would have kept the bug
+    /// invisible (the APDU layer and the applet both report success).
+    func testImportingAKeyDiscardsThatSlotsTouchPolicy() async throws {
+        let transport = MockYubikeyTransport()
+        let card = TransportSessionCard(makeTransport: { transport })
+        let adminPIN = Array(Self.adminPIN.utf8)
+
+        try await card.reset(adminPIN: Array("12345678".utf8))
+        try await card.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: adminPIN)
+        try await card.applyPolicy(adminPIN: adminPIN)
+        XCTAssertEqual(transport.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
+        XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
+
+        try await card.importKey(
+            slot: .signature,
+            algorithm: .secp256k1,
+            privateKey: SensitiveBytes(copying: [UInt8](repeating: 0x11, count: 32)),
+            fingerprint: [UInt8](repeating: 0x22, count: 20),
+            creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            adminPIN: adminPIN
+        )
+
+        XCTAssertEqual(
+            transport.currentUIF(.signature),
+            OpenPGPTouchPolicy.offEncoded,
+            "the import must drop the slot's touch policy, as the applet does"
+        )
+        // The other slot was not touched.
+        XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
+    }
+
+    /// With the policy applied *after* the import, everything the ceremony still
+    /// does to the card leaves it alone.
+    ///
+    /// This is the other half of the ordering guarantee: it is not enough for the
+    /// policy write to land, it has to survive the rest of the run.
+    func testPolicyAppliedAfterTheImportSurvivesTheRestOfTheCeremony() async throws {
+        let transport = MockYubikeyTransport()
+        let (ceremony, _) = makeCeremony(transport: transport)
+        _ = try await walkToDerivation(ceremony)
+        try await finishProvisioning(ceremony)   // import, read-back, policy
+
+        XCTAssertEqual(transport.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
+        XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
+
+        // Everything the rest of the ceremony still does to the card.
+        _ = try await ceremony.writePairingManifest()
+        try ceremony.advance()
+        _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
+        try ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
+        _ = try await ceremony.readCounterBaseline()
+
+        XCTAssertEqual(
+            transport.currentUIF(.signature),
+            OpenPGPTouchPolicy.fixedEncoded,
+            "nothing after the policy step may disturb the touch policy"
+        )
+        XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
+    }
+
     /// Re-provisioning a YubiKey that already holds a key.
     ///
     /// The ceremony state machine forces the destructive reset before anything
@@ -222,7 +309,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let (first, _) = makeCeremony(transport: transport)
         try await walkToDerivation(first)
-        try await first.importKeys()
+        try await finishProvisioning(first)
         XCTAssertTrue(transport.hasKey(in: .signature))
         XCTAssertTrue(transport.hasKey(in: .authentication))
         let firstFingerprint = transport.currentFingerprint(.signature)
@@ -275,7 +362,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let originalTransport = MockYubikeyTransport()
         let (original, _) = makeCeremony(transport: originalTransport)
         let originalWalk = try await walkToDerivation(original)
-        try await original.importKeys()
+        try await finishProvisioning(original)
 
         let newTransport = MockYubikeyTransport(serial: 0x1111_2222)
         let (restored, _) = makeCeremony(transport: newTransport)
@@ -284,9 +371,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
             mode: .restoreFromMnemonic,
             restoredWords: originalWalk.mnemonic
         )
-        try await restored.importKeys()
-        let readBack = try await restored.verifyReadBack()
-        try restored.advance()
+        let readBack = try await finishProvisioning(restored)
         _ = try await restored.writePairingManifest()
         try restored.advance()
 

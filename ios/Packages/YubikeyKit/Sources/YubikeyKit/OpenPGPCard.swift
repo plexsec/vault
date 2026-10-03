@@ -401,6 +401,10 @@ public final class OpenPGPCard: SignerCard {
             serial: parsed.serial.map { String(format: "%08X", $0) },
             algorithmAttributes: attributes,
             pwStatusBytes: parsed.pwStatusBytes,
+            touchPolicy: [
+                .signature: parsed.uifSignature?.first,
+                .authentication: parsed.uifAuthentication?.first,
+            ].compactMapValues { $0 },
             occupiedSlots: occupied,
             signatureCounter: counter,
             isFactoryFresh: occupied.isEmpty && (counter ?? 0) == 0,

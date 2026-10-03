@@ -147,10 +147,12 @@ final class APDUTests: XCTestCase {
             KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes,
             [0x13, 0x2B, 0x81, 0x04, 0x00, 0x0A]
         )
-        // 0x16 EdDSA || OID 1.3.6.1.4.1.11591.15.1 (Ed25519), no trailing byte.
+        // 0x16 EdDSA || RFC 8410 id-Ed25519 (1.3.101.112). The GnuPG OID
+        // (1.3.6.1.4.1.11591.15.1) is rejected by real firmware with 6A80, which
+        // meant the authentication slot's key could never be imported.
         XCTAssertEqual(
             KeyImportTemplate.eddsaEd25519AlgorithmAttributes,
-            [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01]
+            [0x16, 0x2B, 0x65, 0x70]
         )
         XCTAssertEqual(KeyImportTemplate.algorithmAttributes(for: .secp256k1),
                        KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes)
@@ -387,6 +389,39 @@ final class APDUTests: XCTestCase {
             // The real card answers 6A80 on an occupied slot.
             XCTAssertEqual(error as? CardError, .keyImportRejected)
         }
+    }
+
+    /// Real firmware rejects GnuPG's Ed25519 OID with `6A80`, and the app used to
+    /// write exactly that: the authentication slot's key could not be imported at
+    /// all, so provisioning could not complete on a YubiKey 5 with firmware 5.8.0.
+    ///
+    /// The mock refuses it for the same reason, so this cannot silently come back.
+    func testTheWrongEd25519AlgorithmAttributesAreRefused() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+
+        await XCTAssertThrowsErrorAsync {
+            try await card.putData(
+                tag: OpenPGPDataObject.algorithmAttributesAuthentication,
+                value: [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01],
+                operation: .setAlgorithmAttributes
+            )
+        } verify: { error in
+            // 6A80 "wrong data", mapped for this operation by the status table.
+            XCTAssertEqual(error as? CardError, .unsupportedFirmware)
+        }
+        // And the key that the app does write imports fine.
+        try await card.importKey(
+            slot: .authentication,
+            algorithm: .ed25519,
+            privateKey: SensitiveBytes(copying: [UInt8](repeating: 0x5A, count: 32)),
+            fingerprint: [UInt8](repeating: 0xCD, count: 20),
+            creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            adminPIN: Array("87654321".utf8)
+        )
     }
 
     /// The Ed25519 path end to end: import a 32-byte seed into the

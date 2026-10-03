@@ -181,6 +181,9 @@ final class MockSignerCard: SignerCard {
         manufacturer: "Yubico",
         serial: "00000000",
         pwStatusBytes: [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F],
+        // A factory-fresh applet reports `off` for every slot; the policy step's
+        // whole job is to make this read `fixed`, and the ceremony reads it back.
+        touchPolicy: [.signature: CardPolicy.touchOff, .authentication: CardPolicy.touchOff],
         occupiedSlots: [],
         signatureCounter: 0,
         isFactoryFresh: true,
@@ -248,7 +251,18 @@ final class MockSignerCard: SignerCard {
         dataObjects[0xD8] = [0x02, 0x20]
         dataObjects[0xC4] = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
         inventoryResult.pwStatusBytes = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
+        // A card that answers `9000` to the UIF writes and stores nothing is the
+        // failure the read-back exists to catch, and it is not hypothetical: the
+        // applet really discards a slot's policy when that slot's algorithm
+        // attributes are written (amendment 26). `uifWritesAreIgnored` reproduces
+        // it so the ceremony's gate can be tested.
+        guard !uifWritesAreIgnored else { return }
+        inventoryResult.touchPolicy[.signature] = 0x02
+        inventoryResult.touchPolicy[.authentication] = 0x02
     }
+
+    /// When set, the policy writes answer `9000` and change nothing.
+    var uifWritesAreIgnored = false
 
     func importKey(
         slot: KeySlot,
@@ -272,6 +286,11 @@ final class MockSignerCard: SignerCard {
         storedCreationTime = creationTime
         inventoryResult.occupiedSlots.insert(slot)
         inventoryResult.isFactoryFresh = false
+        // Writing a slot's algorithm attributes resets that slot, and the applet
+        // drops its touch policy with it. Verified on real hardware, and the
+        // reason the ceremony applies the policy *after* the import: with the old
+        // order this line is what silently turned touch off on a provisioned card.
+        inventoryResult.touchPolicy[slot] = CardPolicy.touchOff
     }
 
     func readPublicKey(slot: KeySlot) async throws -> [UInt8] {
