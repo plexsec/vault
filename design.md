@@ -287,6 +287,23 @@ allowlist cannot exist. The implementation is therefore *stricter*: every chain 
 confirmed by the operator, by name, in the session that signs for it. A remembered list
 would be more convenient and less safe.
 
+**Chain names are labels, not a gate.** The screens name the chain and the coin the value
+and the fees are denominated in — `Polygon (chain id 137), native token POL` — because
+`chain id 137` on its own asks the operator to remember what 137 is, and because a value
+row reading `ETH` on a Polygon transaction misnames the one number the operator is being
+asked to approve. The table behind it (`VaultKit/Signing/EVMChain.swift`) is a **display
+convenience only**: no signing decision consults it, and a chain id it has never seen is
+confirmed and signed exactly like a named one — an app that signed only the chains its
+author happened to list would refuse legitimate networks, and the check that matters is the
+id against the wallet's own screen, which is why the number is always shown. An unknown
+chain is displayed as `chain id 424242 (not a chain this app knows)` and its amounts as
+`2 native`: it is never given a symbol, because defaulting to ETH is how the mislabelling
+came about. Polygon's coin is spelled POL, the name the September 2024 migration gave it,
+since that is what the operator will be comparing against on the wallet's screen. Because
+Polygon's id is above 110, its *legacy* transactions are also the case that widens the
+recovery value (above); its EIP-1559 transactions, which are what a wallet sends by
+default, are ordinary 65-byte ones.
+
 ---
 
 ---
@@ -521,7 +538,7 @@ Ratings are residual risk after the listed mitigations.
 7. **Dependence on Yubico's closed-source firmware.** The OpenPGP applet's behavior can be black-box verified via APDUs, but the internal implementation is not auditable.
 8. **Counter auditing requires the YubiKey to touch an online device.** Although reading the counter requires no PIN and exposes no secrets, this step runs counter to the intuition of a "cold" device and must be explicitly explained as safe in the documentation. During provisioning the read happens on the offline iPhone itself (§4.2 step 9).
 
-9. **Signing covers EVM transactions only** (v0.2). `personal_sign` (EIP-191), EIP-712 typed data, Bitcoin PSBTs (§6.3) and Ed25519 chains are refused with an explanation: the first two need their own hashing and their own `v` convention, the third a PSBT engine, and the fourth cannot use the digest-in contract at all (§6.1). The counter-delta audit of §5.2 rules 3–4 remains a wallet-side procedure: the app records the counter before and after a signature, but the comparison that matters is the wallet's.
+9. **Signing covers EVM transactions only** (v0.2). `personal_sign` (EIP-191), EIP-712 typed data, Bitcoin PSBTs (§6.3) and Ed25519 chains are refused with an explanation: the first two need their own hashing and their own `v` convention, the third a PSBT engine, and the fourth cannot use the digest-in contract at all (§6.1). Within EVM the chain set is *open*: any chain id in the request is signable once the operator confirms it, and the app's chain table only decides how the chain and its coin are *named* on screen (§5.3) — so the app cannot be the reason a network is unsupported, and equally cannot vouch for one it does not know. The counter-delta audit of §5.2 rules 3–4 remains a wallet-side procedure: the app records the counter before and after a signature, but the comparison that matters is the wallet's.
 
 10. **Dice entropy is non-authoritative in v1** (§4.2 step 4). A backdoored or faulty RNG is mitigated by construction — the entropy is the XOR of the card's hardware RNG and the iOS CSPRNG — so user dice are the one thing that is not fed into the mnemonic. Reproducible builds bound the residual risk further; the independent cross-check that previously provided an additional bound was removed in v0.1.
 

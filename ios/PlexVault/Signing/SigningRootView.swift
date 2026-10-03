@@ -220,14 +220,15 @@ struct SigningRootView: View {
                         .foregroundStyle(.orange)
                 }
 
-                if let chainID = viewModel.chainConfirmationNeeded {
+                if let chain = viewModel.chainConfirmationNeeded {
+                    let named = viewModel.chainConfirmationChain
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Chain id \(chainID) has not been used on this device in this session.")
+                        Text("\(named?.summaryLine ?? "Chain id \(chain)") has not been used on this device in this session.")
                             .font(.footnote)
-                        Text("Nothing has been signed for that chain yet here, so confirm the id against your wallet before continuing.")
+                        Text("Nothing has been signed for that chain yet here, so confirm the name and the id against your wallet before continuing.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Button("Confirm chain id \(chainID)") {
+                        Button("Confirm \(named?.displayName ?? "chain id \(chain)")") {
                             Task { await viewModel.confirmChain() }
                         }
                         .buttonStyle(.bordered)
@@ -389,10 +390,10 @@ struct SigningReportView: View {
             ("Card serial", report.cardSerial ?? "not reported"),
             ("Signs for", report.cardAddress ?? "—"),
             ("Key path", report.pinnedPath ?? "—"),
-            ("Chain id", report.chainID ?? "—"),
+            ("Chain", report.chainDisplay),
             ("Transaction", report.transactionType ?? "—"),
             ("To", report.recipient ?? "—"),
-            ("Value", report.valueInEther.map { "\($0) ETH" } ?? "—"),
+            ("Value", report.nativeValueDisplay ?? "—"),
             ("Function", report.decodedFunction ?? "not decoded"),
             ("Request id", report.requestID ?? "—"),
             ("Digest", report.approvedDigest ?? "—"),

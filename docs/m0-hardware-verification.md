@@ -454,13 +454,20 @@ feature is usable at all.
 - [ ] Provision a card with this app, pair it with MetaMask (QR), build a **small-value**
       transaction, scan it here, approve, sign, and scan the signature back. MetaMask must
       accept it and broadcast.
-- [ ] Repeat for a **legacy** transaction on a chain whose EIP-155 recovery value exceeds
-      one byte (chain id > 110, e.g. Polygon 137 or Arbitrum 42161): the signature field
-      grows to two bytes there, and MetaMask reads everything from byte 64 as `v`
-      (design.md §5.3). This is the one deliberate deviation from the EIP's
-      `bytes .size 65`, and only a real wallet can confirm it is tolerated.
 - [ ] Repeat for an **EIP-1559** transaction on mainnet: the recovery value is the y-parity
       (0 or 1) and the field is exactly 65 bytes.
+- [ ] Repeat for an **EIP-1559** transaction on **Polygon (chain id 137)** — the ordinary
+      POL case — and confirm the app's screens call the chain and the coin by name
+      (`Polygon (chain id 137)`, `1.5 POL`) and that MetaMask's own screen agrees. Confirm
+      the wallet accepts the signature and that the value moved is what both screens said.
+- [ ] Repeat for a **legacy** transaction on a chain whose EIP-155 recovery value exceeds
+      one byte. **Polygon 137 is the concrete case**: `137·2 + 35 + recid` is 309 or 310,
+      the signature field grows to two bytes, and MetaMask reads everything from byte 64 as
+      `v` (design.md §5.3). MetaMask sends EIP-1559 on Polygon by default, so this needs a
+      wallet configured for legacy gas pricing (or a chain that has no 1559 support).
+      This is the one deliberate deviation from the EIP's `bytes .size 65`, and only a real
+      wallet can confirm it is tolerated — the unit tests only prove the bytes and the
+      sender recovery are right, which is not the same as the wallet accepting them.
 - [ ] Confirm MetaMask displays the same account address this app showed before signing.
 - [ ] Confirm the counter moved by exactly one for one transaction (the app shows before and
       after; the wallet's own read is the independent one).

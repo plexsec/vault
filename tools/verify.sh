@@ -63,11 +63,18 @@ if [[ "$stale" == "1" ]]; then
 fi
 echo "  ok: derivation and signing fixtures match the independent implementation"
 
+# `--disable-build-manifest-caching`: YubikeyKit depends on VaultKit by path, and
+# SwiftPM caches the dependency's *file list* in the dependent's .build. A new file
+# in VaultKit is then missing from the YubikeyKit build and the failure looks like
+# "cannot find X in scope" — i.e. the gate would be testing yesterday's sources,
+# which is the same hazard as a stale fixture.
 step "VaultKit tests (crypto, BIP39/BIP32, addresses, BC-UR, ceremony)"
-(cd "$REPO_ROOT/ios/Packages/VaultKit" && swift test) || fail "VaultKit tests"
+(cd "$REPO_ROOT/ios/Packages/VaultKit" && swift test --disable-build-manifest-caching) \
+  || fail "VaultKit tests"
 
 step "YubikeyKit tests (APDU codec, OpenPGP card, transports)"
-(cd "$REPO_ROOT/ios/Packages/YubikeyKit" && swift test) || fail "YubikeyKit tests"
+(cd "$REPO_ROOT/ios/Packages/YubikeyKit" && swift test --disable-build-manifest-caching) \
+  || fail "YubikeyKit tests"
 
 if [[ "$QUICK" == "0" ]]; then
   step "App UI tests (setup screen and ceremony entry)"

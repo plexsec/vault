@@ -649,6 +649,19 @@ def gen_signing_fixtures(outdir: str) -> int:
     EIP-1559, EIP-2930) plus an arbitrary 32-byte value, so a test can drive the
     whole ceremony — manifest, approval, signature, verification, export — with a
     card that behaves like a real one.
+
+    Note on the two `s` values: `s` is the raw RFC6979-form signature and `high_s` is
+    `n - s`. They are "this one" and "the other one", not "low" and "high" — for some
+    digests the raw value is already ≥ n/2 (chain 137's two extra vectors are), so the
+    mock card returns a high-s signature on that path and the app has to normalise it.
+    That is deliberate coverage of EIP-2 rather than an accident, which is why the
+    vector is left as it is instead of being canonicalised.
+
+    Two more exist so that chain handling is tested with real signatures rather than
+    with a stub: the EIP-1559 shape on chain id 137 (Polygon, the ordinary case for
+    POL) and on an id no chain list knows (424242), which keeps the chain *name* table
+    a display convenience rather than a whitelist — a card that only signs the chains
+    its author listed would be a different, worse product.
     """
     os.makedirs(outdir, exist_ok=True)
     public_key = ser_p(point_mul(int.from_bytes(SIGNING_FIXTURE_KEY, "big")))
@@ -665,11 +678,30 @@ def gen_signing_fixtures(outdir: str) -> int:
         b"",
         b"",
     ])
+    # 0x02 ‖ RLP([chainId, nonce, maxPriorityFee, maxFee, gas, to, value, data, accessList]),
+    # with the fields the Swift test helper builds: nonce 1, 1 gwei tip, 30 gwei cap,
+    # 21000 gas, the 0x35…35 recipient, and an empty access list. `rlp_encode` minimises
+    # integers the same way `EVMQuantity.bytes` does, so the two encoders agree.
+    def fee_market(chain_id: int, value: int) -> bytes:
+        return b"\x02" + rlp_encode([
+            chain_id,
+            1,
+            1_000_000_000,
+            30_000_000_000,
+            bytes.fromhex("5208"),
+            bytes.fromhex("35" * 20),
+            value,
+            b"",
+            [],
+        ])
+
     digests = {
         "eip155_legacy": "daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53",
         "fee_market": "b28e48247c132650294459b31a5ad7e4e9ad187abb0f984388629b2c29e27e85",
         "access_list": "ffda134128f580ee2061c44fd17f6aac36bd2032386fd593de3900cb046dadd1",
         "legacy_chain_137": keccak_256(polygon_payload).hex(),
+        "fee_market_chain_137": keccak_256(fee_market(137, 1_500_000_000_000_000_000)).hex(),
+        "fee_market_chain_424242": keccak_256(fee_market(424242, 1)).hex(),
         "arbitrary": hashlib.sha256(b"plexvault signing fixture digest").hexdigest(),
     }
     signatures = []

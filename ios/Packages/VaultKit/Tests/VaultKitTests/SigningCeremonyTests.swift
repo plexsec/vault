@@ -207,6 +207,83 @@ final class SigningCeremonyTests: XCTestCase {
         XCTAssertEqual(exported.signature.count, 65)
     }
 
+    /// Polygon's ordinary case: an EIP-1559 transaction on chain 137 signs end to end,
+    /// and everything the operator is shown names the chain and its coin.
+    ///
+    /// Polygon needs nothing special from the signing path — its id is like any other —
+    /// but "we support POL" should be a test rather than a claim, and the parts that are
+    /// Polygon-specific (POL rather than ETH on the screen, a chain id above 110) are
+    /// exactly the parts a reader would want pinned.
+    func testSignsAPolygonTransactionEndToEnd() async throws {
+        let card = makeCard()
+        let ceremony = ceremony(card: card)
+        let payload = try EVMChainTests.feeMarketPayload(
+            chainID: 137,
+            value: EVMQuantity(1_500_000_000_000_000_000)
+        )
+        try await advanceToApproval(
+            ceremony,
+            card: card,
+            payloadHex: payload.hexString,
+            dataType: .typedTransaction,
+            chainID: EVMQuantity(137)
+        )
+
+        let transaction = try EVMTransaction(signData: payload, dataType: .typedTransaction)
+        let summary = try XCTUnwrap(ceremony.summary)
+        XCTAssertEqual(summary.chain?.name, "Polygon")
+        XCTAssertTrue(summary.value.contains("1.5 POL"), summary.value)
+        XCTAssertFalse(summary.value.contains("ETH"), summary.value)
+
+        try ceremony.approve(acknowledgingDigestHex: transaction.signingDigest.hexString)
+        try ceremony.verifySignature(cardResponse: try await ceremony.sign(userPIN: Self.userPIN))
+        let exported = try EthSignature(ur: try ceremony.exportSignature())
+
+        XCTAssertEqual(ceremony.report.chainDisplay, "Polygon (chain id 137)")
+        XCTAssertEqual(ceremony.report.nativeValueDisplay, "1.5 POL (1500000000000000000 wei)")
+        XCTAssertTrue(ceremony.report.signatureVerified)
+        XCTAssertEqual(ceremony.report.counterDelta, 1)
+        // The signature is real: the mock returned what tools/derive signed over this
+        // digest. `s` in the fixture is the raw RFC6979 value, and for this digest it is
+        // already ≥ n/2 — so the ordinary Polygon path also exercises EIP-2
+        // normalisation, and the recovery value that goes out is the flipped one.
+        let fixture = try XCTUnwrap(card.signature(named: "fee_market_chain_137"))
+        XCTAssertEqual(fixture.digest, transaction.signingDigest.hexString)
+        XCTAssertTrue(ceremony.report.signatureWasLowS, "the fixture's raw s is the high form")
+        XCTAssertEqual(exported.r.hexString, fixture.r)
+        XCTAssertEqual(exported.s.hexString, fixture.highS, "normalised to the low form")
+        XCTAssertEqual(exported.recoveryValueBytes, [UInt8(fixture.recidHighS)])
+        // Typed transactions carry the y-parity, so Polygon's 1559 case fits the 65-byte
+        // layout; only its legacy case needs the wider field.
+        XCTAssertEqual(exported.signature.count, 65)
+        XCTAssertFalse(ceremony.report.wideRecoveryValue)
+        XCTAssertEqual(exported.requestID, [UInt8](repeating: 0xab, count: 16))
+    }
+
+    /// The chain table is a display convenience, and this is the test that keeps it that
+    /// way: a chain id nobody has heard of is confirmed and signed exactly like a named
+    /// one. If someone ever turns the table into a whitelist, this fails.
+    func testAnUnknownChainIDIsStillSignable() async throws {
+        let card = makeCard()
+        let ceremony = ceremony(card: card)
+        let payload = try EVMChainTests.feeMarketPayload(chainID: 424242, value: EVMQuantity(1))
+        try await advanceToApproval(
+            ceremony,
+            card: card,
+            payloadHex: payload.hexString,
+            dataType: .typedTransaction,
+            chainID: EVMQuantity(424_242)
+        )
+        let transaction = try EVMTransaction(signData: payload, dataType: .typedTransaction)
+        try ceremony.approve(acknowledgingDigestHex: transaction.signingDigest.hexString)
+        try ceremony.verifySignature(cardResponse: try await ceremony.sign(userPIN: Self.userPIN))
+        _ = try ceremony.exportSignature()
+
+        XCTAssertTrue(ceremony.report.signatureVerified)
+        XCTAssertNil(ceremony.report.chain?.name, "no name is invented for an unknown chain")
+        XCTAssertEqual(ceremony.report.chainDisplay, "chain id 424242 (not a chain this app knows)")
+    }
+
     /// A card that returns `s > n/2` must be normalised, and the recovery value
     /// must flip with it — otherwise the transaction is invalid on a rule
     /// (EIP-2) that has nothing to do with whether the signature is genuine.

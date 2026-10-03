@@ -56,6 +56,32 @@
    "typed_v": 0
   },
   {
+   "name": "fee_market_chain_137",
+   "digest": "d73a406535cfc8e2d29a38fe3ebfdd94c36ddb2b0f9a761011a3c1eb9752aaf0",
+   "r": "975b1a05465420744d64adb9f58f3de615841e37b1db2b612767e0e40152abe3",
+   "s": "fc3aee75398f95b02851b5da9a27a3bf57df409647dc1aa6b0e6f6f6ac81aa4b",
+   "high_s": "03c5118ac6706a4fd7ae4a2565d85c3f62cf9c50676c85950eeb679623b496f6",
+   "recid": 0,
+   "recid_high_s": 1,
+   "der": "3046022100975b1a05465420744d64adb9f58f3de615841e37b1db2b612767e0e40152abe3022100fc3aee75398f95b02851b5da9a27a3bf57df409647dc1aa6b0e6f6f6ac81aa4b",
+   "der_high_s": "3045022100975b1a05465420744d64adb9f58f3de615841e37b1db2b612767e0e40152abe3022003c5118ac6706a4fd7ae4a2565d85c3f62cf9c50676c85950eeb679623b496f6",
+   "legacy_v_chain_1": 37,
+   "typed_v": 0
+  },
+  {
+   "name": "fee_market_chain_424242",
+   "digest": "51a0d64b228e1c42f7af72f10664c9b2a921461e4b3db70c45dec258c6f39af0",
+   "r": "0fc0754be0effeca82a8a90f20505d8a8f9dd64a5d12791734c9bacd4ec3517b",
+   "s": "325ff14dde539e8626c5994deb37182d528521edcd9e8ef7f4c02ece7dd9ef24",
+   "high_s": "cda00eb221ac6179d93a66b214c8e7d16829baf8e1aa1143cb122fbe525c521d",
+   "recid": 0,
+   "recid_high_s": 1,
+   "der": "304402200fc0754be0effeca82a8a90f20505d8a8f9dd64a5d12791734c9bacd4ec3517b0220325ff14dde539e8626c5994deb37182d528521edcd9e8ef7f4c02ece7dd9ef24",
+   "der_high_s": "304502200fc0754be0effeca82a8a90f20505d8a8f9dd64a5d12791734c9bacd4ec3517b022100cda00eb221ac6179d93a66b214c8e7d16829baf8e1aa1143cb122fbe525c521d",
+   "legacy_v_chain_1": 37,
+   "typed_v": 0
+  },
+  {
    "name": "arbitrary",
    "digest": "8458ed062c5adc11b97f41e0e4202760e912be3a3fbf099273b2f288ce39916f",
    "r": "bc0c66aee2d85a2bbb241cf246cb951457b602d41c6218786d7c5e72ebd4d1c8",

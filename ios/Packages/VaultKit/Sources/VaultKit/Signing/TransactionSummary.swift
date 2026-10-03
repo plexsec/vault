@@ -139,7 +139,8 @@ public struct TransactionSummary: Equatable, Sendable {
     }
 
     public let kind: String
-    public let chainID: String
+    /// The chain, when the transaction carries an id this app can name.
+    public let chain: EVMChain?
     public let nonce: String
     public let recipient: String
     public let value: String
@@ -156,16 +157,26 @@ public struct TransactionSummary: Equatable, Sendable {
         "Unable to parse — proceed with caution. The recipient receives a call this app cannot "
         + "read; the raw data below is what the card will sign."
 
+    /// The chain id as it appears on screen, or `—` when the transaction has none.
+    public var chainID: String { chain.map { $0.id.description } ?? "—" }
+
+    /// An amount of the chain's native coin. With no chain id there is no symbol to claim,
+    /// so it is called what it is.
+    static func native(_ value: String, on chain: EVMChain?) -> String {
+        chain?.amount(value) ?? "\(value) native"
+    }
+
     public init(transaction: EVMTransaction) {
         self.valueQuantity = transaction.value
         self.isContractCreation = transaction.to == nil
-        let chainID = transaction.chainId.map(\.decimalString) ?? "—"
+        let chain = transaction.chainId?.uint64.map(EVMChain.init(id:))
         self.kind = transaction.kind.displayName
-        self.chainID = chainID
+        self.chain = chain
         self.nonce = transaction.nonce.decimalString
         self.recipient = transaction.checksummedRecipient
             ?? "contract creation (no recipient)"
-        self.value = "\(transaction.valueInEther) ETH (\(transaction.value.decimalString) wei)"
+        self.value = "\(Self.native(transaction.valueInEther, on: chain)) "
+            + "(\(transaction.value.decimalString) wei)"
         self.rawDataHex = transaction.data.isEmpty ? "" : "0x" + transaction.data.hexString
 
         let call = ABIDecoder.decode(transaction.data)
@@ -180,7 +191,11 @@ public struct TransactionSummary: Equatable, Sendable {
 
         var rows: [Row] = [
             Row(label: "Type", value: transaction.kind.displayName, isCritical: false),
-            Row(label: "Chain id", value: chainID, isCritical: false),
+            Row(
+                label: "Chain",
+                value: chain?.displayName ?? "no chain id — replayable on every chain",
+                isCritical: false
+            ),
             Row(label: "Nonce", value: transaction.nonce.decimalString, isCritical: false),
             Row(
                 label: transaction.to == nil ? "Recipient" : "To",
@@ -190,7 +205,7 @@ public struct TransactionSummary: Equatable, Sendable {
             ),
             Row(
                 label: "Value",
-                value: "\(transaction.valueInEther) ETH",
+                value: Self.native(transaction.valueInEther, on: chain),
                 isCritical: !transaction.value.isZero
             ),
             Row(label: "Gas limit", value: transaction.gasLimit.decimalString, isCritical: false),
@@ -205,7 +220,9 @@ public struct TransactionSummary: Equatable, Sendable {
             rows.append(Row(label: "Max priority fee", value: "\(priorityFee) gwei", isCritical: false))
         }
         if let maximum = transaction.maximumFeeInEther {
-            rows.append(Row(label: "Maximum fee", value: "\(maximum) ETH", isCritical: false))
+            rows.append(
+                Row(label: "Maximum fee", value: Self.native(maximum, on: chain), isCritical: false)
+            )
         }
         if !transaction.accessList.isEmpty {
             let count = transaction.accessList.reduce(0) { $0 + $1.storageKeys.count }

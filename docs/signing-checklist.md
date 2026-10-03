@@ -39,8 +39,14 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
    - **Function: unrecognised** — the app could not parse the call. The raw hex is below it.
      Do not proceed on the basis of the summary alone; compare the raw data with what the
      wallet shows, or cancel and rebuild the transaction from a dapp you trust.
-6. **Confirm the chain id** if the app asks for it. It asks for every chain id that has not
-   been confirmed in this session, and it asks by name.
+6. **Confirm the chain** if the app asks for it. It asks for every chain that has not been
+   confirmed in this session, and it names it: `Polygon (chain id 137), native token POL`.
+   Compare **both** against the network your wallet is on — the name is a convenience, the
+   id is the fact. If the app shows `chain id 424242 (not a chain this app knows)`, it has
+   never heard of that network: sign only if you know what that id is, because the app
+   cannot help you check it. The value and the fees are denominated in the chain's own coin
+   (`1.5 POL`), or as `<n> native` when the app cannot name the coin — never assume it is
+   ETH.
 7. **Approve and continue.** The app shows the digest (keccak-256) of the transaction.
 8. **Read the one-touch rule and tick it**, then enter the user PIN and tap *Sign with the
    YubiKey*.

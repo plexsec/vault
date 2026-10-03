@@ -85,8 +85,9 @@ public enum SigningError: Swift.Error, Equatable {
         case .requestAddressMismatch(let requested, let found):
             return "The request names account \(requested), but the key inside this YubiKey is \(found)."
         case .chainNotConfirmed(let chainID):
-            return "Nothing has been signed for chain id \(chainID) on this device yet. Confirm the "
-                + "chain id explicitly before signing for it."
+            let chain = UInt64(chainID).map(EVMChain.init(id:))
+            return "Nothing has been signed for \(chain?.summaryLine ?? "chain id \(chainID)") on "
+                + "this device yet. Confirm the chain id explicitly before signing for it."
         case .chainIDMissing:
             return "The transaction carries no chain id, so it would be replayable on every chain "
                 + "and the app cannot tell which network it is for. Ask the wallet for an EIP-155 "
@@ -571,6 +572,25 @@ public struct SigningReport: Equatable, Sendable {
 
     public init() {}
 
+    /// The chain, named when this app knows it.
+    ///
+    /// Derived from `chainID` rather than stored beside it, so the two cannot disagree —
+    /// and composed here rather than in the view, because a screen that appends its own
+    /// unit is exactly how the record came to say ETH on a Polygon transaction.
+    public var chain: EVMChain? {
+        guard let chainID, let id = UInt64(chainID) else { return nil }
+        return EVMChain(id: id)
+    }
+
+    /// `Polygon (chain id 137)` for the record's chain row.
+    public var chainDisplay: String { chain?.displayName ?? "chain id \(chainID ?? "—")" }
+
+    /// `1.5 POL (1500000000000000000 wei)` for the record's value row.
+    public var nativeValueDisplay: String? {
+        guard let valueInEther else { return nil }
+        let amount = TransactionSummary.native(valueInEther, on: chain)
+        return value.map { "\(amount) (\($0) wei)" } ?? amount
+    }
     /// The counter comparison design.md §5.2 rule 4 asks for. Read by the app, so
     /// it is *evidence for the operator*, not a gate — the rule requires the
     /// comparison to be made by a party other than the one that displayed the

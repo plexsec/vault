@@ -760,3 +760,65 @@ provisioning and signing are separate flows with separate state; the camera beca
 channel (`NSCameraUsageDescription`), and the README's "air-gapped" claim is now
 "air-gapped in the sense that matters: no network, no persistence, and the only inputs are
 the camera and the card".
+
+## 22. v0.2: the chain name is a label, not a gate — and Polygon is not Ethereum
+
+**Sections:** §5.3 (new chain-naming paragraph), §5.2 rule 7.
+
+**What was wrong.** Every value and every fee on the confirmation screen was formatted with
+a literal `ETH`, and the record screen did the same. So a Polygon transaction was displayed
+as `1.5 ETH` when the operator was approving 1.5 **POL**: every byte of the transaction was
+correct, and the one number the screen exists to communicate was denominated in the wrong
+asset. The chain itself was also only ever shown as a bare id, so the confirmation prompt
+that §5.2 rule 7 makes the operator answer ("confirm the chain id explicitly") asked them to
+remember what `137` means. Both are the same class of defect as the pairing-screen bug in
+amendment 20: the machinery was right and the *screen* said something untrue.
+
+There was nothing to add on the signing side. Polygon needed no protocol work — its id is
+treated like any other, `chainId·2 + 35 + recid` already widens the recovery value for ids
+above 110 (`testWideRecoveryValueOnPolygon`), and an EIP-1559 transaction on 137 is an
+ordinary 65-byte signature. "Support for POL" was a statement about the screens.
+
+**What changed.** A chain table (`VaultKit/Signing/EVMChain.swift`: id → name + native coin
+ticker) and the screens read it:
+
+* the summary's value and fee rows say `1.5 POL`, and the chain row says
+  `Polygon (chain id 137)`;
+* the chain confirmation prompt names the chain and its coin
+  (`Polygon (chain id 137), native token POL`), and the refusal to sign until it is
+  confirmed uses the same wording;
+* the signing record's chain and value rows are composed **in the library**
+  (`SigningReport.chainDisplay`, `nativeValueDisplay`) rather than by the view, because a
+  view that appends its own unit is exactly what produced the bug. The record derives the
+  name from `chainID`, so the two cannot drift.
+
+**Two rules, and a test for each.**
+
+1. **The table is a display convenience, never a gate.** Nothing on the signing path reads
+   it. A chain id nobody has heard of is confirmed and signed exactly like a named one:
+   `testAnUnknownChainIDIsStillSignable` signs a request on chain 424242 end to end, so
+   turning the table into a whitelist fails a test rather than silently refusing a
+   legitimate network. The number is always on screen, because the check that matters is
+   the id against the wallet's own screen.
+2. **An unknown chain gets no symbol rather than a default.** `EVMChain(id: 424242)` has no
+   name and no ticker, its amounts read `2 native`, and its row reads
+   `chain id 424242 (not a chain this app knows)`. Defaulting to ETH is the bug; the fix is
+   to say less, which is the same principle as the card layer's "an unclassified failure is
+   not a retry" (amendment 15).
+
+**Evidence.** VaultKit 217 → 231: 12 tests in `EVMChainTests` (Polygon's name and ticker;
+L2s that correctly say ETH; an unknown chain with no name, no symbol and no "ETH" anywhere
+in its rows; a transaction with no chain id; the table's internal consistency, which catches
+an entry filed under the wrong id; the record's two rows; the confirmation message), plus
+`testSignsAPolygonTransactionEndToEnd` (a real EIP-1559 POL transaction through the whole
+ceremony, with the card's genuine signature from `tools/derive`) and
+`testAnUnknownChainIDIsStillSignable`.
+
+**One thing that surfaced while writing those tests.** `tools/derive`'s fixture generator
+emits `s` as the raw RFC6979 value and `high_s` as `n - s`, which are "this one" and "the
+other one" rather than "low" and "high" — for some digests the raw value is already ≥ n/2.
+Two of the new vectors are like that, so the *ordinary* Polygon path also exercises EIP-2
+normalisation and exports the flipped recovery value. The assertion that caught this was
+mine being wrong, not the app's; the vector is left uncanonicalised on purpose, because that
+coverage is worth more than a tidier fixture, and the generator now says so.
+

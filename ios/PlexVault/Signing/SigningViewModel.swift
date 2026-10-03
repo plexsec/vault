@@ -72,6 +72,15 @@ public final class SigningViewModel {
     /// session. Nothing is persisted, so this is asked again next time.
     public var needsChainConfirmation: Bool { chainConfirmationNeeded != nil }
 
+    /// The chain the operator is being asked to confirm, named when this app knows it.
+    ///
+    /// Formatting only — the gate itself is `SigningCeremony.confirmChainID`, and an
+    /// unknown chain is confirmed exactly like a known one. The name exists so the
+    /// prompt can be answered from the wallet's own screen rather than from memory.
+    public var chainConfirmationChain: EVMChain? {
+        chainConfirmationNeeded.flatMap { UInt64($0) }.map(EVMChain.init(id:))
+    }
+
     // MARK: Lifecycle
 
     public func abort() {
