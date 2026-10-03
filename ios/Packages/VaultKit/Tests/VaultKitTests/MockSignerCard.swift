@@ -15,6 +15,7 @@ final class MockSignerCard: SignerCard {
         case reset
         case setPINs
         case applyPolicy(adminPIN: [UInt8])
+        case setPINRetries(user: Int, admin: Int)
         case importKey(slot: KeySlot, algorithm: KeyAlgorithm, fingerprint: String)
         case readPublicKey(slot: KeySlot)
         case signatureCounter
@@ -180,7 +181,8 @@ final class MockSignerCard: SignerCard {
         openPGPVersion: "3.4",
         manufacturer: "Yubico",
         serial: "00000000",
-        pwStatusBytes: [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F],
+        pwStatusBytes: [0x00, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03],
+        retryCounters: RetryCounters(user: 3, reset: 0, admin: 3),
         // A factory-fresh applet reports `off` for every slot; the policy step's
         // whole job is to make this read `fixed`, and the ceremony reads it back.
         touchPolicy: [.signature: CardPolicy.touchOff, .authentication: CardPolicy.touchOff],
@@ -222,6 +224,8 @@ final class MockSignerCard: SignerCard {
         storedPrivateKeys = [:]
         storedFingerprints = [:]
         dataObjects = [:]
+        retryLimit = 3
+        inventoryResult.retryCounters = RetryCounters(user: 3, reset: 0, admin: 3)
         // `TERMINATE DF` erases the whole data file, private-use objects included.
         // A mock that kept the manifest across a reset would let a re-pair test
         // pass on a card that in reality has nothing left to pair from. The
@@ -242,6 +246,27 @@ final class MockSignerCard: SignerCard {
         lastSetUserPIN = userPIN
     }
 
+    /// The retry maximum per password, as the real card holds it after `F2`.
+    var retryLimit = 3
+    /// When set, the card answers `9000` to `SET PIN RETRIES` and keeps the old
+    /// counters — the failure the read-back in the ceremony exists to catch.
+    var retryWritesAreIgnored = false
+
+    func setPINRetries(user: Int, reset: Int, admin: Int, adminPIN: [UInt8]) async throws {
+        calls.append(.setPINRetries(user: user, admin: admin))
+        // Mirrors the applet: the range is checked before the card is touched.
+        for value in [user, reset, admin] {
+            guard (1...99).contains(value) else {
+                throw CardError.retryCountOutOfRange(requested: value, allowed: 1...99)
+            }
+        }
+        guard !retryWritesAreIgnored else { return }
+        retryLimit = user
+        inventoryResult.retryCounters = RetryCounters(
+            user: UInt8(user), reset: 0, admin: UInt8(admin)
+        )
+    }
+
     func applyPolicy(adminPIN: [UInt8]) async throws {
         calls.append(.applyPolicy(adminPIN: adminPIN))
         if failurePoint == .applyPolicy { throw CardError.unexpectedStatusWord(sw1: 0x6A, sw2: 0x80) }
@@ -249,8 +274,8 @@ final class MockSignerCard: SignerCard {
         // Both signing-capable slots get the touch policy; 0xC4 is global.
         dataObjects[0xD6] = [0x02, 0x20]
         dataObjects[0xD8] = [0x02, 0x20]
-        dataObjects[0xC4] = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
-        inventoryResult.pwStatusBytes = [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F]
+        dataObjects[0xC4] = [0x00, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03]
+        inventoryResult.pwStatusBytes = [0x00, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03]
         // A card that answers `9000` to the UIF writes and stores nothing is the
         // failure the read-back exists to catch, and it is not hypothetical: the
         // applet really discards a slot's policy when that slot's algorithm

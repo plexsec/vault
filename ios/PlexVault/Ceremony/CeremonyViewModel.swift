@@ -296,6 +296,15 @@ public final class CeremonyViewModel {
         }
     }
 
+    /// The operator-chosen retry limit, defaulting to the card's factory value.
+    public var pinRetryLimit: Int = CardPolicy.defaultRetryLimit
+
+    public func setPINRetryLimits() async {
+        await run { ceremony in
+            try await ceremony.setPINRetries(self.pinRetryLimit)
+        }
+    }
+
     public func applyPolicy() async {
         await run { ceremony in
             try await ceremony.applyPolicy()

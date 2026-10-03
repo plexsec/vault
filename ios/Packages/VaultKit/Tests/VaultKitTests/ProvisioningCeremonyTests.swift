@@ -55,6 +55,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
         } else {
@@ -202,6 +203,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         // slots written in a fixed order.
         XCTAssertEqual(card.calls, [
             .inventory, .reset, .inventory, .setPINs,
+            // The retry limit is set right after the PINs it applies to, and read
+            // back (design.md §4.2 step 3).
+            .setPINRetries(user: 3, admin: 3), .inventory,
             .randomBytes(count: 32),
             .importKey(slot: .signature, algorithm: .secp256k1, fingerprint: Expected.secp256k1Fingerprint),
             .importKey(slot: .authentication, algorithm: .ed25519, fingerprint: Expected.ed25519Fingerprint),
@@ -261,8 +265,108 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         XCTAssertThrowsError(try ceremony.restoreMnemonic(words: Array(repeating: "abandon", count: 12))) { error in
             XCTAssertEqual(error as? BIP39Error, .invalidChecksum)
+        }
+    }
+
+    // MARK: PIN retry limits (amendment 27)
+
+    /// The operator chooses 3-10; the card reports the counters back, and the
+    /// choice is recorded in the report.
+    func testTheRetryLimitIsChosenByTheOperatorAndReadBack() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        XCTAssertEqual(ceremony.step, .pinRetries)
+
+        try await ceremony.setPINRetries(6)
+        XCTAssertEqual(card.retryLimit, 6)
+        XCTAssertTrue(card.calls.contains(.setPINRetries(user: 6, admin: 6)))
+        XCTAssertEqual(ceremony.report.pinRetryLimit, 6)
+        XCTAssertEqual(ceremony.step, .entropy)
+    }
+
+    /// A number outside the offered range never reaches the card.
+    func testARetryLimitOutsideTheOfferedRangeIsRefused() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+
+        for value in [2, 11, 0, 100] {
+            await XCTAssertThrowsErrorAsync { try await ceremony.setPINRetries(value) } verify: { error in
+                XCTAssertEqual(
+                    error as? CeremonyError,
+                    .invalidRetryLimit(requested: value, allowed: CardPolicy.retryLimits)
+                )
+            }
+        }
+        XCTAssertFalse(card.calls.contains { if case .setPINRetries = $0 { return true } else { return false } })
+        XCTAssertEqual(ceremony.step, .pinRetries, "the step must not advance on a refusal")
+        XCTAssertEqual(card.retryLimit, 3, "the card keeps the factory value")
+    }
+
+    /// A card that answers `9000` and keeps its old counters must stop the
+    /// ceremony: a retry limit that only appears to be set is worse than none.
+    func testRetryLimitsTheCardDoesNotApplyFailTheCeremony() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+
+        card.retryWritesAreIgnored = true
+        await XCTAssertThrowsErrorAsync { try await ceremony.setPINRetries(9) } verify: { error in
+            guard case .retryLimitsNotApplied(let detail)? = error as? CeremonyError else {
+                return XCTFail("expected retryLimitsNotApplied, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("3"), detail)
+            XCTAssertTrue(detail.contains("9"), detail)
+        }
+        XCTAssertEqual(ceremony.step, .pinRetries)
+        XCTAssertNil(ceremony.report.pinRetryLimit)
+    }
+
+    /// The policy step re-reads the counters, so a later step silently resetting
+    /// them is caught before any pairing code exists.
+    func testThePolicyStepRechecksTheRetryLimits() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries(8)
+        try await ceremony.generateEntropy()
+        try ceremony.advance()
+        let words = try ceremony.mnemonicForDisplay()
+        try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
+        _ = try ceremony.deriveKeys()
+        try ceremony.advance()
+        try await ceremony.importKeys()
+        _ = try await ceremony.verifyReadBack()
+        try ceremony.advance()
+
+        // Something reset the counters behind the ceremony's back (a reset would
+        // wipe the keys too, so this stands in for any such disturbance).
+        card.inventoryResult.retryCounters = RetryCounters(user: 3, reset: 0, admin: 3)
+        await XCTAssertThrowsErrorAsync { try await ceremony.applyPolicy() } verify: { error in
+            guard case .policyNotApplied(let detail)? = error as? CeremonyError else {
+                return XCTFail("expected policyNotApplied, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("retry limits"), detail)
         }
     }
 
@@ -365,6 +469,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         // Without advancing, the mnemonic step is not even due yet, so derivation
         // is refused by the ordering gate.
@@ -388,6 +493,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         try ceremony.advance()
         XCTAssertThrowsError(try ceremony.confirmTranscription(entries: [(5, "wrong")])) { error in
@@ -809,6 +915,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         let commitment = try await ceremony.generateEntropy()
         XCTAssertEqual(commitment, Hex.encode(Array(SHA256.hash(entropy).prefix(4))))
         XCTAssertEqual(ceremony.report.entropyCommitmentHex, commitment)
@@ -832,6 +939,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
 
         let commitment = try await ceremony.generateEntropy()
         // 0xAA XOR 0xFF = 0x55
@@ -846,6 +954,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         try ceremony.recordDiceRolls([1, 6, 3, 4])
         XCTAssertThrowsError(try ceremony.recordDiceRolls([7])) { error in
             XCTAssertEqual(error as? CeremonyError, .diceRollsOutOfRange)
@@ -869,6 +978,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         try ceremony.advance()
         let first = try ceremony.transcriptionChallenge()

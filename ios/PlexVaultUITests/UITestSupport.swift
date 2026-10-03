@@ -37,6 +37,15 @@ extension XCTestCase {
     }
 
     /// Scrolls by a bounded amount; positive `delta` reveals content further down.
+    /// The ceremony's PIN fields use `.numberPad`, which has no return key, so the
+    /// only way to close the keyboard is the toolbar's Done button. A step whose
+    /// action sits at the bottom of a tall page is behind the keyboard until then —
+    /// the retry-limit step is the first one whose action is that low.
+    func dismissKeyboard(in app: XCUIApplication) {
+        let done = app.buttons["dismiss-keyboard"]
+        if done.exists { done.tap() }
+    }
+
     func scroll(_ app: XCUIApplication, by delta: CGFloat) {
         let clamped = max(-200, min(200, delta))
         guard abs(clamped) >= 1 else { return }
@@ -245,9 +254,30 @@ extension XCTestCase {
         typeSecret(adminPIN, into: "Repeat Admin PIN", in: app, file: file, line: line)
         tapWhenVisible(app.buttons["Set PINs"], in: app, file: file, line: line)
 
+        // PIN retry limits: the step exists so the operator makes this choice
+        // deliberately, with the consequences in front of them.
+        XCTAssertTrue(
+            app.staticTexts["If every attempt is used up"].waitForExistence(timeout: 10),
+            "the retry-limit step must state what happens when the attempts run out",
+            file: file, line: line
+        )
+        let retryLimit = app.steppers["pin-retry-limit"]
+        XCTAssertTrue(retryLimit.waitForExistence(timeout: 5), "retry-limit picker missing", file: file, line: line)
+        // Raise it once, which exercises the write and the read-back with a value
+        // that is not the card's factory default.
+        retryLimit.buttons.element(boundBy: 1).tap()
+        // The PIN fields use a number pad with no return key, so the keyboard is
+        // still up from the previous step and covers the action at the bottom.
+        dismissKeyboard(in: app)
+        tapStepAction("Set PIN retry limits", in: app, file: file, line: line)
+
         // Entropy: generate, record the commitment, then continue.
         let generate = app.buttons["Generate entropy"]
-        XCTAssertTrue(generate.waitForExistence(timeout: 10), "entropy step missing", file: file, line: line)
+        XCTAssertTrue(
+            generate.waitForExistence(timeout: 10),
+            "entropy step missing; hierarchy:\n\(app.debugDescription)",
+            file: file, line: line
+        )
         tapWhenVisible(generate, in: app, file: file, line: line)
 
         let commitment = app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"]

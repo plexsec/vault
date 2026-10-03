@@ -65,6 +65,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
             userPIN: Array(Self.userPIN.utf8),
             adminPIN: Array(Self.adminPIN.utf8)
         )
+        try await ceremony.setPINRetries()
 
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
@@ -115,6 +116,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
             userPIN: Array(Self.userPIN.utf8),
             adminPIN: Array(Self.adminPIN.utf8)
         )
+        try await ceremony.setPINRetries()
 
         try await ceremony.generateEntropy()
         try ceremony.advance()
@@ -228,6 +230,26 @@ final class ProvisioningIntegrationTests: XCTestCase {
         // Both UIF objects must have been written.
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00da00d602022000") })
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00da00d802022000") })
+    }
+
+    /// A chosen retry limit (not the factory 3) travels through the APDU layer and
+    /// is readable afterwards. The UI test picks 4 through the picker; this is the
+    /// same number without the simulator.
+    func testAChosenRetryLimitReachesTheCard() async throws {
+        let transport = MockYubikeyTransport()
+        let (ceremony, _) = makeCeremony(transport: transport)
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+        try await ceremony.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
+        try await ceremony.setPINRetries(4)
+
+        XCTAssertEqual(transport.receivedAPDUs.last { $0.hasPrefix("00f2") }, "00f20000030404" + "0400")
+        XCTAssertEqual(transport.currentRetryLimits.user, 4)
+        XCTAssertEqual(transport.currentRetryLimits.admin, 4)
+        XCTAssertEqual(ceremony.report.pinRetryLimit, 4)
+        XCTAssertEqual(ceremony.step, .entropy)
     }
 
     // MARK: The touch policy and the key import (amendment 26)

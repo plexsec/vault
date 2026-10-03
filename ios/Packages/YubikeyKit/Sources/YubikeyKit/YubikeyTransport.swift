@@ -131,6 +131,10 @@ public enum OpenPGPOperation: String, Sendable {
     case terminate
     case activate
     case applyPolicy
+    /// `SET PIN RETRIES` (INS `0xF2`): how many wrong PIN attempts each password
+    /// tolerates before it is blocked. Firmware ≥ 4.3.1; on YubiKey 4/5 the PINs
+    /// themselves are left alone, unlike the old NEO applet, which reset them.
+    case setPinRetries
     case setAlgorithmAttributes
     case importKey
     case readPublicKey

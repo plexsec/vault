@@ -84,6 +84,13 @@ public protocol SignerCard: AnyObject {
     /// Sets PW1 (user) and PW3 (admin) via `CHANGE REFERENCE DATA`.
     func setPINs(userPIN: [UInt8], adminPIN: [UInt8]) async throws
 
+    /// `SET PIN RETRIES`: how many wrong attempts each password tolerates before it
+    /// is blocked. The Admin PIN must be verified in the same session.
+    ///
+    /// The applet applies one maximum per password (PW1, the resetting code, PW3);
+    /// this app sets the same limit on all three and verifies the two it owns.
+    func setPINRetries(user: Int, reset: Int, admin: Int, adminPIN: [UInt8]) async throws
+
     /// Applies the mandatory policy: UIF = Fixed on both signing-capable slots
     /// and PW1 status 0x00 (PIN required for every signature).
     ///
@@ -182,6 +189,10 @@ public enum CardError: Swift.Error, Equatable {
     /// Raised before the card is asked, because the answer would be the same
     /// every time: the private-use data objects hold at most 254 bytes.
     case dataObjectTooLarge(byteCount: Int, maximum: Int)
+    /// A retry count the applet will not accept. Raised before the card is asked
+    /// for the same reason: `SET PIN RETRIES` takes one byte per password, and the
+    /// command itself is documented for 1-99.
+    case retryCountOutOfRange(requested: Int, allowed: ClosedRange<Int>)
 
     /// User-facing text. Kept here so every surface reports the same wording.
     /// Whether this failure leaves the card in a state the ceremony cannot
@@ -217,6 +228,9 @@ public enum CardError: Swift.Error, Equatable {
         case .dataObjectTooLarge:
             // Nothing was written and no retry can succeed: the value cannot fit.
             return true
+        case .retryCountOutOfRange:
+            // Refused before the card was asked; the applet's range is known.
+            return true
         case .transportUnavailable, .cardNotSelected, .malformedResponse:
             return false
         case .unexpectedStatusWord, .signatureFailed:
@@ -236,9 +250,18 @@ public enum CardError: Swift.Error, Equatable {
             }
             return "Incorrect User PIN."
         case .pinBlocked:
-            return "The User PIN is blocked. Terminate and re-activate the OpenPGP applet to recover."
+            // Both of these used to point at "terminate and re-activate", which is
+            // not a recovery: `TERMINATE DF` erases both private keys, so the card
+            // would have to be provisioned again from the mnemonic. The genuine
+            // unblock is `RESET RETRY COUNTER` with the Admin PIN, which this
+            // version does not implement — and saying so is the honest answer.
+            return "The User PIN is blocked. Nothing can be signed until it is unblocked, which needs the Admin PIN (the card's RESET RETRY COUNTER command) — this version of the app does not do that, so plan on setting the card up again from the 24 words. Terminating the applet would erase the keys, not restore them."
         case .adminPinBlocked:
-            return "The Admin PIN is blocked. Recovery requires a reset, which itself needs the Admin PIN — this card can no longer be provisioned."
+            // The applet allows `TERMINATE DF` when PW3 is blocked (spec 3.4.1:
+            // "VERIFY of PW3 or Always if PW3 is blocked"), which is how `ykman
+            // openpgp reset` manages without an Admin PIN. So the card is not a
+            // brick; it is a card with two erased keys.
+            return "The Admin PIN is blocked. This card can no longer be provisioned with it, but a full applet reset is still possible (the applet permits TERMINATE DF when the Admin PIN is blocked) — that erases both keys and returns the card to factory settings, so the wallet has to be set up again from the 24 words."
         case .conditionsNotSatisfied:
             return "The YubiKey refused the operation because its preconditions were not met (wrong state, or a PIN step was skipped)."
         case .unsupportedFirmware:
@@ -265,6 +288,8 @@ public enum CardError: Swift.Error, Equatable {
             return "This slot holds a key this app does not support: \(detail)."
         case .dataObjectTooLarge(let byteCount, let maximum):
             return "The value is \(byteCount) bytes but this card holds at most \(maximum) in that object."
+        case .retryCountOutOfRange(let requested, let allowed):
+            return "This card accepts between \(allowed.lowerBound) and \(allowed.upperBound) PIN retries; \(requested) is outside that range."
         }
     }
 }
@@ -333,6 +358,15 @@ public enum CardPolicy {
     public static let touchOff: UInt8 = 0x00
     /// PW1 status: the User PIN must be re-entered for every signature.
     public static let pw1StatusPerSignature: UInt8 = 0x00
+    /// The retry limits the operator may choose, inclusive. The applet itself
+    /// accepts 1-99; the app offers a narrower range because the choice is a
+    /// security parameter, not a preference: fewer attempts is stricter, more is
+    /// more forgiving, and either way the number is how many wrong guesses stand
+    /// between an attacker and this card (§9).
+    public static let retryLimits = 3...10
+    /// The card's factory value, and what this app writes unless told otherwise.
+    /// Three attempts is what makes the PIN a real barrier on a 6-digit secret.
+    public static let defaultRetryLimit = 3
 
     public static func isTouchFixed(_ value: UInt8?) -> Bool { value == touchFixed }
 
@@ -353,6 +387,23 @@ public enum CardPolicy {
     }
 }
 
+/// Remaining attempts per password, read from DO `0xC4`.
+///
+/// The card decrements a counter on every wrong `VERIFY` and refills it to the
+/// maximum on a right one, so these are the numbers that decide when a password is
+/// blocked. `SET PIN RETRIES` (INS `0xF2`) is what sets the maximum.
+public struct RetryCounters: Equatable, Sendable {
+    public let user: UInt8
+    public let reset: UInt8
+    public let admin: UInt8
+
+    public init(user: UInt8, reset: UInt8, admin: UInt8) {
+        self.user = user
+        self.reset = reset
+        self.admin = admin
+    }
+}
+
 public struct CardInventory: Equatable, Sendable {
     public var openPGPVersion: String
     public var manufacturer: String?
@@ -361,6 +412,8 @@ public struct CardInventory: Equatable, Sendable {
     public var algorithmAttributes: [KeySlot: [UInt8]]
     /// Raw 0xC4 PW status bytes, if present.
     public var pwStatusBytes: [UInt8]?
+    /// Remaining attempts per password, from the same object.
+    public var retryCounters: RetryCounters?
     /// Touch policy (UIF) per slot, as the card reports it. Only the slots the
     /// ceremony writes appear here.
     public var touchPolicy: [KeySlot: UInt8]
@@ -387,6 +440,7 @@ public struct CardInventory: Equatable, Sendable {
         serial: String? = nil,
         algorithmAttributes: [KeySlot: [UInt8]] = [:],
         pwStatusBytes: [UInt8]? = nil,
+        retryCounters: RetryCounters? = nil,
         touchPolicy: [KeySlot: UInt8] = [:],
         occupiedSlots: Set<KeySlot> = [],
         signatureCounter: UInt32? = nil,
@@ -399,6 +453,7 @@ public struct CardInventory: Equatable, Sendable {
         self.serial = serial
         self.algorithmAttributes = algorithmAttributes
         self.pwStatusBytes = pwStatusBytes
+        self.retryCounters = retryCounters
         self.touchPolicy = touchPolicy
         self.occupiedSlots = occupiedSlots
         self.signatureCounter = signatureCounter
@@ -453,6 +508,10 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case rePairRead
     case reset
     case pinProvisioning
+    /// `SET PIN RETRIES`: how many wrong PIN attempts each password tolerates. Sits
+    /// right after the PINs are set, because it is a property of those passwords:
+    /// the card refills each counter to its maximum on the next successful VERIFY.
+    case pinRetries
     case entropy
     case mnemonic
     case derivation
@@ -489,6 +548,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .rePairRead: return "Read the pairing manifest"
         case .reset: return "Reset OpenPGP applet"
         case .pinProvisioning: return "Set PINs"
+        case .pinRetries: return "Set PIN retry limits"
         case .entropy: return "Generate entropy"
         case .mnemonic: return "Write down the mnemonic"
         case .derivation: return "Derive the signing keys"
@@ -507,7 +567,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     /// anything else happens (design.md §5.2 rule 1 forbids blind retries).
     public var isMutatingCardState: Bool {
         switch self {
-        case .reset, .pinProvisioning, .policy, .keyImport, .pairingManifest: return true
+        case .reset, .pinProvisioning, .pinRetries, .policy, .keyImport, .pairingManifest: return true
         default: return false
         }
     }
@@ -541,7 +601,7 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
             // not survive it — verified on hardware and reported for `gpg
             // keytocard` in ykman#693 (amendment 26).
             return [
-                .cardInventory, .reset, .pinProvisioning, .entropy, .mnemonic,
+                .cardInventory, .reset, .pinProvisioning, .pinRetries, .entropy, .mnemonic,
                 .derivation, .keyImport, .readBackCheck, .policy,
                 .pairingManifest, .pairingExport, .counterBaseline, .teardown,
             ]
@@ -578,6 +638,10 @@ public enum CeremonyError: Swift.Error, Equatable {
     case readBackMismatch(algorithm: KeyAlgorithm, local: String, card: String)
     /// The touch/PIN policy was written and the card did not report it back.
     case policyNotApplied(detail: String)
+    /// The requested retry limit is outside the range the app offers.
+    case invalidRetryLimit(requested: Int, allowed: ClosedRange<Int>)
+    /// The card accepted the retry write and reports different counters.
+    case retryLimitsNotApplied(detail: String)
     case pairingPolicyNotAcknowledged
     case destructiveResetNotAcknowledged
     case cardNotFactoryFresh
@@ -616,6 +680,10 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "The \(algorithm.displayName) public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
         case .policyNotApplied(let detail):
             return "The YubiKey did not accept the security policy: \(detail). This card must not be used as provisioned — restart from the card reset."
+        case .invalidRetryLimit(let requested, let allowed):
+            return "Choose between \(allowed.lowerBound) and \(allowed.upperBound) PIN attempts; \(requested) is outside that range."
+        case .retryLimitsNotApplied(let detail):
+            return "The YubiKey did not accept the PIN retry limits: \(detail). Restart from the card reset."
         case .pairingPolicyNotAcknowledged:
             return "The pairing code carries a chain code, which Keystone/MetaMask require. Confirm you understand that only the address shown on this screen can be signed for."
         case .destructiveResetNotAcknowledged:

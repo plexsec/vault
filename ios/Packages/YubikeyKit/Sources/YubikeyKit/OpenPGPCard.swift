@@ -401,6 +401,7 @@ public final class OpenPGPCard: SignerCard {
             serial: parsed.serial.map { String(format: "%08X", $0) },
             algorithmAttributes: attributes,
             pwStatusBytes: parsed.pwStatusBytes,
+            retryCounters: parsed.retryCounters,
             touchPolicy: [
                 .signature: parsed.uifSignature?.first,
                 .authentication: parsed.uifAuthentication?.first,
@@ -471,6 +472,42 @@ public final class OpenPGPCard: SignerCard {
             value: PWStatusBytes.encode(),
             operation: .applyPolicy
         )
+    }
+
+    /// `SET PIN RETRIES` (INS `0xF2`, `P1P2 = 0000`): how many wrong attempts each
+    /// password tolerates before it blocks.
+    ///
+    /// The three values are, in order, PW1, the resetting code and PW3. The Admin
+    /// PIN must be verified **in this session** — VERIFY state does not survive a
+    /// session boundary — and the command needs firmware 4.3.1 or newer.
+    ///
+    /// YubiKey 4/5 leave the PIN values alone; the old NEO applet reset all three
+    /// passwords to their factory defaults when the counters changed, which is why
+    /// `ykman` still warns about it for applet versions below 4.0. This app never
+    /// runs against such an applet (the version gate refuses them), and the
+    /// read-back in `ProvisioningCeremony.setPINRetries` is what would catch it if
+    /// the assumption were ever wrong: the counter it reads back would not match.
+    public func setPINRetries(
+        user: Int,
+        reset: Int,
+        admin: Int,
+        adminPIN: [UInt8]
+    ) async throws {
+        // The applet's documented range, checked before the card is asked: the
+        // answer would be the same every time (`6A80`), and a wrong argument is not
+        // worth a card round trip.
+        for value in [user, reset, admin] {
+            guard (1...99).contains(value) else {
+                throw CardError.retryCountOutOfRange(requested: value, allowed: 1...99)
+            }
+        }
+        try await verify(pin: adminPIN, reference: .admin, operation: .verifyAdminPIN)
+        let apdu = CommandAPDU(
+            cla: 0x00, ins: 0xF2, p1: 0x00, p2: 0x00,
+            data: [UInt8(user), UInt8(reset), UInt8(admin)], expectedLength: 0
+        )
+        let response = try await transport.exchange(apdu)
+        try Self.check(response, operation: .setPinRetries)
     }
 
     public func importKey(

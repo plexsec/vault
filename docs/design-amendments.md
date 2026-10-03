@@ -1057,3 +1057,54 @@ against the real YubiKey once and the card then read back
 (docs/m0-hardware-verification.md item 18) — that is what turns "the APDUs are right" into "the
 app provisions correctly".
 
+## 27. v0.2: the PIN retry limit becomes a decision, not a default
+
+**Sections:** §4.2 (step 3), §6.5, §9.
+
+**What changed.** Provisioning left the card's factory retry limit in place — three wrong entries
+per password — and never said so. The ceremony now has a step of its own for it: the operator
+chooses between **3 and 10**, the app writes that limit for all three passwords with
+`SET PIN RETRIES` (`00 F2 00 00 03 <PW1> <reset code> <PW3>`, PW3 verified in the same session,
+firmware ≥ 4.3.1), reads the counters back out of `0xC4`, and refuses to continue unless the card
+reports what it asked for. `CeremonyReport.pinRetryLimit` records the choice, and the policy step
+re-reads the counters later, so a limit that something else resets during the run is caught before
+any pairing code exists.
+
+**Why it is a decision and not a default.** The same number is two opposite things. It is the
+brute-force budget for a 6-digit PIN — the only thing standing between a stolen card and its key
+(§9) — and it is how many typos stand between the operator and a blocked card. Leaving it
+implicit meant the operator got whichever of those the factory chose without being told.
+
+**What the number costs, stated on the step rather than in a footnote:**
+
+* **Exhausting the User PIN** blocks every signature until the PIN is unblocked. Unblocking needs
+  `RESET RETRY COUNTER` with the Admin PIN — which this version does not implement — so in
+  practice the card is set up again from the 24 words, which erases both keys. (The old error text
+  said "terminate and re-activate the OpenPGP applet to recover", which is not a recovery:
+  `TERMINATE DF` destroys the keys, and the app now says so.)
+* **Exhausting the Admin PIN** ends provisioning and re-pairing for that card. The card is not a
+  brick: the applet permits `TERMINATE DF` when PW3 is blocked (spec 3.4.1, access conditions;
+  `ykman openpgp reset` relies on the same path and takes no Admin PIN), so a full reset is still
+  possible — and it erases both keys. The previous text claimed the card "can no longer be
+  provisioned", which was wrong in the direction that matters least, but wrong.
+* Either way the funds survive if the 24 words do; the *card* has to be set up again from them.
+
+**Two facts measured on hardware, not assumed** (YubiKey 5C NFC, firmware 5.8.0):
+`00 F2 00 00 00` answers `6982` — the instruction exists and waits for PW3, it is not `6D00`; and
+`C4` reads seven bytes `00 7F 7F 7F 03 00 03` on a fresh card, i.e. the resetting code (never set
+by this app) reports **0** attempts while PW1 and PW3 report 3. The read-back therefore asserts
+PW1 and PW3 only, and the step says the resetting code is not set rather than implying it is.
+
+**Why not let the app unblock a blocked PIN.** Because the honest fix for "I am afraid of typos"
+is not a longer retry budget; it is the unblock path (`RESET RETRY COUNTER`). That is a signing-side
+feature — the card is blocked, the operator has the Admin PIN, and the PIN has to be replaced — and
+it is not in this version. Recorded here rather than half-built: docs/m0-hardware-verification.md
+item 19.
+
+**Evidence.** Reverting each part fails its test: dropping the read-back fails
+`testRetryLimitsTheCardDoesNotApplyFailTheCeremony`, widening the offered range fails
+`testARetryLimitOutsideTheOfferedRangeIsRefused`, and dropping the policy step's re-check fails
+`testThePolicyStepRechecksTheRetryLimits`. The APDU itself is pinned byte-for-byte
+(`00f2000003 040404 00`) and the UI walk now chooses 4 through the picker, so the number really
+travels. VaultKit 249 → 253, YubikeyKit 81 → 83.
+

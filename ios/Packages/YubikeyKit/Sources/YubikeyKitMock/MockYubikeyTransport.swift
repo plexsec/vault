@@ -47,10 +47,20 @@ public final class MockYubikeyTransport: YubikeyTransport {
     private var adminPIN: [UInt8] = OpenPGPPinDefaults.admin
     private var pw1Verified = false
     private var pw3Verified = false
+    /// The retry *maximum* per password, as `SET PIN RETRIES` sets it. A fresh
+    /// applet reports 3 for all three (measured on hardware: `03 00 03`).
+    private var userRetryLimit = 3
+    private var adminRetryLimit = 3
     private var userRetriesRemaining = 3
     private var adminRetriesRemaining = 3
     private var slots: [KeySlot: SlotState] = [.signature: SlotState(), .authentication: SlotState()]
-    private var pwStatus: [UInt8] = [0x00]
+    /// The PW1 status byte as *written* (0x00 = PIN per signature, 0x01 = once per
+    /// session). The card accepts only this byte on write; the maximum lengths and
+    /// the retry counters in the seven-byte read-back are the card's own.
+    private var pw1Status: [UInt8] = [0x01]
+    /// The resetting code is never set by this app, and hardware reports 0 attempts
+    /// for a password that does not exist (`03 00 03` for PW1/RC/PW3).
+    private let resetRetriesRemaining: UInt8 = 0
     /// True between `TERMINATE DF` and `ACTIVATE FILE`. A real applet in this
     /// state is wiped and deactivated: it answers `6985` to everything except
     /// `ACTIVATE FILE` and a re-SELECT. Modelled because an interrupted reset
@@ -185,6 +195,8 @@ public final class MockYubikeyTransport: YubikeyTransport {
             return verify(command)
         case (0x24, _, _):
             return changeReferenceData(command)
+        case (0xF2, _, _):
+            return setPinRetries(command)
         case (0xE6, _, _):
             guard pw3Verified else { return status(0x69, 0x82) }
             resetApplet()
@@ -244,7 +256,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
             else { return status(0x6A, 0x88) }
             return ResponseAPDU(data: attributes, status: .success)
         case OpenPGPDataObject.pwStatusBytes:
-            return ResponseAPDU(data: pwStatus, status: .success)
+            return ResponseAPDU(data: pwStatusReadback, status: .success)
         case OpenPGPDataObject.uifSignature, OpenPGPDataObject.uifAuthentication:
             guard let slot = Self.slot(forUIFTag: tag), let uif = slots[slot]?.uif else {
                 return status(0x6A, 0x88)
@@ -302,7 +314,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
                 discretionary += TLV(tag: objects.uif, value: uif).encoded
             }
         }
-        discretionary += TLV(tag: OpenPGPDataObject.pwStatusBytes, value: pwStatus).encoded
+        discretionary += TLV(tag: OpenPGPDataObject.pwStatusBytes, value: pwStatusReadback).encoded
 
         var contents = TLV(tag: OpenPGPDataObject.applicationIdentifier, value: aid).encoded
         contents += TLV(tag: OpenPGPDataObject.historicalBytes, value: [0x00, 0x73, 0x00, 0x00]).encoded
@@ -361,7 +373,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
             slots[slot]?.fingerprint = command.data
         case OpenPGPDataObject.pwStatusBytes:
             guard command.data.count == 1 else { return status(0x6A, 0x80) }
-            pwStatus = command.data
+            pw1Status = command.data
         case OpenPGPDataObject.uifSignature, OpenPGPDataObject.uifAuthentication:
             guard let slot = Self.slot(forUIFTag: tag) else { return status(0x6A, 0x88) }
             // A card that answers `9000` and stores nothing is exactly the failure
@@ -496,7 +508,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
                 return status(0x63, UInt8(0xC0 | adminRetriesRemaining))
             }
             pw3Verified = true
-            adminRetriesRemaining = 3
+            adminRetriesRemaining = adminRetryLimit
             return status(0x90, 0x00)
         }
         guard userRetriesRemaining > 0 else { return status(0x69, 0x83) }
@@ -505,7 +517,26 @@ public final class MockYubikeyTransport: YubikeyTransport {
             return status(0x63, UInt8(0xC0 | userRetriesRemaining))
         }
         pw1Verified = true
-        userRetriesRemaining = 3
+        userRetriesRemaining = userRetryLimit
+        return status(0x90, 0x00)
+    }
+
+    /// `SET PIN RETRIES` (INS 0xF2): three bytes, PW1 / reset code / PW3, each the
+    /// *maximum* number of wrong attempts. Requires PW3 verified in the same
+    /// session. The real applet accepts 1-99; the counters refill to the new value
+    /// on the next successful VERIFY.
+    private func setPinRetries(_ command: CommandAPDU) -> ResponseAPDU {
+        guard pw3Verified else { return status(0x69, 0x82) }
+        guard command.p1 == 0x00, command.p2 == 0x00, command.data.count == 3 else {
+            return status(0x6A, 0x80)
+        }
+        guard command.data.allSatisfy({ (1...99).contains(Int($0)) }) else {
+            return status(0x6A, 0x80)
+        }
+        userRetryLimit = Int(command.data[0])
+        adminRetryLimit = Int(command.data[2])
+        userRetriesRemaining = userRetryLimit
+        adminRetriesRemaining = adminRetryLimit
         return status(0x90, 0x00)
     }
 
@@ -518,7 +549,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
             new = Array(command.data.dropFirst(userPIN.count))
             guard old == userPIN else { return status(0x63, 0xC2) }
             userPIN = new
-            userRetriesRemaining = 3
+            userRetriesRemaining = userRetryLimit
             pw1Verified = false
             return status(0x90, 0x00)
         }
@@ -527,7 +558,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         new = Array(command.data.dropFirst(adminPIN.count))
         guard old == adminPIN else { return status(0x63, 0xC2) }
         adminPIN = new
-        adminRetriesRemaining = 3
+        adminRetriesRemaining = adminRetryLimit
         // CHANGE REFERENCE DATA for PW3 leaves PW3 verified, as on real cards.
         pw3Verified = true
         return status(0x90, 0x00)
@@ -587,6 +618,8 @@ public final class MockYubikeyTransport: YubikeyTransport {
         adminPIN = OpenPGPPinDefaults.admin
         pw1Verified = false
         pw3Verified = false
+        userRetryLimit = 3
+        adminRetryLimit = 3
         userRetriesRemaining = 3
         adminRetriesRemaining = 3
         slots = [.signature: SlotState(), .authentication: SlotState()]
@@ -594,7 +627,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         // ceremony writes. Observed on real hardware: a freshly terminated applet
         // reads `01 7F 7F 7F 03 00 03`, which is how the policy step's write can
         // be told apart from a card that was never configured.
-        pwStatus = [0x01]
+        pw1Status = [0x01]
         signatureCounter = 0
         // TERMINATE DF wipes the private-use objects along with everything else,
         // which is why the manifest has to be written *after* a reset and why a
@@ -621,7 +654,17 @@ public final class MockYubikeyTransport: YubikeyTransport {
         signatureCounter += 1
     }
 
-    public var currentPWStatus: [UInt8] { pwStatus }
+    /// What the card reports for DO 0xC4: the PW1 status byte, the three maximum
+    /// lengths, then the three remaining-attempt counters.
+    public var pwStatusReadback: [UInt8] {
+        pw1Status
+            + [0x7F, 0x7F, 0x7F]
+            + [UInt8(userRetriesRemaining), resetRetriesRemaining, UInt8(adminRetriesRemaining)]
+    }
+
+    public var currentPWStatus: [UInt8] { pwStatusReadback }
+    /// The maximum attempts per password, as `SET PIN RETRIES` configured them.
+    public var currentRetryLimits: (user: Int, admin: Int) { (userRetryLimit, adminRetryLimit) }
     public func currentUIF(_ slot: KeySlot) -> [UInt8] { slots[slot]?.uif ?? [] }
 
     /// When set, `PUT DATA` of a UIF object answers `9000` and stores nothing.

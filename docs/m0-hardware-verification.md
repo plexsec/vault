@@ -568,3 +568,29 @@ Note also that a long or repeated run of raw APDUs over CCID can wedge the reade
 `gpgconf --kill scdaemon`; a Swift probe using the app's own transport (CryptoTokenKit) does not
 show this at all, which is why item 18 asks for the app's path rather than more APDU replay.
 
+## 19. `SET PIN RETRIES` on real hardware
+
+**Resolved on hardware (YubiKey 5C NFC, firmware 5.8.0, applet 3.4).**
+
+* The instruction exists and is protected: `00 F2 00 00 00` (no Admin PIN verified) answers
+  `6982`, not `6D00`.
+* A factory-fresh applet reports `C4 07 01 7F 7F 7F 03 00 03`: PW1 status `0x01` ("PIN once per
+  session"), maximum lengths `7F`, and **3 / 0 / 3** remaining attempts, i.e. the resetting code
+  this app never sets reports zero.
+* Writing the PW1 status byte (`PUT DATA 0xC4` with one byte) is accepted; the seven-byte form is
+  rejected (`6A80`, already recorded in item 2).
+
+- [ ] After a provisioning run that chose a limit of, say, 5: read `C4` and confirm PW1 and PW3
+      report 5, and that a wrong PIN decrements one and a correct PIN refills it to 5.
+- [ ] Confirm the applet refuses 0 and 100 (`6A80`) — the app refuses them first, so this checks
+      the applet's range rather than the app's.
+- [ ] Confirm a run with a chosen limit survives to the end of the ceremony (the policy step
+      re-reads the counters) and that the report records the number.
+
+**Not implemented, deliberately.** Unblocking a blocked User PIN (`RESET RETRY COUNTER`, INS
+`0x2C`, P1 `0x02` / P2 `0x83` with the Admin PIN) would make a low retry limit safe to choose and
+is the honest answer to "I am afraid of typos". It is a signing-side feature — the operator has the
+Admin PIN, the card is blocked, the PIN has to be replaced — and it is not in this version. Until
+it is, the blocked-PIN message says what is actually true: the card has to be set up again from the
+mnemonic.
+

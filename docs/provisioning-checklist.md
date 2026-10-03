@@ -136,3 +136,18 @@ stay in the card. It is also the recovery route when the app has been reinstalle
 There is no signing in v0.1, so the rule does not yet apply. It is still repeated
 in the app because the habit matters, and because a v0.1 card is exactly the card
 that v0.2 will sign with.
+
+## PIN retry limits
+
+The ceremony asks how many wrong PIN entries each password tolerates before the card blocks it.
+Choose it deliberately:
+
+- **3** (the card's factory value) is the strictest sensible choice and the smallest brute-force
+  budget for a 6-digit PIN.
+- Higher numbers tolerate more typos, and also give an attacker with the card more guesses.
+- Either way, the consequence of using them up is the same: a blocked **User PIN** stops every
+  signature (unblocking needs the Admin PIN and a command this app does not implement yet, so plan
+  on re-provisioning from the 24 words), and a blocked **Admin PIN** ends provisioning and
+  re-pairing for that card. Both paths end with the keys erased from the card and rebuilt from the
+  mnemonic, so the 24 words are the only thing that has to survive.
+

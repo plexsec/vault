@@ -62,6 +62,9 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     /// Both slots reported the touch policy the ceremony asked for. Only ever set
     /// after reading the UIF objects back off the card (amendment 26).
     public var touchPolicyVerified: Bool?
+    /// The retry limit the operator chose, recorded only after the card reported
+    /// those counters back (amendment 27).
+    public var pinRetryLimit: Int?
     /// Ordered: secp256k1, then Ed25519. Empty until derivation.
     public var keys: [KeyRecord] = []
     public var warnings: [String] = []
@@ -388,7 +391,7 @@ public final class ProvisioningCeremony {
             }
             step = .pairingExport
 
-        case .reset, .pinProvisioning, .policy, .keyImport:
+        case .reset, .pinProvisioning, .pinRetries, .policy, .keyImport:
             // Action-only steps advance themselves once the card accepts them.
             throw CeremonyError.stepIncomplete(step: step, detail: "this step completes when the YubiKey accepts it")
 
@@ -630,6 +633,60 @@ public final class ProvisioningCeremony {
         }
         sessionAdminPIN?.zeroize()
         sessionAdminPIN = SensitiveBytes(copying: adminPIN)
+        advance(to: .pinRetries)
+    }
+
+    // MARK: Step 3b — PIN retry limits (amendment 27)
+
+    /// Sets how many wrong PIN attempts each password tolerates, and reads the
+    /// counters back.
+    ///
+    /// The operator chooses the number because it is a genuine trade: it is the
+    /// brute-force budget for a 6-digit PIN (design.md §9), and it is also how many
+    /// typos stand between the operator and a blocked card. The consequences are
+    /// stated on the step, not hidden here:
+    ///
+    /// * exhausting the **User PIN** stops every signature until the PIN is
+    ///   unblocked, which needs the Admin PIN (`RESET RETRY COUNTER`) — and this
+    ///   version of the app does not do that, so recovery means re-provisioning
+    ///   from the mnemonic, which erases the keys;
+    /// * exhausting the **Admin PIN** leaves the applet unusable for provisioning or
+    ///   re-pairing. A full applet reset is still possible (the applet allows
+    ///   `TERMINATE DF` when PW3 is blocked) and destroys the keys, so recovery is
+    ///   again the mnemonic.
+    ///
+    /// Verified rather than assumed: the card must report the new counters back, and
+    /// the policy step later re-checks them, because a limit that only appears to be
+    /// set is worse than no limit at all.
+    public func setPINRetries(_ limit: Int = CardPolicy.defaultRetryLimit) async throws {
+        try requireCurrent(.pinRetries)
+        guard CardPolicy.retryLimits.contains(limit) else {
+            throw CeremonyError.invalidRetryLimit(requested: limit, allowed: CardPolicy.retryLimits)
+        }
+        guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
+        var pin = adminPIN.materializedCopy()
+        defer { VaultKit.wipe(&pin) }
+
+        try await withMutatingStep(.pinRetries) {
+            try await card.setPINRetries(user: limit, reset: limit, admin: limit, adminPIN: pin)
+        }
+
+        let after = try await card.inventory()
+        inventory = after
+        guard let counters = after.retryCounters else {
+            throw CeremonyError.retryLimitsNotApplied(
+                detail: "the card reports no retry counters at all"
+            )
+        }
+        // The resetting code is never set by this app, so the card reports 0
+        // attempts for it and there is nothing to check there (measured on
+        // hardware: `03 00 03`). PW1 and PW3 are the two passwords this app sets.
+        guard Int(counters.user) == limit, Int(counters.admin) == limit else {
+            throw CeremonyError.retryLimitsNotApplied(
+                detail: "the card reports \(counters.user) user and \(counters.admin) admin attempts, not \(limit)"
+            )
+        }
+        report.pinRetryLimit = limit
         advance(to: .entropy)
     }
 
@@ -663,6 +720,20 @@ public final class ProvisioningCeremony {
         }
         if let status = after.pwStatusBytes, let first = status.first, first != CardPolicy.pw1StatusPerSignature {
             problems.append("the PW1 status reads 0x\(String(format: "%02x", first))")
+        }
+        // The retry limits were set earlier in the ceremony; re-reading them here is
+        // what proves the rest of the run did not disturb them, since this is the
+        // last look at the card before the pairing codes are produced.
+        if let limit = report.pinRetryLimit {
+            if let counters = after.retryCounters {
+                if Int(counters.user) != limit || Int(counters.admin) != limit {
+                    problems.append(
+                        "the PIN retry limits read back as \(counters.user)/\(counters.admin), not \(limit)"
+                    )
+                }
+            } else {
+                problems.append("the card no longer reports PIN retry counters")
+            }
         }
         if !problems.isEmpty {
             throw CeremonyError.policyNotApplied(detail: problems.joined(separator: "; "))

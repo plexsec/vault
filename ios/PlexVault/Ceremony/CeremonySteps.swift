@@ -187,6 +187,51 @@ struct PINStepView: View {
     }
 }
 
+// MARK: - Step 4b: PIN retry limits
+
+struct RetryLimitStepView: View {
+    @Bindable var viewModel: CeremonyViewModel
+
+    private var limit: Int { viewModel.pinRetryLimit }
+
+    var body: some View {
+        StepScaffold(
+            why: "How many wrong PIN entries each password tolerates before the card blocks it. The card refills a counter to this number on every correct entry; three is its factory value.",
+            caution: "This number is the brute-force budget for a 6-digit PIN, and also how many typos stand between you and a blocked card. Keep it low if the PIN is memorised.",
+            actionTitle: "Set PIN retry limits",
+            isBusy: viewModel.busy,
+            action: { Task { await viewModel.setPINRetryLimits() } }
+        ) {
+            Stepper(value: Binding(
+                get: { viewModel.pinRetryLimit },
+                set: { viewModel.pinRetryLimit = $0 }
+            ), in: CardPolicy.retryLimits) {
+                Text("PIN attempts allowed: **\(limit)**")
+            }
+            .accessibilityIdentifier("pin-retry-limit")
+
+            KeyValueRows(rows: [
+                ("User PIN (PW1)", "\(limit) wrong entries, then blocked"),
+                ("Admin PIN (PW3)", "\(limit) wrong entries, then blocked"),
+                ("Resetting code", "not set by this app, so nothing can unblock with it"),
+            ])
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("If every attempt is used up").font(.footnote.weight(.semibold))
+                Text("""
+                **User PIN blocked** — nothing can be signed until it is unblocked, and unblocking needs the Admin PIN (the card's `RESET RETRY COUNTER`), which this version does not do. In practice the card is set up again from the 24 words, which erases both keys.
+
+                **Admin PIN blocked** — the card can no longer be provisioned or re-paired. A full applet reset (allowed even when PW3 is blocked) also erases both keys.
+
+                The funds are not lost while the 24 words are safe, but the card has to be set up again from them.
+                """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 // MARK: - Step 5: policy
 
 struct PolicyStepView: View {

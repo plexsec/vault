@@ -96,6 +96,8 @@ struct CeremonyRootView: View {
             ResetStepView(viewModel: viewModel)
         case .pinProvisioning:
             PINStepView(viewModel: viewModel)
+        case .pinRetries:
+            RetryLimitStepView(viewModel: viewModel)
         case .policy:
             PolicyStepView(viewModel: viewModel)
         case .entropy:

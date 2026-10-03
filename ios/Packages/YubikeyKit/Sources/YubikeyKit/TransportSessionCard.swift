@@ -73,6 +73,12 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.applyPolicy(adminPIN: adminPIN) }
     }
 
+    public func setPINRetries(user: Int, reset: Int, admin: Int, adminPIN: [UInt8]) async throws {
+        try await withSession {
+            try await $0.setPINRetries(user: user, reset: reset, admin: admin, adminPIN: adminPIN)
+        }
+    }
+
     /// VERIFY PW1 and PSO:CDS **in the same session**: VERIFY state does not
     /// survive a session boundary, so splitting them would fail on hardware with
     /// `6982` while passing against a card that keeps state in memory.

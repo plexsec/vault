@@ -173,6 +173,8 @@ public struct OpenPGPApplicationData: Equatable {
     public var uifSignature: [UInt8]?
     public var uifAuthentication: [UInt8]?
     public var pwStatusBytes: [UInt8]?
+    /// Remaining attempts per password, parsed from `pwStatusBytes`.
+    public var retryCounters: RetryCounters?
     public var fingerprintSignature: [UInt8]?
     public var combinedFingerprints: [UInt8]?
     public var signatureCounter: UInt32?
@@ -199,6 +201,7 @@ public struct OpenPGPApplicationData: Equatable {
         result.uifSignature = TLVParser.find(OpenPGPDataObject.uifSignature, in: objects)?.value
         result.uifAuthentication = TLVParser.find(OpenPGPDataObject.uifAuthentication, in: objects)?.value
         result.pwStatusBytes = TLVParser.find(OpenPGPDataObject.pwStatusBytes, in: objects)?.value
+        result.retryCounters = PWStatusBytes.retryCounters(result.pwStatusBytes)
         result.fingerprintSignature = TLVParser.find(OpenPGPDataObject.fingerprintSignature, in: objects)?.value
         result.combinedFingerprints = TLVParser.find(OpenPGPDataObject.fingerprintsCombined, in: objects)?.value
 
@@ -338,6 +341,16 @@ public enum PWStatusBytes {
     /// rejected by real hardware with 6A80.
     public static func encode(pw1Status: UInt8 = pinRequiredPerSignature) -> [UInt8] {
         [pw1Status]
+    }
+
+    /// How many wrong attempts each password still tolerates.
+    ///
+    /// Read from the last three of the seven bytes DO `0xC4` returns: PW1, the
+    /// resetting code, PW3. `RetryCounters` lives in VaultKit, which is where the
+    /// ceremony compares it against what it asked for.
+    public static func retryCounters(_ bytes: [UInt8]?) -> RetryCounters? {
+        guard let bytes, bytes.count >= 7 else { return nil }
+        return RetryCounters(user: bytes[4], reset: bytes[5], admin: bytes[6])
     }
 
     public static func pw1RequiresPin(_ bytes: [UInt8]?) -> Bool? {

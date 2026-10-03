@@ -257,7 +257,12 @@ final class APDUTests: XCTestCase {
         XCTAssertEqual(inventory.signatureCounter, 0)
         XCTAssertTrue(inventory.isFactoryFresh)
         XCTAssertTrue(inventory.likelySupportsSecp256k1)
-        XCTAssertEqual(PWStatusBytes.pw1RequiresPin(inventory.pwStatusBytes), true)
+        // A factory-fresh applet reports PW1 status 0x01 ("PIN once per session"),
+        // measured on hardware: `C4 07 01 7F 7F 7F 03 00 03`. So `0x00` on a card
+        // is evidence the policy step ran, and it is what the app writes there.
+        XCTAssertEqual(inventory.pwStatusBytes, [0x01, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03])
+        XCTAssertEqual(PWStatusBytes.pw1RequiresPin(inventory.pwStatusBytes), false)
+        XCTAssertEqual(inventory.retryCounters, RetryCounters(user: 3, reset: 0, admin: 3))
     }
 
     /// A YubiKey 5.4.x answers 6581 ("memory failure") when the public key of an
@@ -389,6 +394,57 @@ final class APDUTests: XCTestCase {
             // The real card answers 6A80 on an occupied slot.
             XCTAssertEqual(error as? CardError, .keyImportRejected)
         }
+    }
+
+    /// `SET PIN RETRIES` is `00 F2 00 00 03 <PW1> <resetting code> <PW3>`, and the
+    /// card reports the new limits back in the last three bytes of `0xC4`.
+    func testSetPINRetriesAPDUBytesAndReadBack() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+
+        // Factory default first: three attempts each, and none for the resetting
+        // code this app never sets (hardware reports `03 00 03`).
+        XCTAssertEqual(transport.currentPWStatus, [0x01, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03])
+
+        try await card.setPINRetries(user: 7, reset: 7, admin: 7, adminPIN: Array("87654321".utf8))
+
+        let apdu = try XCTUnwrap(transport.receivedAPDUs.last { $0.hasPrefix("00f2") })
+        XCTAssertEqual(apdu, "00f2000003" + "070707" + "00")
+        XCTAssertEqual(transport.currentRetryLimits.user, 7)
+        XCTAssertEqual(transport.currentRetryLimits.admin, 7)
+        let counters = try XCTUnwrap(PWStatusBytes.retryCounters(transport.currentPWStatus))
+        XCTAssertEqual(counters, RetryCounters(user: 7, reset: 0, admin: 7))
+
+        // A counter that has been spent refills to the new maximum on a good PIN.
+        _ = try? await card.verify(pin: Array("000000".utf8), reference: .user, operation: .verifyUserPIN)
+        XCTAssertEqual(PWStatusBytes.retryCounters(transport.currentPWStatus)?.user, 6)
+        try await card.verify(pin: Array("123456".utf8), reference: .user, operation: .verifyUserPIN)
+        XCTAssertEqual(PWStatusBytes.retryCounters(transport.currentPWStatus)?.user, 7)
+    }
+
+    /// A limit the applet cannot accept is refused before the card is asked, and
+    /// the applet refuses it too (the mock mirrors `6A80`).
+    func testSetPINRetriesRejectsValuesOutsideTheAppletRange() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        let before = transport.currentPWStatus
+
+        for value in [0, 100, 256] {
+            await XCTAssertThrowsErrorAsync {
+                try await card.setPINRetries(user: value, reset: 3, admin: 3, adminPIN: Array("87654321".utf8))
+            } verify: { error in
+                XCTAssertEqual(error as? CardError, .retryCountOutOfRange(requested: value, allowed: 1...99))
+            }
+        }
+        // Nothing reached the card.
+        XCTAssertEqual(transport.currentPWStatus, before)
+        XCTAssertFalse(transport.receivedAPDUs.contains { $0.hasPrefix("00f2") })
     }
 
     /// Real firmware rejects GnuPG's Ed25519 OID with `6A80`, and the app used to
