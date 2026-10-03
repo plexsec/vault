@@ -282,18 +282,24 @@ public enum KeyImportTemplate {
     ]
 
     /// Algorithm attributes for EdDSA over Ed25519: `0x16` (EdDSA) followed by
-    /// RFC 8410's `id-Ed25519` OID 1.3.101.112 (`2B 65 70`).
+    /// **GnuPG's OID for Ed25519, 1.3.6.1.4.1.11591.15.1** — not RFC 8410's
+    /// `id-Ed25519` (1.3.101.112).
     ///
-    /// **Resolved against real hardware** (YubiKey 5C NFC, firmware 5.8.0, OpenPGP
-    /// applet 3.4), which is what settled the open question this comment used to
-    /// carry: GnuPG's OID for Ed25519 (1.3.6.1.4.1.11591.15.1, `2B 06 01 04 01 DA 47
-    /// 0F 01`) is **rejected with `6A80`**, and `2B 65 70` is accepted with `9000`.
-    /// Writing the GnuPG OID meant the authentication slot's key could not be
-    /// imported at all on this firmware, so provisioning could not complete
-    /// (amendment 26, docs/m0-hardware-verification.md).",
+    /// This is the value `yubikit` sends (`OID.Ed25519` in `yubikit.openpgp`, used by
+    /// `ykman openpgp keys import`), and it is what this app sent until a hardware
+    /// probe of mine appeared to show the opposite. That probe was wrong: its APDU
+    /// declared `Lc = 05` while carrying four bytes, and the `9000` it read was a
+    /// truncated card session rather than an accepted write. The real run on a
+    /// YubiKey 5C NFC (firmware 5.8.0) rejected RFC 8410's OID with `6A80` — which is
+    /// the error the operator saw — so the probe was wrong in the direction that
+    /// mattered (amendment 29).
+    ///
+    /// The bytes are exactly what `EcAttributes.create` produces for Ed25519:
+    /// algorithm id, then the OID, and **no** format byte (yubikit's
+    /// `EC_IMPORT_FORMAT.STANDARD` is defined as "format byte not present").
     public static let eddsaEd25519AlgorithmAttributes: [UInt8] = [
         0x16,                   // algorithm id: EdDSA
-        0x2B, 0x65, 0x70,       // OID 1.3.101.112 (RFC 8410 id-Ed25519)
+        0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01, // OID 1.3.6.1.4.1.11591.15.1
     ]
 
     public static func algorithmAttributes(for algorithm: KeyAlgorithm) -> [UInt8] {

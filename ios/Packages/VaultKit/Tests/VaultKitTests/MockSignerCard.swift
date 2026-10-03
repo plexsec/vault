@@ -288,6 +288,9 @@ final class MockSignerCard: SignerCard {
 
     /// When set, the policy writes answer `9000` and change nothing.
     var uifWritesAreIgnored = false
+    /// When set, only this slot's import fails — which models the real case that
+    /// matters: one key written, the other refused.
+    var refuseImportForSlot: KeySlot?
 
     func importKey(
         slot: KeySlot,
@@ -302,7 +305,9 @@ final class MockSignerCard: SignerCard {
         guard adminPIN == lastSetAdminPIN else {
             throw CardError.conditionsNotSatisfied
         }
-        if failurePoint == .keyImport { throw CardError.keyImportRejected }
+        if failurePoint == .keyImport || refuseImportForSlot == slot {
+            throw CardError.keyImportRejected
+        }
         // A real card answers 0x6A80, which the status mapper turns into
         // keyImportRejected; the mock mirrors that rather than inventing a case.
         if storedPrivateKeys[slot] != nil { throw CardError.keyImportRejected }

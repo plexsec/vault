@@ -539,9 +539,13 @@ applet are now measured rather than assumed, and both had silently broken provis
   generation-time writes leave it there. Applying `02 20` *after* the import reads back `02 20`
   and survives every later write in the ceremony, including the manifest object and `0xC4`.
   Independently reported for `gpg keytocard` in yubikey-manager#693.
-* **Ed25519 attributes: the OID matters.** `0xC3 = 16 || 2B 06 01 04 01 DA 47 0F 01` (GnuPG's
+* ~~**Ed25519 attributes: the OID matters.** `0xC3 = 16 || 2B 06 01 04 01 DA 47 0F 01` (GnuPG's
   OID) is refused with `6A80`; `0xC3 = 16 || 2B 65 70` (RFC 8410 `id-Ed25519`) is accepted and
-  the key imports.
+  the key imports.~~ **RETRACTED, and it caused a regression: see amendment 29.** The measured
+  truth is the opposite — GnuPG's OID is what `yubikit` sends and what this firmware accepts, and
+  RFC 8410's is refused with `6A80`, as a real app run then showed. The lines below it that
+  "confirmed" the wrong direction were never read back. Nothing in this item may be used without
+  checking how it was verified, which is the subject of the first trap below.
 * **`YYYY` `0xC4` after a reset is `01`, not `00`.** A freshly terminated applet reads
   `01 7F 7F 7F 03 00 03`, so `0xC4[0] = 0x00` on a card is evidence that the policy step ran.
   That is what made the missing touch policy a contradiction rather than an unexplained state.
@@ -666,4 +670,19 @@ also replace the PINs afterwards.
 The card was left **factory-fresh**: reset, default PINs, no keys, `UIF = 00 20`, `C4 = 01 7F 7F 7F
 03 00 03`. Nothing the probe wrote is still there, and the app's next provisioning run starts from
 a reset in any case.
+
+### The rule that came out of amendment 29
+
+**A status word is not evidence; a read-back is.** Amendment 26's Ed25519 claim was built from a
+`9000` that no card ever sent: the APDU declared `Lc = 05` while carrying four bytes, and the line
+that looked like "accepted" was the previous command's answer in a session that had wedged and
+dropped the rest. The write had not happened at all. Reading `0xC3` back would have shown the
+attribute object unchanged, and the mistake would have cost a minute instead of a release.
+
+Two habits follow, and both are cheap:
+
+* after any `PUT DATA` that a claim depends on, `GET DATA` the same object and compare the bytes;
+* prefer the reference implementation (`yubikit`, which `ykman` drives on real cards — the same
+  source that supplied the correct Ed25519 OID, the correct UIF encoding, and the `SET PIN RETRIES`
+  form) over a hand-typed probe, until the card contradicts it with a read-back.
 

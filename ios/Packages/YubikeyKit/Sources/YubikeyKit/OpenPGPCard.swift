@@ -531,11 +531,22 @@ public final class OpenPGPCard: SignerCard {
         // know the curve to interpret the 32-byte key material. The previous
         // order — import first, attributes second — failed on real hardware with
         // 6A80 because the slot still carried its default RSA attributes.
-        try await putData(
-            tag: objects.algorithmAttributes,
-            value: KeyImportTemplate.algorithmAttributes(for: algorithm),
-            operation: .setAlgorithmAttributes
-        )
+        do {
+            try await putData(
+                tag: objects.algorithmAttributes,
+                value: KeyImportTemplate.algorithmAttributes(for: algorithm),
+                operation: .setAlgorithmAttributes
+            )
+        } catch let error as CardError {
+            // Name the algorithm and the slot: a bare `6A80` here is reported as
+            // "unsupported firmware", which is one of several causes and not the
+            // one an operator can act on (amendment 29).
+            throw CardError.algorithmAttributesRejected(
+                algorithm: algorithm.displayName,
+                slot: slot.displayName,
+                detail: error.userFacingDescription
+            )
+        }
 
         // The addressed slot must be empty: PUT DATA of a private key is rejected
         // on an occupied slot, and the ceremony treats that as a hard failure

@@ -350,6 +350,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         switch tag {
         case OpenPGPDataObject.algorithmAttributesSignature, OpenPGPDataObject.algorithmAttributesAuthentication:
             guard let slot = Self.slot(forAlgorithmAttributesTag: tag) else { return status(0x6A, 0x88) }
+            guard !refuseAlgorithmAttributes else { return status(0x6A, 0x80) }
             // The attributes must be exactly the ones this firmware accepts for
             // that slot's algorithm — not merely start with the right algorithm
             // id. Real hardware (YubiKey 5C NFC, firmware 5.8.0) rejects an
@@ -674,6 +675,12 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// import, and the applet's key-slot reset then discarded it while reporting
     /// success at every step (amendment 26).
     public var uifWritesAreIgnored = false
+
+    /// When set, every algorithm-attributes write answers `6A80`. Models a card (or
+    /// a firmware/curve combination) that refuses the attributes object, which is
+    /// what happened to a real provisioning run and what the named
+    /// `algorithmAttributesRejected` error exists for (amendment 29).
+    public var refuseAlgorithmAttributes = false
     public func currentFingerprint(_ slot: KeySlot) -> [UInt8] { slots[slot]?.fingerprint ?? [] }
     public func hasKey(in slot: KeySlot) -> Bool { slots[slot]?.isOccupied ?? false }
     public func storedPrivateKey(_ slot: KeySlot) -> [UInt8]? { slots[slot]?.privateKey }

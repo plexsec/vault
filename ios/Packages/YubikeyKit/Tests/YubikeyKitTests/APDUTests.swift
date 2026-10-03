@@ -147,12 +147,14 @@ final class APDUTests: XCTestCase {
             KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes,
             [0x13, 0x2B, 0x81, 0x04, 0x00, 0x0A]
         )
-        // 0x16 EdDSA || RFC 8410 id-Ed25519 (1.3.101.112). The GnuPG OID
-        // (1.3.6.1.4.1.11591.15.1) is rejected by real firmware with 6A80, which
-        // meant the authentication slot's key could never be imported.
+        // 0x16 EdDSA || GnuPG's OID for Ed25519 (1.3.6.1.4.1.11591.15.1), which is
+        // what yubikit's `EcAttributes.create` sends and what this firmware accepts.
+        // RFC 8410's id-Ed25519 is refused with 6A80 — a wrong OID was shipped once
+        // on the strength of a broken hardware probe (amendment 29), so the bytes
+        // are pinned to the reference implementation rather than to a measurement.
         XCTAssertEqual(
             KeyImportTemplate.eddsaEd25519AlgorithmAttributes,
-            [0x16, 0x2B, 0x65, 0x70]
+            [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01]
         )
         XCTAssertEqual(KeyImportTemplate.algorithmAttributes(for: .secp256k1),
                        KeyImportTemplate.ecdsaSecp256k1AlgorithmAttributes)
@@ -447,11 +449,16 @@ final class APDUTests: XCTestCase {
         XCTAssertFalse(transport.receivedAPDUs.contains { $0.hasPrefix("00f2") })
     }
 
-    /// Real firmware rejects GnuPG's Ed25519 OID with `6A80`, and the app used to
-    /// write exactly that: the authentication slot's key could not be imported at
-    /// all, so provisioning could not complete on a YubiKey 5 with firmware 5.8.0.
+    /// A wrong attributes object is refused by the card **and** by the simulation,
+    /// and the error says what was refused.
     ///
-    /// The mock refuses it for the same reason, so this cannot silently come back.
+    /// Two lessons are pinned here. The mock only accepts the exact bytes the
+    /// firmware accepts, so a wrong OID fails a test instead of a provisioning run —
+    /// except that the wrong OID here *was* in the app, and reached a real card
+    /// because a hand-typed probe of mine appeared to bless it (amendment 29). And
+    /// the bare `6A80` used to be reported as "firmware 5.2.3 or newer is required",
+    /// which on a 5.8.0 card sends the operator looking for an upgrade they cannot
+    /// install.
     func testTheWrongEd25519AlgorithmAttributesAreRefused() async throws {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
@@ -462,11 +469,13 @@ final class APDUTests: XCTestCase {
         await XCTAssertThrowsErrorAsync {
             try await card.putData(
                 tag: OpenPGPDataObject.algorithmAttributesAuthentication,
-                value: [0x16, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01],
+                // RFC 8410's id-Ed25519: the OID a wrong-but-plausible reading of the
+                // spec produces, and the one that reached a real provisioning run.
+                value: [0x16, 0x2B, 0x65, 0x70],
                 operation: .setAlgorithmAttributes
             )
         } verify: { error in
-            // 6A80 "wrong data", mapped for this operation by the status table.
+            // Written through `putData` directly, so this is the raw mapping.
             XCTAssertEqual(error as? CardError, .unsupportedFirmware)
         }
         // And the key that the app does write imports fine.
@@ -478,6 +487,39 @@ final class APDUTests: XCTestCase {
             creationTime: Date(timeIntervalSince1970: 1_700_000_000),
             adminPIN: Array("87654321".utf8)
         )
+    }
+
+    /// A card that refuses the attributes object produces an error that names the
+    /// algorithm and the slot.
+    ///
+    /// This is the message path a real provisioning run took: the bare `6A80` was
+    /// reported as "firmware 5.2.3 or newer is required", which on a 5.8.0 card
+    /// sends the operator looking for an upgrade they cannot install.
+    func testARefusedAttributesObjectNamesTheAlgorithmAndSlot() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        transport.refuseAlgorithmAttributes = true
+
+        await XCTAssertThrowsErrorAsync {
+            try await card.importKey(
+                slot: .authentication,
+                algorithm: .ed25519,
+                privateKey: SensitiveBytes(copying: [UInt8](repeating: 0x5A, count: 32)),
+                fingerprint: [UInt8](repeating: 0xCD, count: 20),
+                creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+                adminPIN: Array("87654321".utf8)
+            )
+        } verify: { error in
+            guard case .algorithmAttributesRejected(let algorithm, let slot, _)? = error as? CardError else {
+                return XCTFail("expected algorithmAttributesRejected, got \(error)")
+            }
+            XCTAssertEqual(algorithm, "Ed25519")
+            XCTAssertEqual(slot, "Authentication slot")
+        }
+        XCTAssertFalse(transport.hasKey(in: .authentication), "a refused attributes write imports nothing")
     }
 
     /// The Ed25519 path end to end: import a 32-byte seed into the

@@ -1015,12 +1015,15 @@ ceremony; only the touch policy disagreed.
    did *not* move: the PW1 status byte (`0xC4[0] = 0x00`, written by the same step, moments
    earlier) survived the import — which is why the card looked configured and why the
    contradiction was invisible.
-2. **The Ed25519 algorithm attributes were the wrong OID.** The app wrote GnuPG's OID for
+2. ~~**The Ed25519 algorithm attributes were the wrong OID.** The app wrote GnuPG's OID for
    Ed25519 (1.3.6.1.4.1.11591.15.1). This firmware rejects it with `6A80` and accepts RFC
    8410's `id-Ed25519` (1.3.101.112, `2B 65 70`). The authentication slot's key therefore
-   could not be imported at all. The code had carried this as an open M0 question ("which one
-   the applet expects is an M0 hardware-verification item") — it is now answered, and answered
-   the other way around.
+   could not be imported at all.~~ **RETRACTED — this was wrong, and acting on it shipped a
+   regression. See amendment 29.** The GnuPG OID is the correct one (it is what `yubikit` sends
+   and what this firmware accepts); RFC 8410's is refused with `6A80`. The "evidence" below was
+   an APDU of mine that declared `Lc = 05` while carrying four bytes, whose `9000` was a
+   truncated card session rather than an accepted write. Item 1 of this amendment — the touch
+   policy — is unaffected and was reproduced repeatedly.
 
 **Why no test noticed.** The simulated card stored whatever it was given and never modelled the
 key-slot reset, so `applyPolicy` followed by `importKey` looked exactly like `importKey`
@@ -1146,4 +1149,78 @@ now is only the wording:
 importing a key clears that slot's touch policy (reproduced four times); and the EC private-key
 template needs **no** public key — yubikit's optional `0x99` component is not required by this
 firmware, which accepts the `92`-only form our code sends.
+
+## 29. v0.2: a wrong Ed25519 OID shipped, on the strength of a broken probe
+
+**Sections:** §4.2 (step 6), §6.5. Corrects amendment 26 item 2. Measured on the operator's own
+YubiKey, in the app, which is how it was caught.
+
+**What happened.** Amendment 26 claimed the app's Ed25519 algorithm attributes were wrong, and
+changed them from GnuPG's OID (1.3.6.1.4.1.11591.15.1) to RFC 8410's `id-Ed25519` (1.3.101.112).
+The operator then provisioned a real card and the app failed at **Import keys into YubiKey**:
+
+> This YubiKey's OpenPGP applet does not support the requested algorithm. Firmware 5.2.3 or newer
+> is required.
+
+`ykman` showed the signature slot written and the authentication slot empty — and no touch policy,
+because the ceremony had stopped *before* the policy step (which now runs after the import). One
+wrong constant, three symptoms.
+
+**The correct value is the one the app had all along.** `yubikit.openpgp` is what `ykman openpgp
+keys import` uses on real YubiKeys:
+
+```python
+OID.Ed25519 = 1.3.6.1.4.1.11591.15.1          # GnuPG's OID, not RFC 8410's
+if oid == OID.Ed25519: alg = 0x16             # EdDSA
+__bytes__ = pack(">B", alg) + self.oid         # and no format byte: STANDARD means "not present"
+```
+
+Those are exactly the bytes amendment 26 removed. Reverted, and the bytes are now pinned by a test
+to the reference implementation rather than to any measurement of mine.
+
+**How the mistake got made, because the shape of it will recur.** The claim rested on two hand-typed
+APDUs sent through `gpg-connect-agent`:
+
+```
+00 DA 00 C3 05 16 2B 65 70        <- declared Lc = 05, carried four bytes
+00 DA 00 C3 09 16 2B 06 01 04 01 DA 47 0F 01
+```
+
+The first is malformed, and the `9000` it "returned" was not a card response at all: raw APDU bursts
+wedge `scdaemon`, and a wedged session yields a *truncated* status-word list — here, the VERIFY's
+`9000` with the write's answer missing. I read the first line as "RFC 8410 accepted", when the lines
+together say "the second command never ran". The GnuPG OID's `6A80` in the same run was equally
+untrustworthy, because the card had been left in an unknown state by the wedges (item 20 records
+that a half-written slot answers `6A80` to a re-import).
+
+**The rule this produced, now in docs/m0-hardware-verification.md item 20:** a bare status word is
+not evidence. A write is verified by *reading the object back*, and a claim about a wire format is
+preferred from the reference implementation over any probe of mine until the card itself contradicts
+it with a read-back. Amendment 26's touch-policy finding passes that test (it was reproduced four
+times, each time verified by reading `0xD6`/`0xD8` back); its Ed25519 finding did not.
+
+**Two failures of the app's own making, fixed in the same change:**
+
+* **The error blamed the firmware.** A refused attributes object was reported as "unsupported
+  firmware… 5.2.3 or newer", which on a 5.8.0 card sends the operator looking for an upgrade they
+  cannot install and hides the real cause. `CardError.algorithmAttributesRejected(algorithm:slot:)`
+  now names what was refused and says that a newer card means an app bug.
+* **A half-provisioned card invited a retry that cannot work.** Keys are imported one slot at a
+  time, so a failure on the second leaves the first holding a key — and the applet refuses a key
+  into an occupied slot. The ceremony now re-inspects the card, reports
+  `importLeftTheCardPartlyProvisioned`, and sends the operator back to the inspection step with the
+  reset named as the way forward. Before this, the same error repeated with no way out; the operator
+  in this incident had to work out from `ykman` that the card needed a reset.
+
+**Verified.** The mock refuses any attributes object that is not the exact one the firmware accepts,
+so the reverted OID is a passing test and RFC 8410's is a failing one
+(`testTheWrongEd25519AlgorithmAttributesAreRefused`); the named error and the partly-provisioned path
+have their own tests (`testARefusedAttributesObjectNamesTheAlgorithmAndSlot`,
+`testAFailedImportLeavesTheCardPartlyProvisionedAndSaysSo`,
+`testAnImportThatWroteNothingReportsItsOwnError`). VaultKit 253 → 255, YubikeyKit 83 → 85.
+
+**Still owed to hardware:** one provisioning run on the real card with the reverted OID, which the
+operator can now do after resetting the applet. If `0xC3` is refused *again* with the GnuPG OID, then
+the OID is not the whole story on this firmware and the next step is a read-back-verified probe of
+the candidate forms (item 20), not another edit.
 

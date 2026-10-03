@@ -271,6 +271,45 @@ final class ProvisioningCeremonyTests: XCTestCase {
         }
     }
 
+    // MARK: A failed import must not trap the operator (amendment 29)
+
+    /// The keys are written one slot at a time, so a failure on the second slot
+    /// leaves the first holding a key — and the applet refuses to overwrite it. The
+    /// ceremony must say so and send the operator back to the reset, because a bare
+    /// "import failed" invites a retry that cannot work.
+    func testAFailedImportLeavesTheCardPartlyProvisionedAndSaysSo() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+
+        // The signature key lands; the authentication import is refused.
+        card.refuseImportForSlot = .authentication
+
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() } verify: { error in
+            guard case .importLeftTheCardPartlyProvisioned(let slots, let detail)? = error as? CeremonyError else {
+                return XCTFail("expected importLeftTheCardPartlyProvisioned, got \(error)")
+            }
+            XCTAssertEqual(slots, ["Signature slot"], "named the way the operator sees them")
+            XCTAssertTrue(detail.contains("rejected"), detail)
+        }
+        XCTAssertEqual(ceremony.step, .cardInventory, "the operator must be sent back to inspection")
+        XCTAssertTrue(card.hasKey(in: .signature), "the card really is half provisioned")
+    }
+
+    /// And when nothing was written, the original error is reported unchanged —
+    /// no ceremony-level noise for a clean failure.
+    func testAnImportThatWroteNothingReportsItsOwnError() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony)
+        card.failurePoint = .keyImport
+        card.refuseImportForSlot = .signature
+
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() } verify: { error in
+            XCTAssertEqual(error as? CardError, .keyImportRejected)
+        }
+    }
+
     // MARK: PIN retry limits (amendment 27)
 
     /// The operator chooses 3-10; the card reports the counters back, and the

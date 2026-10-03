@@ -172,6 +172,11 @@ public enum CardError: Swift.Error, Equatable {
     case pinBlocked
     case adminPinBlocked
     case conditionsNotSatisfied
+    /// The applet refused an algorithm-attributes object (`6A80` on `PUT DATA`
+    /// `0xC1`/`0xC3`). Named, because "unsupported firmware" is one of several
+    /// causes and the wrong one sends the operator looking for an upgrade they
+    /// cannot install.
+    case algorithmAttributesRejected(algorithm: String, slot: String, detail: String)
     case unsupportedFirmware
     case keyImportRejected
     case signatureFailed
@@ -214,6 +219,9 @@ public enum CardError: Swift.Error, Equatable {
         case .pinIncorrect, .pinBlocked, .adminPinBlocked:
             return true
         case .conditionsNotSatisfied, .unsupportedFirmware, .keyImportRejected:
+            return true
+        case .algorithmAttributesRejected:
+            // The card answered "no" to the attributes object; nothing was written.
             return true
         case .userPinNotVerified:
             // The card answered, and answered "no": nothing was signed.
@@ -264,6 +272,8 @@ public enum CardError: Swift.Error, Equatable {
             return "The Admin PIN is blocked. This card can no longer be provisioned with it, but a full applet reset is still possible (the applet permits TERMINATE DF when the Admin PIN is blocked) — that erases both keys and returns the card to factory settings, so the wallet has to be set up again from the 24 words."
         case .conditionsNotSatisfied:
             return "The YubiKey refused the operation because its preconditions were not met (wrong state, or a PIN step was skipped)."
+        case .algorithmAttributesRejected(let algorithm, let slot, let detail):
+            return "The YubiKey refused the \(algorithm) algorithm attributes for the \(slot) slot (\(detail)). The applet accepts EdDSA/Ed25519 only with GnuPG's OID, and only on firmware 5.2.3 or newer; if this card is newer, this is an app bug rather than a card limitation — and the card may now hold the other key, so reset the applet before trying again."
         case .unsupportedFirmware:
             return "This YubiKey's OpenPGP applet does not support the requested algorithm. Firmware 5.2.3 or newer is required."
         case .userPinNotVerified:
@@ -638,6 +648,9 @@ public enum CeremonyError: Swift.Error, Equatable {
     case readBackMismatch(algorithm: KeyAlgorithm, local: String, card: String)
     /// The touch/PIN policy was written and the card did not report it back.
     case policyNotApplied(detail: String)
+    /// A key import failed after at least one slot had already been written, so the
+    /// applet holds a half-provisioned key set. The only way forward is a reset.
+    case importLeftTheCardPartlyProvisioned(slots: [String], detail: String)
     /// The requested retry limit is outside the range the app offers.
     case invalidRetryLimit(requested: Int, allowed: ClosedRange<Int>)
     /// The card accepted the retry write and reports different counters.
@@ -680,6 +693,8 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "The \(algorithm.displayName) public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
         case .policyNotApplied(let detail):
             return "The YubiKey did not accept the security policy: \(detail). This card must not be used as provisioned — restart from the card reset."
+        case .importLeftTheCardPartlyProvisioned(let slots, let detail):
+            return "The import failed (\(detail)) after writing the \(slots.joined(separator: " and ")) slot. The card is now half provisioned: reset the OpenPGP applet and start this ceremony again — retrying the import will be refused because that slot already holds a key."
         case .invalidRetryLimit(let requested, let allowed):
             return "Choose between \(allowed.lowerBound) and \(allowed.upperBound) PIN attempts; \(requested) is outside that range."
         case .retryLimitsNotApplied(let detail):

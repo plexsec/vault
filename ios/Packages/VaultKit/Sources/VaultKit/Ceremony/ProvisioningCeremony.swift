@@ -1019,21 +1019,40 @@ public final class ProvisioningCeremony {
         defer { VaultKit.wipe(&pin) }
         let timestamp = creationTime ?? clock()
 
-        try await withMutatingStep(.keyImport) {
-            for summary in keys.all {
-                guard let privateKey = self.privateKeys[summary.algorithm] else {
-                    throw CeremonyError.keysNotDerived
+        do {
+            try await withMutatingStep(.keyImport) {
+                for summary in keys.all {
+                    guard let privateKey = self.privateKeys[summary.algorithm] else {
+                        throw CeremonyError.keysNotDerived
+                    }
+                    let fingerprint = Array(try Hex.decode(summary.fingerprintHex))
+                    try await self.card.importKey(
+                        slot: summary.slot,
+                        algorithm: summary.algorithm,
+                        privateKey: privateKey,
+                        fingerprint: fingerprint,
+                        creationTime: timestamp,
+                        adminPIN: pin
+                    )
                 }
-                let fingerprint = Array(try Hex.decode(summary.fingerprintHex))
-                try await self.card.importKey(
-                    slot: summary.slot,
-                    algorithm: summary.algorithm,
-                    privateKey: privateKey,
-                    fingerprint: fingerprint,
-                    creationTime: timestamp,
-                    adminPIN: pin
-                )
             }
+        } catch {
+            // The keys are written one slot at a time, so a failure on the second
+            // slot leaves the first one holding a key. The applet refuses to
+            // overwrite an occupied slot, which means "retry the import" can never
+            // work and the operator has to be told to reset — otherwise the same
+            // error repeats with no way out. This is the failure mode a real
+            // provisioning run hit when the Ed25519 attributes were wrong
+            // (amendment 29).
+            let after = try? await card.inventory()
+            let occupied = after?.occupiedSlots.map(\.displayName).sorted() ?? []
+            guard !occupied.isEmpty else { throw error }
+            wipe()
+            step = .cardInventory
+            let description = (error as? CardError)?.userFacingDescription
+                ?? (error as? CeremonyError)?.userFacingDescription
+                ?? "\(error)"
+            throw CeremonyError.importLeftTheCardPartlyProvisioned(slots: occupied, detail: description)
         }
         advance(to: .readBackCheck)
     }
