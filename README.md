@@ -107,7 +107,11 @@ ceremony be exercised with no hardware present.
    value are exercised against real cryptography — and the DEBUG simulated card returns a
    real signature for the deterministic test key, which is why the UI test can drive the
    whole flow in a simulator and still fail if the verification is wrong.
-7. **UI automation for the screens a user can get stuck on.**
+7. **One door into the ceremony.** The camera and the DEBUG sample both enter through the
+   scanner's own decoder, because for a while they did not: the sample called the ceremony
+   directly, the camera's handoff was wired to nothing, and the UI test walked the whole flow
+   green while a real scan stopped dead after "Read a eth-sign-request" (amendment 24).
+8. **UI automation for the screens a user can get stuck on.**
    `ios/PlexVaultUITests` drives the real app in a simulator and found a genuine
    defect: an `.inline` picker rendering as a wheel, so tapping "Generate a new
    wallet" did nothing.

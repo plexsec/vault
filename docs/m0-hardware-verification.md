@@ -493,3 +493,21 @@ which is the part no test can hold.
 - [ ] Confirm that a request decoded in one visit is *not* still on screen after leaving the
       flow and coming back with a different (or no) request.
 
+## 16. A scanned request reaches the ceremony (real camera)
+
+The UI suite now covers the handoff itself, because the DEBUG sample enters through the
+scanner's decoder (amendment 24). What a simulator cannot cover is the part that only exists on
+a device: the metadata-output delegate firing, the hop to the main actor, and the callback.
+
+- [ ] Read the YubiKey, build a real transaction in the wallet, and scan it: the screen must go
+      from "Read a eth-sign-request" to the review screen on its own, with the recipient and
+      value populated.
+- [ ] Scan a request for a **sibling account** (select a different index in the wallet's account
+      picker): the app must refuse it *and* leave the camera live so the next code can be
+      scanned, with the reason still on screen.
+- [ ] Point the camera at a QR code that is not `ur:` at all, then at a `ur:` code of the wrong
+      type: the first must be ignored silently, the second must be refused with an explanation
+      rather than half-fed to the ceremony.
+- [ ] Scan a code while the app is on the scanner screen but *after* a previous refusal, to
+      confirm the second code is read (the state machine's retry path).
+

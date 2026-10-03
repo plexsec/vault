@@ -210,6 +210,18 @@ Step 16.5 stays where it is: the wallet is the independent party. The app's own 
 step 14 protects against a card that signs with another slot; it cannot protect against
 the app itself.
 
+**The handoff happens where the decode happens.** The scanner reports a complete request
+through a callback the signing flow installs, and the flow is what gives it to the ceremony.
+The camera and the DEBUG sample both enter through the scanner's own decoder, so a sample
+cannot bypass a step the camera has to pass. The obvious alternative — a view observing the
+scanner's state and reacting to it — is how v0.2 first shipped, and with the subscription
+missing a real scan decoded the request, displayed it, and stopped dead: nothing was wired to
+the state the screen was rendering (amendment 24). A callback fires with the value in hand and
+cannot be forgotten by a view. A request the ceremony refuses *before* any approval returns
+the scanner to a scanning state, so the operator can point it at another code — the practical
+case being a wallet that sent a sibling account's request, which the operator fixes in the
+wallet rather than by cancelling here.
+
 **The scanner is stopped whenever the flow leaves it, and carries nothing across.** A
 cancel and the app going to the background both stop the camera; returning starts it again,
 because a capture session does not survive the background. A request decoded during a

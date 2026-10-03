@@ -150,8 +150,12 @@ struct SigningRootView: View {
                     + "point this camera at the animated code."
             )
             #if DEBUG
-            DebugSampleRequestButton { ur in
-                Task { await viewModel.accept(ur) }
+            DebugSampleRequestButton { payload in
+                // The sample enters at the same door as the camera — the scanner's own
+                // decoder — instead of jumping straight to the ceremony. Two doors is how
+                // the camera path came to be missing its handoff altogether while the UI
+                // test, which used the other one, stayed green (amendment 24).
+                viewModel.scan.receive(payload)
             }
             #endif
         case .review:
@@ -444,14 +448,15 @@ struct ReportRows: View {
 /// compiled out of Release, and `tools/audit-release.sh` checks the marker strings
 /// are absent from the shipped bundle.
 struct DebugSampleRequestButton: View {
-    let onRequest: (UR) -> Void
+    /// The sample as the scanner would receive it: a UR string, not a decoded value.
+    let onRequest: (String) -> Void
     @State private var failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button("Use a sample request (debug)") {
                 do {
-                    onRequest(try SampleSigningRequest.make())
+                    onRequest(try SampleSigningRequest.make().string)
                 } catch {
                     failure = "\(error)"
                 }

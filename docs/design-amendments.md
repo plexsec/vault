@@ -887,3 +887,47 @@ camera…", which is not what `.idle` means (it means the camera is not running 
 the state of the screen *behind* the card-read step, which briefly shows the same view). It
 now says "Camera is off".
 
+## 24. v0.2: the scan was never handed to anything
+
+**Sections:** §5.1 (new paragraph on the handoff).
+
+**The report.** Scan a MetaMask QR code, the screen says "Read a eth-sign-request" — and then
+nothing. No error, no next screen.
+
+**The cause.** `SigningViewModel.acceptScannedRequest()` existed, was documented as "called by
+the scanner", and **was called by nobody**. The scanner decoded the request and published
+`.received`; `ScanningView` rendered that state ("Read a eth-sign-request"); and no code
+anywhere subscribed to it, so the decoded request sat in the scanner's state while the flow
+waited for something to happen. The camera path ended there.
+
+**Why no test saw it.** The DEBUG sample button called `viewModel.accept(ur)` directly — a
+second door into the ceremony that skipped the scanner entirely. The UI test drove that door,
+so it walked the whole flow green while the door a real operator uses was wired to nothing.
+This is amendment 20's lesson in its sharpest form: the test asserted the *ceremony's* state,
+and what was broken was the path *into* it. The two doors are the defect; the missing
+subscription is what they hid.
+
+**The fix.** The scanner reports a decoded request through a callback
+(`QRScanModel.onRequest`) that the signing flow installs in its `init`, so the handoff lives
+where the decode happens and is set for the model's lifetime rather than depending on a view
+being present and re-evaluated. `acceptScannedRequest()` is gone — there is now exactly one
+entry point, `accept(_:)`, on both routes. The DEBUG button was changed to feed its sample
+**through the scanner's decoder** (`scan.receive(payload)` as a UR string) instead of jumping
+to the ceremony, so the sample now walks the same path as the camera and cannot bypass a step
+again.
+
+**A second dead end in the same path, fixed while there.** When the ceremony refused a request
+before any approval (in practice: a sibling account's request, the one case §4.3 says will
+happen), the error was reported but the scanner kept the refused request — and `.received` is
+not a startable state, so the camera would not come back and the only way forward was Cancel,
+which no message says. A refusal now resets the scanner and starts it again, leaving the error
+on screen and the camera live for the next code.
+
+**Evidence.** The UI test now fails without the handoff: with `onRequest?(ur)` removed it stops
+at the assertion after the sample request (`SigningFlowUITests.swift:66`), where before this
+change it passed with the handoff missing entirely. Both runs were performed: 191 s passing,
+185 s failing. That is the regression test for this bug, and it only exists because the DEBUG
+route was made to enter at the same door. The remaining camera-specific behaviour — that the
+`AVCaptureMetadataOutput` delegate hop and the callback actually fire on a device — is item 16
+in docs/m0-hardware-verification.md.
+

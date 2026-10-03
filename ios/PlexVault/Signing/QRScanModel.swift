@@ -35,6 +35,16 @@ final class QRScanModel: NSObject {
 
     let session = AVCaptureSession()
 
+    /// Called on the main actor when a complete request has been read.
+    ///
+    /// The flow that owns the scanner sets this, so the handoff to the ceremony happens
+    /// *where the decode happens* rather than in a view's `onChange`. That is not a style
+    /// choice: this handoff was missing from the app entirely — the camera decoded a
+    /// request, the screen said "Read a eth-sign-request", and nothing followed, because
+    /// nothing was subscribed to the state the view was rendering (amendment 24). A
+    /// callback fires with the value in hand, and cannot be forgotten by a view.
+    var onRequest: ((UR) -> Void)?
+
     override init() { super.init() }
     /// Recreated rather than reset: `URDecoder` carries a fountain decoder whose
     /// fragment state must not survive between requests, because the next request
@@ -108,6 +118,9 @@ final class QRScanModel: NSObject {
                 case .success(let ur):
                     progress = 1
                     scanSession.received(ur)
+                    // Guarded above (the body only runs when the state is not yet
+                    // `.received`), so this fires once per request.
+                    onRequest?(ur)
                 case .failure(let error):
                     scanSession.failed("That QR code could not be read as a complete request (\(error)).")
                 }

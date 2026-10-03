@@ -58,7 +58,14 @@ public final class SigningViewModel {
     private var ceremony: SigningCeremony?
     private var scannedUR: UR?
 
-    public init() {}
+    public init() {
+        // The scanner reports a decoded request; this flow is what decides to give it to the
+        // ceremony. Wiring it here means the handoff cannot be forgotten by a view: the
+        // scanner's callback is set for the lifetime of the model.
+        scan.onRequest = { [weak self] ur in
+            Task { @MainActor in await self?.accept(ur) }
+        }
+    }
 
     // MARK: Derived state
 
@@ -137,16 +144,22 @@ public final class SigningViewModel {
 
     // MARK: Step 2 — take the request
 
-    /// Called by the scanner when a complete UR arrives. The ceremony decides
-    /// whether it is acceptable.
-    public func acceptScannedRequest() async {
-        guard case .received(let ur) = scan.state else { return }
-        await accept(ur)
-    }
-
+    /// The only way a request reaches the ceremony, from the camera or from a debug sample.
     public func accept(_ ur: UR) async {
         await run { ceremony in
-            try ceremony.accept(requestUR: ur)
+            do {
+                try ceremony.accept(requestUR: ur)
+            } catch {
+                // Refused before the operator approved anything, so the scanner is handed
+                // back: in the case this happens in practice — the wallet sent a sibling
+                // account's request — the operator fixes it in the wallet and points the
+                // camera at the new code. Without this the scanner keeps the refused
+                // request, refuses to start again (`.received` is not a startable state) and
+                // the only way forward is Cancel, which no message says.
+                self.scan.reset()
+                await self.scan.start()
+                throw error
+            }
             self.scannedUR = ur
             self.summary = ceremony.summary
             self.digestHex = ceremony.transaction?.signingDigest.hexString ?? ""
