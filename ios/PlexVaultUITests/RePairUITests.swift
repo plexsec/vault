@@ -13,19 +13,15 @@ final class RePairUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         // The app opens on its home screen now; the ceremony screens are behind it.
-        openProvisioningFlow(app)
+        openProvisioningFlow(app, mode: "Pair a wallet")
         return app
     }
 
     func testRePairModeIsSelectableAndReadsWithoutErasing() throws {
         let app = launchApp()
 
-        // Choice rows carry an identifier built from their title, so this selects
-        // the mode without matching on typography.
-        let mode = app.buttons["choice-Re-pair this YubiKey"]
-        XCTAssertTrue(mode.waitForExistence(timeout: 10), "the mode must be offered:\n\(app.debugDescription)")
-        tapWhenVisible(mode, in: app)
-
+        // The mode was picked on the home screen (`launchApp`), so the setup screen
+        // here is the shared pre-flight for the read-only route.
         // The simulated card, as in the ceremony walk: the default transport is NFC,
         // which a simulator cannot provide.
         tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app)
@@ -100,10 +96,7 @@ final class RePairUITests: XCTestCase {
         // it is still provisioned — which is exactly the state this mode is for.
         tapStepAction("Provision another wallet", in: app)
         // That button returns to the home screen, so the flow is re-entered.
-        openProvisioningFlow(app)
-        let mode = app.buttons["choice-Re-pair this YubiKey"]
-        XCTAssertTrue(mode.waitForExistence(timeout: 10), app.debugDescription)
-        tapWhenVisible(mode, in: app)
+        openProvisioningFlow(app, mode: "Pair a wallet")
         tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app)
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)

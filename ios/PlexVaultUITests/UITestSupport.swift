@@ -139,17 +139,29 @@ extension XCTestCase {
 extension XCTestCase {
     /// Opens the provisioning flow from the app's home screen.
     ///
-    /// The app has two routes — provisioning and signing — so the ceremony screens
-    /// are no longer what `launch()` lands on. Tolerant of being called when the
-    /// flow is already open, so a test can call it without knowing how it got there.
+    /// The app has two routes — provisioning and signing — and the provisioning
+    /// modes now live on the home screen behind the collapsed "Wallet & Key
+    /// Management" section. Tolerant of being called when the flow is already
+    /// open, so a test can call it without knowing how it got there.
     func openProvisioningFlow(
         _ app: XCUIApplication,
+        mode: String = "Generate a new wallet",
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let route = app.buttons["route-provisioning"]
-        if route.waitForExistence(timeout: 10) {
-            tapWhenVisible(route, in: app, file: file, line: line)
+        let section = app.buttons["wallet-key-management"]
+        if section.waitForExistence(timeout: 10) {
+            // The home screen is showing: expand the collapsed section and pick the
+            // requested mode. If the flow is already open, the section is absent and
+            // this step is skipped.
+            tapWhenVisible(section, in: app, file: file, line: line)
+            let entry = app.buttons["wallet-mode-\(mode)"]
+            XCTAssertTrue(
+                entry.waitForExistence(timeout: 10),
+                "wallet mode entry '\(mode)' did not appear:\n\(app.debugDescription)",
+                file: file, line: line
+            )
+            tapWhenVisible(entry, in: app, file: file, line: line)
         }
         XCTAssertTrue(
             app.buttons["choice-NFC"].waitForExistence(timeout: 15),

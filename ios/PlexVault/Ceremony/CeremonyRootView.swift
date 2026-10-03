@@ -10,6 +10,7 @@ import YubikeyKit
 /// ceremony method.
 struct CeremonyRootView: View {
     @Bindable var viewModel: CeremonyViewModel
+    let onExit: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -41,10 +42,18 @@ struct CeremonyRootView: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if viewModel.phase != .setup {
-                    ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .topBarLeading) {
+                    if viewModel.phase == .setup {
+                        Button("Cancel") {
+                            viewModel.abort()
+                            onExit()
+                        }
+                        .accessibilityIdentifier("cancel-setup")
+                    } else {
                         Button("Abort", role: .destructive) { viewModel.abort() }
                     }
+                }
+                if viewModel.phase != .setup {
                     ToolbarItem(placement: .topBarTrailing) {
                         StepProgressBadge(step: viewModel.step, mode: viewModel.mode)
                     }

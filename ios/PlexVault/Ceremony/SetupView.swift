@@ -2,7 +2,7 @@ import SwiftUI
 import VaultKit
 import YubikeyKit
 
-/// Step 1 — choose transport and mode, confirm device posture, review the rules.
+/// Step 1 — choose transport, confirm device posture, review the rules.
 ///
 /// Two deliberate UI decisions, both learned from driving the real screen:
 ///
@@ -33,12 +33,9 @@ struct SetupView: View {
                 section("What this does") {
                     DisclosureGroup("How this works", isExpanded: $showExplanation) {
                         Text("""
-                        This app provisions a YubiKey as an air-gapped signer. It creates a \
-                        24-word BIP39 mnemonic, derives two signing keys from it — secp256k1 \
-                        and Ed25519 — imports them into the YubiKey's OpenPGP applet \
-                        (signature and authentication slots), verifies the import by reading \
-                        each public key back, and exports both public keys for your desktop \
-                        wallet. It never signs anything, and it never needs a network.
+                        Creates a 24-word mnemonic, imports both keys (secp256k1 + \
+                        Ed25519) into the YubiKey, verifies them by read-back, and \
+                        exports the public keys. Offline — it never signs.
                         """)
                         .font(.callout)
                         .padding(.top, 6)
@@ -58,28 +55,16 @@ struct SetupView: View {
                     }
                 }
 
-                section("Mode") {
-                    ForEach(CeremonyMode.allCases, id: \.self) { mode in
-                        ChoiceRow(
-                            title: Self.title(for: mode),
-                            detail: Self.detail(for: mode),
-                            isSelected: viewModel.mode == mode
-                        ) {
-                            viewModel.mode = mode
-                        }
-                    }
-                }
-
                 section("Keys") {
                     keySummaryRow(
                         title: "ECDSA secp256k1",
-                        detail: "Signature slot, path \(DerivationPath.secp256k1Default.description). Serves your EVM and Bitcoin chains from one key."
+                        detail: "Signature slot, path \(DerivationPath.secp256k1Default.description). Serves EVM and Bitcoin."
                     )
                     keySummaryRow(
                         title: "Ed25519",
-                        detail: "Authentication slot, path \(DerivationPath.ed25519Default.description). Serves Solana, Cardano, Polkadot and the other Ed25519 chains."
+                        detail: "Authentication slot, path \(DerivationPath.ed25519Default.description). Serves Solana, Cardano, Polkadot and other Ed25519 chains."
                     )
-                    Text("Each ceremony writes both keys from the one mnemonic. Only the signature slot has a hardware signature counter, so the counter audit covers secp256k1 chains.")
+                    Text("Both keys come from one mnemonic. Only the signature slot has a hardware counter.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -161,6 +146,9 @@ struct SetupView: View {
             Text("YubiKey 5 (OpenPGP) + offline iPhone")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            Label(viewModel.mode.setupTitle, systemImage: viewModel.mode.setupSystemImage)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.tint)
         }
     }
 
@@ -185,25 +173,6 @@ struct SetupView: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "checkmark.shield").foregroundStyle(.tint)
             Text(text).font(.footnote)
-        }
-    }
-
-    private static func title(for mode: CeremonyMode) -> String {
-        switch mode {
-        case .freshGeneration: return "Generate a new wallet"
-        case .restoreFromMnemonic: return "Restore from a mnemonic"
-        case .rePair: return "Re-pair this YubiKey"
-        }
-    }
-
-    private static func detail(for mode: CeremonyMode) -> String {
-        switch mode {
-        case .freshGeneration:
-            return "Creates new entropy and a new 24-word mnemonic."
-        case .restoreFromMnemonic:
-            return "Re-imports an existing mnemonic into a fresh YubiKey. The words are typed into this app, so only do this on a device you trust."
-        case .rePair:
-            return "Reads the pairing codes back off a YubiKey this app has already provisioned. Nothing is written and no mnemonic is needed, so the keys stay in the card."
         }
     }
 

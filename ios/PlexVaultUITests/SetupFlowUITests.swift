@@ -6,8 +6,9 @@ import XCTest
 /// automation rather than by eye. Two behaviours are locked in here because both
 /// were wrong at some point:
 ///
-/// 1. Selecting a mode (or transport) must be a real tappable control.
-///    An earlier version used `Picker(.inline)`, which iOS 26 renders as a wheel
+/// 1. The three provisioning modes must be reachable from the home screen as
+///    real tappable entries behind a collapsed section. An earlier version used a
+///    `Picker(.inline)` on the setup screen, which iOS 26 renders as a wheel
 ///    whose default is already selected — so tapping "Generate a new wallet" did
 ///    nothing and the screen looked broken.
 /// 2. The primary action must be reachable without scrolling and must say why it
@@ -23,35 +24,28 @@ final class SetupFlowUITests: XCTestCase {
         return app
     }
 
-    /// The headline regression: the mode rows must be tappable and must change
-    /// the selection.
-    func testModeRowsAreTappableAndSelectable() {
-        let app = launch()
+    /// The three mode entries live on the home screen, collapsed by default, and
+    /// expand when the section is tapped.
+    func testWalletKeyManagementSectionIsCollapsedByDefaultAndExpands() {
+        let app = XCUIApplication()
+        app.launch()
 
-        let generate = app.buttons["choice-Generate a new wallet"]
-        let restore = app.buttons["choice-Restore from a mnemonic"]
-        XCTAssertTrue(generate.exists, app.debugDescription)
-        XCTAssertTrue(restore.exists, app.debugDescription)
+        let section = app.buttons["wallet-key-management"]
+        XCTAssertTrue(section.waitForExistence(timeout: 10), app.debugDescription)
 
-        // Regression for the reported bug: the mode rows must be on screen and
-        // unobscured on launch. Previously this was a wheel-based picker whose
-        // default was already selected, so tapping it appeared to do nothing.
+        // Collapsed by default: the three entries are not in the hierarchy.
+        XCTAssertEqual(app.buttons.matching(identifier: "wallet-mode-Generate a new wallet").count, 0)
+        XCTAssertEqual(app.buttons.matching(identifier: "wallet-mode-Restore from a mnemonic").count, 0)
+        XCTAssertEqual(app.buttons.matching(identifier: "wallet-mode-Pair a wallet").count, 0)
+
+        tapWhenVisible(section, in: app)
+
         XCTAssertTrue(
-            visibleBand(in: app).contains(CGPoint(x: generate.frame.midX, y: generate.frame.midY)),
-            "Generate a new wallet must be visible without scrolling (y=\(generate.frame.midY))"
+            app.buttons["wallet-mode-Generate a new wallet"].waitForExistence(timeout: 5),
+            "the section must reveal its entries:\n\(app.debugDescription)"
         )
-
-        // Generate is the default.
-        XCTAssertTrue(generate.isSelected, "Generate a new wallet should start selected")
-        XCTAssertFalse(restore.isSelected)
-
-        tapWhenVisible(restore, in: app)
-        XCTAssertTrue(restore.isSelected, "tapping a mode row must select it")
-        XCTAssertFalse(generate.isSelected, "selection must move, not accumulate")
-
-        tapWhenVisible(generate, in: app)
-        XCTAssertTrue(generate.isSelected)
-        XCTAssertFalse(restore.isSelected)
+        XCTAssertTrue(app.buttons["wallet-mode-Restore from a mnemonic"].exists)
+        XCTAssertTrue(app.buttons["wallet-mode-Pair a wallet"].exists)
     }
 
     func testTransportRowIsSelectableAndChainPickerIsGone() {
@@ -98,8 +92,9 @@ final class SetupFlowUITests: XCTestCase {
     /// Choosing a mode must actually reach the ceremony: restore mode is
     /// observable because it is recorded in the step flow.
     func testRestoreModeReachesTheCeremony() {
-        let app = launch()
-        tapWhenVisible(app.buttons["choice-Restore from a mnemonic"], in: app)
+        let app = XCUIApplication()
+        app.launch()
+        openProvisioningFlow(app, mode: "Restore from a mnemonic")
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)
         XCTAssertTrue(
