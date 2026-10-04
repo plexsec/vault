@@ -219,6 +219,29 @@ checks the session it started in after its awaits, which is §5.2 rule 8 (a
 ceremony inherits nothing) applied to work that is still running rather than to
 the state left behind.
 
+### A later one, found by automation: the report screen's only exit could not be tapped
+
+The report screen's way back to the home screen was the last item of its scroll content —
+a report that runs to three screens of keys, addresses and the Appendix B checklist — and
+the "restart the app before provisioning another wallet" note was drawn *over* it with
+`.overlay(alignment: .bottom)`. Adding three rows to the report (the two PIN retry limits
+and the touch-policy line) was enough to push the button under that note: the end-to-end
+re-pair test, which provisions a card for real and then re-pairs it, reached the button,
+tapped it, and stayed where it was. The fix is the pattern the rest of the app already
+uses — the action is pinned in a bottom bar with the note beneath it, so it is visible
+without scrolling and nothing overlaps it.
+
+### And a test defect the same run exposed: a test that inherited the previous test's card
+
+The same end-to-end test launched a bare `XCUIApplication` with only
+`-deterministic-entropy`, while every other test seeds the connection at launch (amendment
+31 made the connection a launch-time setting). So which card it talked to was whatever the
+*previous* test had left in the device-choice store: after `DeviceChoiceUITests` had run the
+USB-C case, this test's ceremony was talking to a CCID reader that does not exist, and the
+inventory read never produced anything. It had been recorded as "flaky" for a while and was
+in fact order-dependent — the failure moved between runs with the test order. Seeding the
+choice the way its sibling test does makes it deterministic.
+
 ## What would raise confidence most, in order
 
 1. A third-party audit focused on the generation flow, the two import templates

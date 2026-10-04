@@ -52,9 +52,8 @@ step completed rather than trusting the flow.
             interrupted — if it is, the card is left with both PINs blocked and the old keys still
             in place, and tapping reset again (still no PIN) is what finishes it
 - [ ] **PINs set** — both recorded in the password manager ✔
-- [ ] **Policy applied**
-      - [ ] Touch policy reads **Fixed**
-      - [ ] PW1 status reads `0x00`
+- [ ] **PIN retry limits** — one number **per password** (User PIN / Admin PIN): `______` / `______`
+      - [ ] The report shows both, as the card reported them back
 - [ ] **Entropy commitment** (first 8 hex digits of SHA-256 of the entropy read
       from the YubiKey's hardware RNG):
       `________`
@@ -69,8 +68,13 @@ step completed rather than trusting the flow.
         - Bitcoin address from this device: `__________________________________`
       - Ed25519 path `m/44'/501'/0'/0'`
         - Public key from this device: `______________________________________`
-- [ ] **Import** completed without a second touch request
+- [ ] **Import** completed without a second touch request — the same step also writes the touch
+      policy, **after** the last key (writing a slot's algorithm attributes would otherwise discard
+      it)
 - [ ] **Read-back** verified: the YubiKey's public key matches the derived key ✔
+      - [ ] The same screen reports the policy read back off the card: touch policy **Fixed** on
+            both slots, PW1 status `0x00`, and both PIN retry limits as chosen. Anything else stops
+            the app here, and the card must be reset rather than used
 - [ ] **Pairing manifest stored** on the card, and read back byte-for-byte ✔
       - [ ] If the app instead warns that it could **not** be stored, write down
             that re-pairing this card later will need the mnemonic. The keys and
@@ -147,12 +151,15 @@ that v0.2 will sign with.
 
 ## PIN retry limits
 
-The ceremony asks how many wrong PIN entries each password tolerates before the card blocks it.
-Choose it deliberately:
+The ceremony asks how many wrong PIN entries **each** password tolerates before the card blocks
+it — two numbers, because the User PIN is typed on every signature and the Admin PIN almost never.
+Choose each deliberately:
 
 - **3** (the card's factory value) is the strictest sensible choice and the smallest brute-force
   budget for a 6-digit PIN.
 - Higher numbers tolerate more typos, and also give an attacker with the card more guesses.
+- A longer budget for the User PIN and a shorter one for the Admin PIN is a coherent choice: the
+  Admin PIN is the one you rarely type, so typos are less likely and a lockout hurts more.
 - Either way, the consequence of using them up is the same: a blocked **User PIN** stops every
   signature (unblocking needs the Admin PIN and a command this app does not implement yet, so plan
   on re-provisioning from the 24 words), and a blocked **Admin PIN** ends provisioning and

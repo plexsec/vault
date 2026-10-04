@@ -40,26 +40,38 @@ struct ReportView: View {
                 }
 
                 ChecklistView(report: viewModel.report)
-
-                Button {
-                    viewModel.abort()
-                } label: {
-                    Text("Provision another wallet").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.top, 4)
             }
             .padding()
         }
-        .overlay(alignment: .bottom) {
+        // The way out is pinned, like every other primary action in this app. It used
+        // to be the last item of the scroll content — under a report that runs to three
+        // screens of keys, addresses and checklist — with the "restart the app" note
+        // drawn *over* it as an overlay. The end-to-end re-pair test reached that button
+        // and tapped it without leaving the screen: a primary action the operator has to
+        // scroll for is a primary action that can be missed. The note belongs to the bar,
+        // under the button, where it explains it.
+        .safeAreaInset(edge: .bottom) { exitBar }
+    }
+
+    private var exitBar: some View {
+        VStack(spacing: 6) {
+            Button {
+                viewModel.abort()
+            } label: {
+                Text("Provision another wallet").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+
             Text("Restart the app before provisioning another wallet.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .padding(6)
-                .frame(maxWidth: .infinity)
-                .background(.bar)
+                .multilineTextAlignment(.center)
         }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .background(.bar)
     }
 }
 
@@ -96,6 +108,16 @@ struct ReportBody: View {
 
         if let counter = report.counterBaseline { rows.append(("Counter baseline (secp256k1)", "\(counter)")) }
         rows.append(("Ed25519 counter", "none — authentication slot is not counted"))
+        // The two retry limits, as the card reported them back (amendment 27); they are
+        // separate numbers because the two passwords are used differently
+        // (amendment 32).
+        if let userLimit = report.userPINRetryLimit {
+            rows.append(("User PIN retry limit (PW1)", "\(userLimit)"))
+        }
+        if let adminLimit = report.adminPINRetryLimit {
+            rows.append(("Admin PIN retry limit (PW3)", "\(adminLimit)"))
+        }
+        rows.append(("Touch policy verified on both slots", report.touchPolicyVerified == true ? "yes" : "NO"))
         rows.append(("Chain code exported", report.pairingIncludedChainCode ? "yes (required by Keystone/MetaMask)" : "no"))
         return rows
     }
@@ -129,7 +151,14 @@ struct ChecklistView: View {
     private var automated: [(String, Bool)] {
         [
             ("YubiKey reset (applet terminated and re-activated)", report?.cardOpenPGPVersion != nil),
-            ("Touch policy fixed and PW1 status 0x00 written", report != nil),
+            // Ticked by the read-back that confirmed the card reports the policy, not by
+            // the mere existence of a report: a policy the card does not report is not a
+            // policy (amendment 26).
+            ("Touch policy fixed and PW1 status 0x00 read back from the card", report?.touchPolicyVerified == true),
+            (
+                "PIN retry limits set and read back (User / Admin)",
+                report?.userPINRetryLimit != nil && report?.adminPINRetryLimit != nil
+            ),
             ("Entropy commitment recorded", report?.entropyCommitmentHex != nil),
             ("Mnemonic transcribed and back-fill check passed", !(report?.keys.isEmpty ?? true)),
             ("Both public keys read back from YubiKey match the derived keys", report?.readBackVerified == true),

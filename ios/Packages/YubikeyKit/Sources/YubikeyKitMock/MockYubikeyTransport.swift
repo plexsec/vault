@@ -640,7 +640,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         slots = [.signature: SlotState(), .authentication: SlotState()]
         // The factory default is 0x01 ("PIN once per session"), not the 0x00 the
         // ceremony writes. Observed on real hardware: a freshly terminated applet
-        // reads `01 7F 7F 7F 03 00 03`, which is how the policy step's write can
+        // reads `01 7F 7F 7F 03 00 03`, which is how the policy write can
         // be told apart from a card that was never configured.
         pw1Status = [0x01]
         signatureCounter = 0

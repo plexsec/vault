@@ -261,7 +261,7 @@ final class APDUTests: XCTestCase {
         XCTAssertTrue(inventory.likelySupportsSecp256k1)
         // A factory-fresh applet reports PW1 status 0x01 ("PIN once per session"),
         // measured on hardware: `C4 07 01 7F 7F 7F 03 00 03`. So `0x00` on a card
-        // is evidence the policy step ran, and it is what the app writes there.
+        // is evidence the policy write ran, and it is what the app writes there.
         XCTAssertEqual(inventory.pwStatusBytes, [0x01, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03])
         XCTAssertEqual(PWStatusBytes.pw1RequiresPin(inventory.pwStatusBytes), false)
         XCTAssertEqual(inventory.retryCounters, RetryCounters(user: 3, reset: 0, admin: 3))

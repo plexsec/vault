@@ -111,7 +111,7 @@ extension XCTestCase {
                       "No cameras or other people can see this screen"] {
             let toggle = app.switches[label]
             XCTAssertTrue(toggle.waitForExistence(timeout: 5),
-                          "posture toggle missing: \(label)", file: file, line: line)
+                          "posture toggle missing: \(label)\n\(app.debugDescription)", file: file, line: line)
             if (toggle.value as? String) == "0" {
                 tapWhenVisible(toggle, in: app, file: file, line: line)
             }
@@ -267,8 +267,8 @@ extension XCTestCase {
 /// preceded by a real provisioning pass to have anything to read.
 extension XCTestCase {
 
-    /// Steps 1-6: setup, inventory, reset, PINs, policy, entropy — landing on the
-    /// mnemonic step with the words still hidden.
+    /// Steps 1-6: setup, inventory, reset, PINs, the retry limits, entropy — landing on
+    /// the mnemonic step with the words still hidden.
     func advanceToMnemonicStep(
         _ app: XCUIApplication,
         userPIN: String,
@@ -314,11 +314,16 @@ extension XCTestCase {
             "the retry-limit step must state what happens when the attempts run out",
             file: file, line: line
         )
-        let retryLimit = app.steppers["pin-retry-limit"]
-        XCTAssertTrue(retryLimit.waitForExistence(timeout: 5), "retry-limit picker missing", file: file, line: line)
-        // Raise it once, which exercises the write and the read-back with a value
-        // that is not the card's factory default.
-        retryLimit.buttons.element(boundBy: 1).tap()
+        let userRetry = app.steppers["pin-retry-limit-user"]
+        XCTAssertTrue(userRetry.waitForExistence(timeout: 5), "the User PIN's picker is missing", file: file, line: line)
+        let adminRetry = app.steppers["pin-retry-limit-admin"]
+        XCTAssertTrue(adminRetry.waitForExistence(timeout: 5), "the Admin PIN's picker is missing", file: file, line: line)
+        // Raise each once, to different numbers: that exercises the write and the
+        // read-back with values that are neither the card's factory default nor each
+        // other, so a write that put one number on both passwords fails the walk.
+        userRetry.buttons.element(boundBy: 1).tap()
+        adminRetry.buttons.element(boundBy: 1).tap()
+        adminRetry.buttons.element(boundBy: 1).tap()
         // The PIN fields use a number pad with no return key, so the keyboard is
         // still up from the previous step and covers the action at the bottom.
         dismissKeyboard(in: app)
@@ -410,15 +415,11 @@ extension XCTestCase {
         // Import.
         tapStepAction("Import keys into YubiKey", in: app, file: file, line: line)
 
-        // Read-back: verify, then continue.
+        // Read-back: verify, then continue. The policy is written by the import step
+        // above, so this one action confirms the keys **and** the policy — the step
+        // refuses to advance while the touch policy is unconfirmed (amendment 26).
         tapStepAction("Verify read-back", in: app, file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
-
-        // Policy: last, because writing a slot's algorithm attributes resets that
-        // slot and the applet drops its touch policy with it (amendment 26). The
-        // step reads both policies back off the card, so reaching the manifest step
-        // at all means the card reported them.
-        tapStepAction("Apply policy", in: app, file: file, line: line)
 
         // The manifest write is new in this version: assert it actually happened,
         // because every later re-pair depends on it.

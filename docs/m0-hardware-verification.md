@@ -555,7 +555,7 @@ applet are now measured rather than assumed, and both had silently broken provis
   "confirmed" the wrong direction were never read back. Nothing in this item may be used without
   checking how it was verified, which is the subject of the first trap below.
 * **`YYYY` `0xC4` after a reset is `01`, not `00`.** A freshly terminated applet reads
-  `01 7F 7F 7F 03 00 03`, so `0xC4[0] = 0x00` on a card is evidence that the policy step ran.
+  `01 7F 7F 7F 03 00 03`, so `0xC4[0] = 0x00` on a card is evidence that the policy write ran.
   That is what made the missing touch policy a contradiction rather than an unexplained state.
 * **The UIF write is protected by PW3.** `PUT DATA 0xD6` without a verified Admin PIN answers
   `6982`.
@@ -592,12 +592,18 @@ show this at all, which is why item 18 asks for the app's path rather than more 
 * Writing the PW1 status byte (`PUT DATA 0xC4` with one byte) is accepted; the seven-byte form is
   rejected (`6A80`, already recorded in item 2).
 
-- [ ] After a provisioning run that chose a limit of, say, 5: read `C4` and confirm PW1 and PW3
-      report 5, and that a wrong PIN decrements one and a correct PIN refills it to 5.
+- [ ] After a provisioning run that chose a limit of, say, 5 for the **User PIN** and 6 for the
+      **Admin PIN**: read `C4` and confirm PW1 reports 5 and PW3 reports 6 — two different numbers,
+      which is what proves the two inputs travel independently — and that a wrong PIN decrements one
+      and a correct PIN refills it to its own maximum.
 - [ ] Confirm the applet refuses 0 and 100 (`6A80`) — the app refuses them first, so this checks
       the applet's range rather than the app's.
-- [ ] Confirm a run with a chosen limit survives to the end of the ceremony (the policy step
-      re-reads the counters) and that the report records the number.
+- [ ] Confirm a run with chosen limits survives to the end of the ceremony (the read-back step
+      re-reads both counters) and that the report records both numbers.
+- [ ] Re-verify PW3 with the **operator's** Admin PIN *after* the retry write. This is the one check
+      that rules out the discontinued NEO applet's behaviour (where changing the counters resets the
+      PINs to `12345678`) on this card: it cannot be tested with factory PINs, which is what every
+      probe so far used, because a reset and a no-op look identical.
 
 **Not implemented, deliberately.** Unblocking a blocked User PIN (`RESET RETRY COUNTER`, INS
 `0x2C`, P1 `0x02` / P2 `0x83` with the Admin PIN) would make a low retry limit safe to choose and
@@ -614,7 +620,7 @@ amendment 27 (and, for the clause below, amendment 30); it is *not* the app's ow
 of this item).
 
 * **A fresh applet reports `01 7F 7F 7F 03 00 03`** — PW1 status `0x01`, then 3/0/3 attempts for
-  PW1 / resetting code / PW3. So `0xC4[0] = 0x00` on a card is evidence the policy step ran, and
+  PW1 / resetting code / PW3. So `0xC4[0] = 0x00` on a card is evidence the policy write ran, and
   the "3 attempts" default is the card's, not ours.
 * **`SET PIN RETRIES 5 5 5` works and reads back**: the write answers `9000` and `C4` then reads
   `00 7F 7F 7F 05 00 05`, i.e. PW1 and PW3 at 5 and the never-set resetting code at 0. The value

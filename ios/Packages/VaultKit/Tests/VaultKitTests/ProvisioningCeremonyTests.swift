@@ -79,15 +79,13 @@ final class ProvisioningCeremonyTests: XCTestCase {
         style: URTypeStyle = .keystoneLegacy,
         chainCodeAcknowledged: Bool = true
     ) async throws -> CeremonyReport {
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        // The policy is applied here, after the keys are in the card: writing a
-        // slot's algorithm attributes resets that slot, and the applet drops its
-        // touch policy with it, so an earlier write is silently discarded
-        // (amendment 26). The step reads both policies back and fails if the card
-        // does not report them.
-        try await ceremony.applyPolicy()
+        // One step writes the keys and then the policy, because writing a slot's
+        // algorithm attributes resets that slot and the applet discards its touch
+        // policy with it — so the policy write has to follow the last key write, and
+        // the read-back above is what confirms it stuck (amendment 26, amendment 32).
         // The pairing manifest step sits between the read-back and the export, so
         // that a card is never told to advertise a key that has not been verified
         // to be in it. A card that cannot store a manifest returns nil here and
@@ -130,7 +128,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(keys.ed25519.publicKey.count, 32)
         XCTAssertEqual(keys.secp256k1.publicKey.count, 33)
 
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         XCTAssertEqual(card.storedPrivateKey(.signature)?.count, 32)
         XCTAssertEqual(card.storedPrivateKey(.authentication)?.count, 32)
         XCTAssertEqual(card.storedFingerprint(.signature), Array(try Hex.decode(Expected.secp256k1Fingerprint)))
@@ -143,15 +141,11 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(readBack[.secp256k1]?.identityFromCardKey, Expected.evmAddress)
         XCTAssertEqual(readBack[.ed25519]?.identityFromCardKey, Expected.ed25519PublicKey)
         XCTAssertEqual(ceremony.step, .readBackCheck)
-        try ceremony.advance()
-        // The policy is applied after the keys are in the card, because writing a
-        // slot's algorithm attributes resets that slot and the applet drops its
-        // touch policy with it (amendment 26) — and it is applied before anything
-        // is advertised to a wallet.
-        XCTAssertEqual(ceremony.step, .policy)
-        try await ceremony.applyPolicy()
+        // The policy was written by the import step and confirmed by the read-back just
+        // above, so the ceremony may move on — to the manifest, which is written before
+        // anything is advertised to a wallet.
         XCTAssertEqual(ceremony.report.touchPolicyVerified, true)
-        // The manifest is written before anything is advertised to a wallet.
+        try ceremony.advance()
         XCTAssertEqual(ceremony.step, .pairingManifest)
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
@@ -209,10 +203,12 @@ final class ProvisioningCeremonyTests: XCTestCase {
             .randomBytes(count: 32),
             .importKey(slot: .signature, algorithm: .secp256k1, fingerprint: Expected.secp256k1Fingerprint),
             .importKey(slot: .authentication, algorithm: .ed25519, fingerprint: Expected.ed25519Fingerprint),
+            // The policy is written *after* the last key, in the same step, and read
+            // back by the read-back that follows it (amendment 26, amendment 32).
+            .applyPolicy(adminPIN: Array("87654321".utf8)),
             .readPublicKey(slot: .signature),
             .readPublicKey(slot: .authentication),
-            // The policy is written *after* the keys, and read back.
-            .applyPolicy(adminPIN: Array("87654321".utf8)), .inventory,
+            .inventory,
             // The manifest write and the read-back that proves it landed. The
             // byte count is asserted so a format change that would overflow the
             // applet's 254-byte private-use object fails here, not on a card.
@@ -285,7 +281,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         // The signature key lands; the authentication import is refused.
         card.refuseImportForSlot = .authentication
 
-        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() } verify: { error in
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeysAndPolicy() } verify: { error in
             guard case .importLeftTheCardPartlyProvisioned(let slots, let detail)? = error as? CeremonyError else {
                 return XCTFail("expected importLeftTheCardPartlyProvisioned, got \(error)")
             }
@@ -305,16 +301,16 @@ final class ProvisioningCeremonyTests: XCTestCase {
         card.failurePoint = .keyImport
         card.refuseImportForSlot = .signature
 
-        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() } verify: { error in
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeysAndPolicy() } verify: { error in
             XCTAssertEqual(error as? CardError, .keyImportRejected)
         }
     }
 
     // MARK: PIN retry limits (amendment 27)
 
-    /// The operator chooses 3-10; the card reports the counters back, and the
-    /// choice is recorded in the report.
-    func testTheRetryLimitIsChosenByTheOperatorAndReadBack() async throws {
+    /// The operator chooses 3-10 **per password**; the card reports both counters
+    /// back, and both choices are recorded in the report.
+    func testTheRetryLimitsAreChosenPerPINAndReadBack() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
@@ -324,14 +320,16 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         XCTAssertEqual(ceremony.step, .pinRetries)
 
-        try await ceremony.setPINRetries(6)
-        XCTAssertEqual(card.retryLimit, 6)
-        XCTAssertTrue(card.calls.contains(.setPINRetries(user: 6, admin: 6)))
-        XCTAssertEqual(ceremony.report.pinRetryLimit, 6)
+        try await ceremony.setPINRetries(user: 6, admin: 4)
+        XCTAssertEqual(card.retryLimitUser, 6)
+        XCTAssertEqual(card.retryLimitAdmin, 4, "the two numbers must travel independently")
+        XCTAssertTrue(card.calls.contains(.setPINRetries(user: 6, admin: 4)))
+        XCTAssertEqual(ceremony.report.userPINRetryLimit, 6)
+        XCTAssertEqual(ceremony.report.adminPINRetryLimit, 4)
         XCTAssertEqual(ceremony.step, .entropy)
     }
 
-    /// A number outside the offered range never reaches the card.
+    /// A number outside the offered range never reaches the card — on either input.
     func testARetryLimitOutsideTheOfferedRangeIsRefused() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
@@ -342,7 +340,17 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         for value in [2, 11, 0, 100] {
-            await XCTAssertThrowsErrorAsync { try await ceremony.setPINRetries(value) } verify: { error in
+            await XCTAssertThrowsErrorAsync {
+                try await ceremony.setPINRetries(user: value, admin: 4)
+            } verify: { error in
+                XCTAssertEqual(
+                    error as? CeremonyError,
+                    .invalidRetryLimit(requested: value, allowed: CardPolicy.retryLimits)
+                )
+            }
+            await XCTAssertThrowsErrorAsync {
+                try await ceremony.setPINRetries(user: 4, admin: value)
+            } verify: { error in
                 XCTAssertEqual(
                     error as? CeremonyError,
                     .invalidRetryLimit(requested: value, allowed: CardPolicy.retryLimits)
@@ -351,7 +359,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         }
         XCTAssertFalse(card.calls.contains { if case .setPINRetries = $0 { return true } else { return false } })
         XCTAssertEqual(ceremony.step, .pinRetries, "the step must not advance on a refusal")
-        XCTAssertEqual(card.retryLimit, 3, "the card keeps the factory value")
+        XCTAssertEqual(card.retryLimitUser, 3, "the card keeps the factory value")
+        XCTAssertEqual(card.retryLimitAdmin, 3)
     }
 
     /// A card that answers `9000` and keeps its old counters must stop the
@@ -366,20 +375,22 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         card.retryWritesAreIgnored = true
-        await XCTAssertThrowsErrorAsync { try await ceremony.setPINRetries(9) } verify: { error in
+        await XCTAssertThrowsErrorAsync { try await ceremony.setPINRetries(user: 9, admin: 4) } verify: { error in
             guard case .retryLimitsNotApplied(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected retryLimitsNotApplied, got \(error)")
             }
             XCTAssertTrue(detail.contains("3"), detail)
             XCTAssertTrue(detail.contains("9"), detail)
+            XCTAssertTrue(detail.contains("4"), "both chosen numbers belong in the message: \(detail)")
         }
         XCTAssertEqual(ceremony.step, .pinRetries)
-        XCTAssertNil(ceremony.report.pinRetryLimit)
+        XCTAssertNil(ceremony.report.userPINRetryLimit)
+        XCTAssertNil(ceremony.report.adminPINRetryLimit)
     }
 
-    /// The policy step re-reads the counters, so a later step silently resetting
+    /// The read-back step re-reads the counters, so a later step silently resetting
     /// them is caught before any pairing code exists.
-    func testThePolicyStepRechecksTheRetryLimits() async throws {
+    func testTheReadBackStepRechecksTheRetryLimits() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
@@ -387,32 +398,34 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries(8)
+        try await ceremony.setPINRetries(user: 8, admin: 5)
         try await ceremony.generateEntropy()
         try ceremony.advance()
         let words = try ceremony.mnemonicForDisplay()
         try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
         _ = try ceremony.deriveKeys()
         try ceremony.advance()
-        try await ceremony.importKeys()
-        _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()
+        try await ceremony.importKeysAndPolicy()
 
         // Something reset the counters behind the ceremony's back (a reset would
-        // wipe the keys too, so this stands in for any such disturbance).
-        card.inventoryResult.retryCounters = RetryCounters(user: 3, reset: 0, admin: 3)
-        await XCTAssertThrowsErrorAsync { try await ceremony.applyPolicy() } verify: { error in
+        // wipe the keys too, so this stands in for any such disturbance) — and only
+        // the Admin PIN's counter moved, which the User PIN's assertion would miss.
+        card.inventoryResult.retryCounters = RetryCounters(user: 8, reset: 0, admin: 3)
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.verifyReadBack() } verify: { error in
             guard case .policyNotApplied(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected policyNotApplied, got \(error)")
             }
             XCTAssertTrue(detail.contains("retry limits"), detail)
+            XCTAssertTrue(detail.contains("8/3"), "the message must name what the card reported: \(detail)")
         }
+        XCTAssertEqual(ceremony.step, .readBackCheck, "the ceremony must not move on")
+        XCTAssertNil(ceremony.report.touchPolicyVerified)
     }
 
     // MARK: The touch policy is verified, not assumed (amendment 26)
 
     /// A card that answers `9000` to the policy writes and stores nothing must stop
-    /// the ceremony.
+    /// the ceremony — at the read-back that follows the write.
     ///
     /// This is the failure that produced a card the app believed was protected —
     /// "no signature without a touch" — and which was in fact writing `00 20`. The
@@ -421,52 +434,70 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
-        _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()
-        XCTAssertEqual(ceremony.step, .policy)
 
-        // Every write is answered `9000`; nothing changes on the card.
+        // Every write is answered `9000`; nothing changes on the card. The policy is
+        // written by the import step, so the flag goes up before it runs.
         card.uifWritesAreIgnored = true
-        await XCTAssertThrowsErrorAsync { try await ceremony.applyPolicy() } verify: { error in
+        try await ceremony.importKeysAndPolicy()
+        XCTAssertEqual(ceremony.step, .readBackCheck, "the policy is written in the import step")
+
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.verifyReadBack() } verify: { error in
             guard case .policyNotApplied(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected policyNotApplied, got \(error)")
             }
             XCTAssertTrue(detail.contains("signature slot"), detail)
             XCTAssertTrue(detail.contains("off"), "the message must say what the card reported")
         }
-        // The step must not have advanced, and the report must not claim success.
-        XCTAssertEqual(ceremony.step, .policy)
+        // The step must not have advanced, the report must not claim success, and the
+        // gate must refuse to let the ceremony walk past the read-back — the keys
+        // matched, so only the policy check stands between the card and a wallet.
+        XCTAssertEqual(ceremony.step, .readBackCheck)
         XCTAssertNil(ceremony.report.touchPolicyVerified)
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepIncomplete(
+                    step: .readBackCheck,
+                    detail: "the touch policy has not been confirmed on the card yet"
+                )
+            )
+        }
     }
 
-    /// The policy step runs after the keys are in the card, in the data the UI
-    /// reads and in the mode's declared path.
-    func testThePolicyStepComesAfterTheKeyImport() async throws {
+    /// The policy is written inside the key-import step, after the last key, and the
+    /// read-back that follows is what confirms it.
+    ///
+    /// There is no policy step to order any more. That is the point: the applet
+    /// discards a slot's touch policy when that slot's algorithm attributes are
+    /// written (amendment 26), so a step of its own could be moved before the import
+    /// — where its work would be thrown away while every write still answered
+    /// `9000`. What this test can still check is the order of the calls the applet
+    /// actually sees, and that the policy write really happens before the read-back
+    /// the UI gates on.
+    func testThePolicyIsWrittenAfterTheLastKeyImport() async throws {
+        // The mode's declared path, which the UI's progress list and gates read.
         let path = CeremonyMode.freshGeneration.path
         let importIndex = try XCTUnwrap(path.firstIndex(of: .keyImport))
         let readBackIndex = try XCTUnwrap(path.firstIndex(of: .readBackCheck))
-        let policyIndex = try XCTUnwrap(path.firstIndex(of: .policy))
         let manifestIndex = try XCTUnwrap(path.firstIndex(of: .pairingManifest))
-
         XCTAssertLessThan(importIndex, readBackIndex)
-        XCTAssertLessThan(
-            readBackIndex, policyIndex,
-            "writing a slot's algorithm attributes drops its touch policy, so the policy cannot be written before the import"
-        )
-        XCTAssertLessThan(policyIndex, manifestIndex, "nothing may be advertised before the policy is verified")
+        XCTAssertLessThan(readBackIndex, manifestIndex, "nothing may be advertised before the policy is verified")
 
         // And the call order on a card, which is what the applet actually sees.
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
+        XCTAssertEqual(ceremony.step, .readBackCheck, "the policy write belongs to the import step")
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         let importCall = try XCTUnwrap(card.calls.lastIndex { if case .importKey = $0 { return true } else { return false } })
         let policyCall = try XCTUnwrap(card.calls.lastIndex { if case .applyPolicy = $0 { return true } else { return false } })
-        XCTAssertGreaterThan(policyCall, importCall)
+        XCTAssertGreaterThan(
+            policyCall, importCall,
+            "writing a slot's algorithm attributes drops its touch policy, so the policy goes last"
+        )
+        XCTAssertEqual(ceremony.report.touchPolicyVerified, true)
         XCTAssertEqual(card.inventoryResult.touchPolicy[.signature], CardPolicy.touchFixed)
         XCTAssertEqual(card.inventoryResult.touchPolicy[.authentication], CardPolicy.touchFixed)
     }
@@ -622,7 +653,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
 
         // A counterfeit or tampered card returning a different public key.
         card.storedPublicKeyOverride[.signature] = Array(try Hex.decode(
@@ -645,7 +676,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
 
         card.storedPublicKeyOverride[.authentication] = [UInt8](repeating: 0xAB, count: 32)
 
@@ -663,10 +694,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         let keys = try await runThroughDerivation(ceremony).keys
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         // The manifest step is between the read-back and the export.
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
@@ -728,10 +758,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testPairingExportIsKeystoneCompatibleForBothKeys() async throws {
         let ceremony = makeCeremony()
         let walk = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         // The manifest step is between the read-back and the export.
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
@@ -789,10 +818,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testUnacknowledgedChainCodeExportIsRefused() async throws {
         let ceremony = makeCeremony()
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         // The manifest step is between the read-back and the export.
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
@@ -806,10 +834,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testChainCodeWarningIsRecordedOnce() async throws {
         let ceremony = makeCeremony()
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         // The manifest step is between the read-back and the export.
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
@@ -929,7 +956,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(ceremony.step, .keyImport)
 
         card.failurePoint = .keyImport
-        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() } verify: { error in
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeysAndPolicy() } verify: { error in
             XCTAssertEqual(error as? CardError, .keyImportRejected)
         }
         ceremony.noteInterruption()
@@ -1116,10 +1143,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         card.pairingManifestReadBackOverride = [UInt8](repeating: 0, count: 194)
 
         let stored = try await ceremony.writePairingManifest()
@@ -1142,10 +1168,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         card.failurePoint = .pairingManifest
 
         let stored = try await ceremony.writePairingManifest()
@@ -1163,7 +1188,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testTheManifestStepCannotRunBeforeTheReadBack() async throws {
         let ceremony = makeCeremony()
         _ = try await runThroughDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
 
         await XCTAssertThrowsErrorAsync { try await ceremony.writePairingManifest() } verify: { error in
             XCTAssertEqual(

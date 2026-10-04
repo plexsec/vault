@@ -71,9 +71,16 @@ final class RePairUITests: XCTestCase {
     /// also proves the complete ceremony finishes in the app, previously untested),
     /// then re-pairs it and asserts the codes and the address are on screen.
     func testRePairingAProvisionedCardShowsTheCodesAndTheAddress() throws {
-        let app = XCUIApplication()
-        app.launchArguments = ["-deterministic-entropy", Self.zeroEntropyHex]
-        app.launch()
+        // The simulated card, seeded here rather than inherited: this test used to launch a
+        // bare `XCUIApplication` with only the entropy argument, so which card it talked to
+        // was whatever the *previous* test had left in the device-choice store — the
+        // USB-C test leaves `usbC` behind, and the ceremony then reads a reader that is not
+        // there. That is what made this test "flaky", and it is the one test that had not
+        // been converted when the connection became a launch-time setting (amendment 31).
+        let app = launchApp(
+            deviceChoice: "simulated",
+            arguments: ["-deterministic-entropy", Self.zeroEntropyHex]
+        )
         openProvisioningFlow(app)
 
         // The address an independent implementation derives from the same mnemonic

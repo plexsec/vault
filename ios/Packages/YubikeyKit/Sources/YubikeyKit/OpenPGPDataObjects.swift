@@ -167,9 +167,10 @@ public struct OpenPGPApplicationData: Equatable {
     public var extendedCapabilities: [UInt8]?
     public var algorithmAttributesSignature: [UInt8]?
     public var algorithmAttributesAuthentication: [UInt8]?
-    /// Touch policy (UIF) per slot. Read back after the policy step: the applet
-    /// **drops** a slot's UIF when that slot's algorithm attributes are written, so
-    /// a policy written before the key import does not survive it (amendment 26).
+    /// Touch policy (UIF) per slot. Read back after the import's policy write: the
+    /// applet **drops** a slot's UIF when that slot's algorithm attributes are
+    /// written, so a policy written before the key import does not survive it
+    /// (amendment 26).
     public var uifSignature: [UInt8]?
     public var uifAuthentication: [UInt8]?
     public var pwStatusBytes: [UInt8]?

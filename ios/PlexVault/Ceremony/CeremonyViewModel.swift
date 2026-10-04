@@ -144,6 +144,40 @@ public final class CeremonyViewModel {
         return KeySlot.allCases.contains { inventory.holdsKey(in: $0) }
     }
 
+    /// The policy as the *card* reports it, shown next to the key comparison on the
+    /// read-back step.
+    ///
+    /// These rows are read off the card after the read-back, not echoed from what the
+    /// app asked for: the whole point of the step is that the operator sees the card's
+    /// own answer, including the values the app would have written (amendment 26).
+    public var policyConfirmationRows: [(String, String)] {
+        guard let inventory else { return [] }
+        var rows: [(String, String)] = []
+        for slot in KeySlot.allCases {
+            let policy = inventory.touchPolicy[slot]
+            let verdict = CardPolicy.isTouchFixed(policy) ? "Fixed" : "NOT fixed"
+            rows.append(("\(slot.displayName) touch policy (UIF)", "\(verdict) — \(CardPolicy.describeTouchPolicy(policy))"))
+        }
+        if let status = inventory.pwStatusBytes?.first {
+            rows.append((
+                "PW1 status (0xC4[0])",
+                status == CardPolicy.pw1StatusPerSignature
+                    ? "0x00 — User PIN required for every signature"
+                    : "0x\(String(format: "%02x", status)) — NOT the policy this ceremony writes"
+            ))
+        }
+        if let counters = inventory.retryCounters {
+            rows.append((
+                "PIN retry limits (PW1 / PW3)",
+                "\(counters.user) / \(counters.admin)"
+                    + (report?.userPINRetryLimit == Int(counters.user)
+                        && report?.adminPINRetryLimit == Int(counters.admin)
+                        ? " — as chosen" : " — NOT what was chosen")
+            ))
+        }
+        return rows
+    }
+
     /// True when the card's OpenPGP applet is definitively below the minimum
     /// (3.4 / firmware 5.2.3), which cannot be provisioned.
     public var isUnsupportedApplet: Bool {
@@ -301,18 +335,18 @@ public final class CeremonyViewModel {
         }
     }
 
-    /// The operator-chosen retry limit, defaulting to the card's factory value.
-    public var pinRetryLimit: Int = CardPolicy.defaultRetryLimit
+    /// The operator-chosen retry limits, both defaulting to the card's factory value.
+    /// Two numbers, because the two passwords are not used alike: the User PIN is
+    /// typed on every signature, the Admin PIN almost never (amendment 32).
+    public var userPINRetryLimit: Int = CardPolicy.defaultRetryLimit
+    public var adminPINRetryLimit: Int = CardPolicy.defaultRetryLimit
 
     public func setPINRetryLimits() async {
         await run { ceremony in
-            try await ceremony.setPINRetries(self.pinRetryLimit)
-        }
-    }
-
-    public func applyPolicy() async {
-        await run { ceremony in
-            try await ceremony.applyPolicy()
+            try await ceremony.setPINRetries(
+                user: self.userPINRetryLimit,
+                admin: self.adminPINRetryLimit
+            )
         }
     }
 
@@ -429,9 +463,12 @@ public final class CeremonyViewModel {
         }
     }
 
+    /// Writes both keys and then the policy. One step: the touch policy has to be
+    /// written after the last key write, and the applet discards it otherwise
+    /// (amendment 26, amendment 32).
     public func importKeys() async {
         await run { ceremony in
-            try await ceremony.importKeys()
+            try await ceremony.importKeysAndPolicy()
         }
     }
 

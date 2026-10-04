@@ -62,9 +62,12 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     /// Both slots reported the touch policy the ceremony asked for. Only ever set
     /// after reading the UIF objects back off the card (amendment 26).
     public var touchPolicyVerified: Bool?
-    /// The retry limit the operator chose, recorded only after the card reported
-    /// those counters back (amendment 27).
-    public var pinRetryLimit: Int?
+    /// How many wrong entries each password tolerates, recorded only after the card
+    /// reported those counters back (amendment 27). Two numbers rather than one:
+    /// the User PIN is typed on every signature and the Admin PIN almost never, so
+    /// the operator has to be able to spend them differently (amendment 32).
+    public var userPINRetryLimit: Int?
+    public var adminPINRetryLimit: Int?
     /// Ordered: secp256k1, then Ed25519. Empty until derivation.
     public var keys: [KeyRecord] = []
     public var warnings: [String] = []
@@ -121,6 +124,13 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
         }
 
         if let counterBaseline { lines.append("signature counter baseline (secp256k1/signature slot): \(counterBaseline)") }
+        // The policy and the two retry limits, as the card reported them. They belong on
+        // the paper record because they are what the card will enforce years from now,
+        // and because the numbers are the operator's own choice (amendments 27, 32).
+        lines.append("touch policy verified on both slots: \(touchPolicyVerified == true ? "yes" : "no")")
+        if let userPINRetryLimit, let adminPINRetryLimit {
+            lines.append("PIN retry limits (PW1 / PW3): \(userPINRetryLimit) / \(adminPINRetryLimit)")
+        }
         lines.append("note: the Ed25519 key has no hardware signature counter; the counter audit covers secp256k1 only.")
         for warning in warnings { lines.append("warning: \(warning)") }
         return lines
@@ -312,8 +322,9 @@ public final class ProvisioningCeremony {
     private var mnemonicConfirmed = false
     private var cardHeldExistingKey = false
     private var mutatingStepInFlight: CeremonyStep?
-    /// Held only between the PIN step and the policy step so that PUT DATA of the
-    /// protected policy objects can authenticate. Wiped with everything else.
+    /// Held from the PIN step onwards — the retry write, the import with its policy
+    /// write, and the manifest all authenticate with it — and wiped with everything
+    /// else.
     private var sessionAdminPIN: SensitiveBytes?
     /// Set only by `confirmPairingAddressMatches`; gates completion of the pairing
     /// step (design.md §4.2 step 8 requires the operator to compare addresses).
@@ -391,7 +402,7 @@ public final class ProvisioningCeremony {
             }
             step = .pairingExport
 
-        case .reset, .pinProvisioning, .pinRetries, .policy, .keyImport:
+        case .reset, .pinProvisioning, .pinRetries, .keyImport:
             // Action-only steps advance themselves once the card accepts them.
             throw CeremonyError.stepIncomplete(step: step, detail: "this step completes when the YubiKey accepts it")
 
@@ -416,10 +427,20 @@ public final class ProvisioningCeremony {
             step = .keyImport
 
         case .readBackCheck:
+            // Both halves have to be confirmed: the keys by comparison with the
+            // derived ones, the policy by the UIF objects and the PW1 status the
+            // card reports. Neither is optional — the policy check is why the touch
+            // requirement cannot be lost silently (amendment 26).
             guard report.readBackVerified else {
                 throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public keys have not been verified yet")
             }
-            step = .policy
+            guard report.touchPolicyVerified == true else {
+                throw CeremonyError.stepIncomplete(
+                    step: .readBackCheck,
+                    detail: "the touch policy has not been confirmed on the card yet"
+                )
+            }
+            step = .pairingManifest
 
         case .pairingManifest:
             guard pairingManifestOutcome != nil else {
@@ -657,12 +678,18 @@ public final class ProvisioningCeremony {
         advance(to: .pinRetries)
     }
 
-    // MARK: Step 3b — PIN retry limits (amendment 27)
+    // MARK: Step 3b — PIN retry limits (amendments 27 and 32)
 
     /// Sets how many wrong PIN attempts each password tolerates, and reads the
     /// counters back.
     ///
-    /// The operator chooses the number because it is a genuine trade: it is the
+    /// Two numbers, not one: the User PIN is typed on every signature and the Admin
+    /// PIN almost never, so the same number is not the right trade for both, and the
+    /// card keeps the counters per password anyway. Each number is genuinely
+    /// independent — the APDU carries three counters (PW1, the resetting code, PW3),
+    /// so the write carries both choices and the read-back asserts both.
+    ///
+    /// The operator chooses each number because it is a genuine trade: it is the
     /// brute-force budget for a 6-digit PIN (design.md §9), and it is also how many
     /// typos stand between the operator and a blocked card. The consequences are
     /// stated on the step, not hidden here:
@@ -677,19 +704,28 @@ public final class ProvisioningCeremony {
     ///   again the mnemonic.
     ///
     /// Verified rather than assumed: the card must report the new counters back, and
-    /// the policy step later re-checks them, because a limit that only appears to be
-    /// set is worse than no limit at all.
-    public func setPINRetries(_ limit: Int = CardPolicy.defaultRetryLimit) async throws {
+    /// the read-back step later re-checks them, because a limit that only appears to
+    /// be set is worse than no limit at all.
+    public func setPINRetries(
+        user userLimit: Int = CardPolicy.defaultRetryLimit,
+        admin adminLimit: Int = CardPolicy.defaultRetryLimit
+    ) async throws {
         try requireCurrent(.pinRetries)
-        guard CardPolicy.retryLimits.contains(limit) else {
-            throw CeremonyError.invalidRetryLimit(requested: limit, allowed: CardPolicy.retryLimits)
+        for limit in [userLimit, adminLimit] {
+            guard CardPolicy.retryLimits.contains(limit) else {
+                throw CeremonyError.invalidRetryLimit(requested: limit, allowed: CardPolicy.retryLimits)
+            }
         }
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
         var pin = adminPIN.materializedCopy()
         defer { VaultKit.wipe(&pin) }
 
         try await withMutatingStep(.pinRetries) {
-            try await card.setPINRetries(user: limit, reset: limit, admin: limit, adminPIN: pin)
+            // The third byte is the resetting code's counter. This app never sets a
+            // resetting code, and the card reports 0 attempts for it whatever is
+            // sent (measured on hardware: `03 00 03`), but the command takes all
+            // three, so it carries the User PIN's number.
+            try await card.setPINRetries(user: userLimit, reset: userLimit, admin: adminLimit, adminPIN: pin)
         }
 
         let after = try await card.inventory()
@@ -699,68 +735,20 @@ public final class ProvisioningCeremony {
                 detail: "the card reports no retry counters at all"
             )
         }
-        // The resetting code is never set by this app, so the card reports 0
-        // attempts for it and there is nothing to check there (measured on
-        // hardware: `03 00 03`). PW1 and PW3 are the two passwords this app sets.
-        guard Int(counters.user) == limit, Int(counters.admin) == limit else {
+        // Both counters are asserted, including the one not chosen on this step:
+        // sending three bytes means the two choices travel together, so a write that
+        // clobbered one of them is a failure here rather than a surprise later.
+        // PW1 and PW3 are the two passwords this app sets; the resetting code's
+        // counter is not ours to check (`03 00 03` on a fresh card).
+        guard Int(counters.user) == userLimit, Int(counters.admin) == adminLimit else {
             throw CeremonyError.retryLimitsNotApplied(
-                detail: "the card reports \(counters.user) user and \(counters.admin) admin attempts, not \(limit)"
+                detail: "the card reports \(counters.user) user and \(counters.admin) admin attempts, "
+                    + "not \(userLimit) and \(adminLimit)"
             )
         }
-        report.pinRetryLimit = limit
+        report.userPINRetryLimit = userLimit
+        report.adminPINRetryLimit = adminLimit
         advance(to: .entropy)
-    }
-
-    // MARK: Step 8 — policy (after the keys, see CeremonyStep.policy)
-
-    /// Writes the touch policy and the PIN policy, then **reads them back**.
-    ///
-    /// A policy the card does not actually report is not a policy: the whole
-    /// scheme rests on "no signature without a touch" (design.md §2), so a write
-    /// that did not stick has to stop the ceremony rather than produce a card that
-    /// looks provisioned. This is not a hypothetical failure — the applet discards
-    /// a slot's UIF when that slot's algorithm attributes are written, which is
-    /// exactly what the previous order did (amendment 26).
-    public func applyPolicy() async throws {
-        try requireCurrent(.policy)
-        guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
-        var pin = adminPIN.materializedCopy()
-        defer { VaultKit.wipe(&pin) }
-        try await withMutatingStep(.policy) {
-            try await card.applyPolicy(adminPIN: pin)
-        }
-        let after = try await card.inventory()
-        inventory = after
-
-        var problems: [String] = []
-        if !CardPolicy.isTouchFixed(after.touchPolicy[.signature]) {
-            problems.append("the signature slot's touch policy reads \(CardPolicy.describeTouchPolicy(after.touchPolicy[.signature]))")
-        }
-        if !CardPolicy.isTouchFixed(after.touchPolicy[.authentication]) {
-            problems.append("the authentication slot's touch policy reads \(CardPolicy.describeTouchPolicy(after.touchPolicy[.authentication]))")
-        }
-        if let status = after.pwStatusBytes, let first = status.first, first != CardPolicy.pw1StatusPerSignature {
-            problems.append("the PW1 status reads 0x\(String(format: "%02x", first))")
-        }
-        // The retry limits were set earlier in the ceremony; re-reading them here is
-        // what proves the rest of the run did not disturb them, since this is the
-        // last look at the card before the pairing codes are produced.
-        if let limit = report.pinRetryLimit {
-            if let counters = after.retryCounters {
-                if Int(counters.user) != limit || Int(counters.admin) != limit {
-                    problems.append(
-                        "the PIN retry limits read back as \(counters.user)/\(counters.admin), not \(limit)"
-                    )
-                }
-            } else {
-                problems.append("the card no longer reports PIN retry counters")
-            }
-        }
-        if !problems.isEmpty {
-            throw CeremonyError.policyNotApplied(detail: problems.joined(separator: "; "))
-        }
-        report.touchPolicyVerified = true
-        advance(to: .pairingManifest)
     }
 
     // MARK: Step 6 — entropy
@@ -1026,12 +1014,34 @@ public final class ProvisioningCeremony {
         }
     }
 
-    // MARK: Step 9 — import
+    // MARK: Step 9 — import (the keys, and then the policy: see CeremonyStep.keyImport)
 
-    /// Writes both keys: secp256k1 into the signature slot, Ed25519 into the
-    /// authentication slot. Each write re-verifies the Admin PIN in its own
-    /// session (see `SignerCard.importKey`).
-    public func importKeys(creationTime: Date? = nil) async throws {
+    /// Writes both keys — secp256k1 into the signature slot, Ed25519 into the
+    /// authentication slot — **and then the policy**, as the last write to those
+    /// slots: touch required for every use on both, and the User PIN re-entered for
+    /// every signature. Each write re-verifies the Admin PIN in its own session (see
+    /// `SignerCard.importKey` and `SignerCard.applyPolicy`).
+    ///
+    /// One step and not two, deliberately. Writing a slot's algorithm attributes
+    /// resets that slot, and the applet drops that slot's touch policy with it, so a
+    /// policy written before the import is written into a slot the import then
+    /// discards — measured four times on hardware (amendment 26). Inside this step the
+    /// order cannot be got wrong, and the read-back step that follows is what confirms
+    /// it stuck (amendment 32).
+    ///
+    /// The two halves fail differently, and the difference is the operator's next
+    /// move:
+    ///
+    /// * a **key** that failed to import leaves the card half provisioned. The applet
+    ///   refuses to overwrite an occupied slot, so "retry the import" can never work
+    ///   and the card has to be reset;
+    /// * a **policy** that failed to write leaves a card holding the right keys and no
+    ///   touch requirement. That stops the ceremony too — a card without the policy it
+    ///   was promised must not be used — but it is not an import failure, so it is
+    ///   reported as itself, and the card is left for the operator's reset step rather
+    ///   than written again: the applet already refused the write once, and a second
+    ///   attempt would be the blind retry design.md §5.2 rule 1 forbids.
+    public func importKeysAndPolicy(creationTime: Date? = nil) async throws {
         try requireCurrent(.keyImport)
         guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
@@ -1075,14 +1085,34 @@ public final class ProvisioningCeremony {
                 ?? "\(error)"
             throw CeremonyError.importLeftTheCardPartlyProvisioned(slots: occupied, detail: description)
         }
+
+        // The policy, in the same step and after the last key write. It gets its own
+        // mutating-step frame so that an interruption here is still reported as this
+        // step being in flight — because it is the write that may have half happened.
+        do {
+            try await withMutatingStep(.keyImport) {
+                try await self.card.applyPolicy(adminPIN: pin)
+            }
+        } catch let error as CardError {
+            throw CeremonyError.policyNotApplied(detail: error.userFacingDescription)
+        }
+
         advance(to: .readBackCheck)
     }
 
     // MARK: Step 10 — read-back (mandatory, design.md §4.2 step 7)
 
-    /// Reads both public keys back and compares them with the derived ones. A
-    /// mismatch on **either** key voids the entire procedure: everything is
-    /// wiped and the operator is sent back to the card inspection step.
+    /// Reads both public keys back and compares them with the derived ones, **and
+    /// reads the policy back with them**: the touch policy on both signing-capable
+    /// slots, the PW1 status, and the PIN retry limits the operator chose.
+    ///
+    /// A mismatch on **either** key voids the entire procedure: everything is wiped
+    /// and the operator is sent back to the card inspection step. A policy the card
+    /// does not report stops the ceremony just as firmly, but it is a different
+    /// failure and is reported as itself: the keys in the card are the right keys, so
+    /// nothing local is wiped, and the card must not be used because the touch
+    /// requirement it was promised cannot be read back off it (amendment 26). The way
+    /// out of that state is the reset step, not a second write.
     @discardableResult
     public func verifyReadBack() async throws -> [KeyAlgorithm: ReadBackResult] {
         try requireCurrent(.readBackCheck)
@@ -1118,9 +1148,67 @@ public final class ProvisioningCeremony {
             }
         }
         readBackResults = results
+
+        // The policy, read off the card in the same session as the keys. A policy the
+        // card does not report is not a policy: every write answered `9000` while the
+        // card kept touch off, which is the failure mode this check exists for
+        // (amendment 26).
+        let after = try await card.inventory()
+        inventory = after
+        let problems = Self.policyDisagreements(
+            inventory: after,
+            userRetryLimit: report.userPINRetryLimit,
+            adminRetryLimit: report.adminPINRetryLimit
+        )
+        guard problems.isEmpty else {
+            throw CeremonyError.policyNotApplied(detail: problems.joined(separator: "; "))
+        }
+        report.touchPolicyVerified = true
+
         // Deliberately does NOT advance: the read-back comparison is the whole
         // point of this step and must be seen.
         return results
+    }
+
+    /// Everything the card has to be reporting for the policy to count as applied.
+    ///
+    /// Kept as one list so the step and its tests reason about the same things, and so
+    /// a policy that is checked in one place and described in another cannot drift.
+    static func policyDisagreements(
+        inventory: CardInventory,
+        userRetryLimit: Int?,
+        adminRetryLimit: Int?
+    ) -> [String] {
+        var problems: [String] = []
+        if !CardPolicy.isTouchFixed(inventory.touchPolicy[.signature]) {
+            problems.append(
+                "the signature slot's touch policy reads \(CardPolicy.describeTouchPolicy(inventory.touchPolicy[.signature]))"
+            )
+        }
+        if !CardPolicy.isTouchFixed(inventory.touchPolicy[.authentication]) {
+            problems.append(
+                "the authentication slot's touch policy reads \(CardPolicy.describeTouchPolicy(inventory.touchPolicy[.authentication]))"
+            )
+        }
+        if let status = inventory.pwStatusBytes, let first = status.first, first != CardPolicy.pw1StatusPerSignature {
+            problems.append("the PW1 status reads 0x\(String(format: "%02x", first))")
+        }
+        // The retry limits were chosen earlier in the run; re-reading them here is what
+        // proves the key import and the policy write did not disturb them, since this
+        // is the last look at the card before the pairing codes are produced.
+        if let userLimit = userRetryLimit, let adminLimit = adminRetryLimit {
+            if let counters = inventory.retryCounters {
+                if Int(counters.user) != userLimit || Int(counters.admin) != adminLimit {
+                    problems.append(
+                        "the PIN retry limits read back as \(counters.user)/\(counters.admin), "
+                            + "not \(userLimit)/\(adminLimit)"
+                    )
+                }
+            } else {
+                problems.append("the card no longer reports PIN retry counters")
+            }
+        }
+        return problems
     }
 
     // MARK: Step 11 — pairing export

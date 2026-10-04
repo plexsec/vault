@@ -45,10 +45,9 @@ final class RePairTests: XCTestCase {
         try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
         _ = try ceremony.deriveKeys()
         try ceremony.advance()
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         _ = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         _ = try await ceremony.writePairingManifest()
         try ceremony.advance()
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
@@ -281,8 +280,9 @@ final class RePairTests: XCTestCase {
             try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
             try await ceremony.setPINRetries()
         }
-        await assertStepOutOfOrder { try await ceremony.applyPolicy() }
-        await assertStepOutOfOrder { try await ceremony.importKeys() }
+        // `importKeysAndPolicy` carries the policy write, so this one assertion covers
+        // both the import and the policy for the re-pair path (amendment 32).
+        await assertStepOutOfOrder { try await ceremony.importKeysAndPolicy() }
         await assertStepOutOfOrder {
             _ = try await ceremony.writePairingManifest()
         }

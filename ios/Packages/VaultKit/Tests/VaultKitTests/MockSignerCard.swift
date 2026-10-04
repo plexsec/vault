@@ -184,7 +184,7 @@ final class MockSignerCard: SignerCard {
         serial: "00000000",
         pwStatusBytes: [0x00, 0x7F, 0x7F, 0x7F, 0x03, 0x00, 0x03],
         retryCounters: RetryCounters(user: 3, reset: 0, admin: 3),
-        // A factory-fresh applet reports `off` for every slot; the policy step's
+        // A factory-fresh applet reports `off` for every slot; the policy write's
         // whole job is to make this read `fixed`, and the ceremony reads it back.
         touchPolicy: [.signature: CardPolicy.touchOff, .authentication: CardPolicy.touchOff],
         occupiedSlots: [],
@@ -229,7 +229,8 @@ final class MockSignerCard: SignerCard {
         storedPrivateKeys = [:]
         storedFingerprints = [:]
         dataObjects = [:]
-        retryLimit = 3
+        retryLimitUser = 3
+        retryLimitAdmin = 3
         inventoryResult.retryCounters = RetryCounters(user: 3, reset: 0, admin: 3)
         // `TERMINATE DF` erases the whole data file, private-use objects included.
         // A mock that kept the manifest across a reset would let a re-pair test
@@ -251,8 +252,10 @@ final class MockSignerCard: SignerCard {
         lastSetUserPIN = userPIN
     }
 
-    /// The retry maximum per password, as the real card holds it after `F2`.
-    var retryLimit = 3
+    /// The retry maximum per password, as the real card holds it after `F2`. Two
+    /// numbers, because the applet keeps one counter per password (amendment 32).
+    var retryLimitUser = 3
+    var retryLimitAdmin = 3
     /// When set, the card answers `9000` to `SET PIN RETRIES` and keeps the old
     /// counters — the failure the read-back in the ceremony exists to catch.
     var retryWritesAreIgnored = false
@@ -266,7 +269,8 @@ final class MockSignerCard: SignerCard {
             }
         }
         guard !retryWritesAreIgnored else { return }
-        retryLimit = user
+        retryLimitUser = user
+        retryLimitAdmin = admin
         inventoryResult.retryCounters = RetryCounters(
             user: UInt8(user), reset: 0, admin: UInt8(admin)
         )

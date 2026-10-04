@@ -1106,10 +1106,14 @@ item 19.
 
 **Evidence.** Reverting each part fails its test: dropping the read-back fails
 `testRetryLimitsTheCardDoesNotApplyFailTheCeremony`, widening the offered range fails
-`testARetryLimitOutsideTheOfferedRangeIsRefused`, and dropping the policy step's re-check fails
-`testThePolicyStepRechecksTheRetryLimits`. The APDU itself is pinned byte-for-byte
+`testARetryLimitOutsideTheOfferedRangeIsRefused`, and dropping the later re-check fails
+`testTheReadBackStepRechecksTheRetryLimits`. The APDU itself is pinned byte-for-byte
 (`00f2000003 040404 00`) and the UI walk now chooses 4 through the picker, so the number really
 travels. VaultKit 249 → 253, YubikeyKit 81 → 83.
+
+**Later (amendment 32).** The number became two — one per password, chosen independently — and the
+read-back that re-checks them moved with the rest of the policy check into the read-back step. This
+amendment's reasoning about the consequences is unchanged; only the count of numbers is.
 
 ## 28. v0.2: the app cannot reset a card whose Admin PIN is blocked
 
@@ -1348,3 +1352,86 @@ floating in a navigation bar above it. Every other UI test now seeds the connect
 helpers no longer tap a transport at all. Packages unchanged (VaultKit 255, YubikeyKit 88). Release
 build and `tools/audit-release.sh` pass with the narrowed check.
 
+
+## 32. v0.2: the policy is written by the import, and the retry limits are two numbers
+
+**Sections:** §4.2 (steps 3 and 7), §5.2 rule 7d, §6.5.
+
+**What changed.**
+
+* The **policy write moved into the key-import step.** There is no "apply policy" step any more:
+  the import writes both keys and then the two UIF objects and the PW1 status, as the last write to
+  those slots, and the read-back step confirms the keys **and** the policy in one pass.
+* The **PIN retry limit became two independent numbers**, chosen per password on the retry step: the
+  User PIN's limit and the Admin PIN's, both from the same offered range, both written and read back
+  together.
+
+**Why the policy step had to go rather than move.** It could not be *moved* where an operator asked
+for it — before the PIN step, which is before the key import — because the applet discards a slot's
+touch policy when that slot's algorithm attributes are written. That is not a theory: it was measured
+on the card in hand, four times (amendment 26, m0 item 18). Moving the write earlier would have
+produced a card that reports `9000` to every write and ends up with touch **off** while the operator
+believes otherwise — the exact failure the read-back exists to catch — and moving the read-back with
+it would have made the ceremony pass while the card stayed unprotected. What the operator actually
+wanted was for the policy not to be its own movable screen, and that is what this does: with the
+write inside the import, there is no ordering left to get wrong and no step to reorder. The
+read-back step is now the single place where a provisioned card is admitted to be provisioned.
+
+**Why two retry numbers.** The applet keeps one counter per password; the app was collapsing them
+into one choice and telling the operator "this number is the brute-force budget for a 6-digit PIN".
+That is only true of the User PIN. The Admin PIN is typed once per ceremony, not once per signature,
+so the same number is not the right trade for both — and `ykman openpgp access set-retries` has taken
+three numbers since it was written, for the same reason. The UI now asks twice.
+
+`SET PIN RETRIES` takes all three counters in one command (`00 F2 00 00 03 <PW1> <reset code> <PW3>`),
+so "separately" does not mean two commands: it means two inputs, one write, and a read-back that
+asserts **both** counters. The resetting code's byte carries the User PIN's number and is inert —
+this app never sets a resetting code, and the card reports 0 attempts for it whatever is sent
+(measured: `03 00 03`).
+
+The claim that `SET PIN RETRIES` leaves the PIN *values* alone on 4/5 came up while checking this, and
+it is now sourced rather than asserted: Yubico's own library documents the PIN reset as NEO-only
+(`yubikit.openpgp.set_pin_attempts`: "WARNING: On YubiKey NEO this will reset the PINs to their
+default values"; the same sentence in YubiKit Android), and the ykneo-openpgp `PinRetries` page that
+says otherwise is about applet 1.0.7 — the discontinued NEO applet, not the 3.4 applet on the cards
+this app targets. m0 item 19 gained the check that would actually catch a difference on hardware:
+re-verify PW3 with the operator's own Admin PIN *after* the retry write, which no probe has done,
+because every probe so far used factory PINs — where a reset and a no-op are indistinguishable.
+
+**The defect this uncovered, in a screen that has nothing to do with the YubiKey.** The report
+screen's only way back to the home screen was the last item of a three-screen scroll, with the
+"restart the app" note drawn *over it* as `.overlay(alignment: .bottom)`. Three extra rows of report
+were enough to push the button under the note: the end-to-end re-pair UI test — which provisions a
+card for real, then re-pairs it — reached the button, tapped it, and stayed on the screen, twice.
+The fix is the pattern the rest of the app already uses: the action is pinned in a bottom bar
+(`safeAreaInset`), with the note beneath it, so it is visible without scrolling and nothing overlaps
+it. A primary action the operator has to scroll for is a primary action that can be missed.
+
+**The same run also found a test that had been passing by luck.** That end-to-end test launched a
+bare `XCUIApplication` with only `-deterministic-entropy`, so it inherited whichever connection the
+previous test had left in the device-choice store — after `DeviceChoiceUITests`' USB-C case, a
+ceremony pointed at a CCID reader that does not exist, and the inventory read produced nothing. It
+was the one test not converted when the connection became a launch-time setting (amendment 31), and
+the intermittent failure it produced had been recorded as flakiness; it is now seeded like its
+sibling and deterministic.
+
+**What did not change.** The policy itself: touch policy `Fixed` on both signing-capable slots, PW1
+status `0x00`, both verified by read-back. The retry limits are still verified by read-back and
+re-checked by the read-back step, which reports the card's own numbers. Nothing about the reset step,
+the entropy, the mnemonic or the pairing path changed.
+
+**Evidence.** Reverting each part fails its test. Dropping the policy write from the import fails
+`testThePolicyIsWrittenAfterTheLastKeyImport` and the read-back's policy check
+(`testAPolicyTheCardDoesNotReportBackFailsTheCeremony`, which now reaches the failure through
+`verifyReadBack`); writing one number to both passwords fails
+`testChosenRetryLimitsReachTheCardPerPIN` (it asserts the `F2` bytes are `04 04 06`) and
+`testTheRetryLimitsAreChosenPerPINAndReadBack`; ignoring one of the two counters fails
+`testTheReadBackStepRechecksTheRetryLimits`, which moves only the Admin PIN's counter and expects the
+ceremony to stop. The UI walk raises the two pickers to different numbers, so a write that put one
+number on both passwords fails the walk as well. VaultKit 255 (the count is unchanged: the tests were
+reworked, not added to), YubikeyKit 88 → 88, UI 15. Release build and `tools/audit-release.sh` pass.
+
+**Amendment 27's "the policy step re-reads the counters" is now "the read-back step re-reads them",
+and its single number is now two.** Amendment 26's ordering rule is unchanged; where it used to say
+"the policy step sits after the key import", it is now expressed by the import step itself writing
+the policy last.

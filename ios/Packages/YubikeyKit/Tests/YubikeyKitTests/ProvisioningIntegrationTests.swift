@@ -81,18 +81,18 @@ final class ProvisioningIntegrationTests: XCTestCase {
         return (words, keys)
     }
 
-    /// The tail of the ceremony, in the order design.md §4.2 now mandates: import
-    /// the keys, verify them off the card, and only then apply the policy.
+    /// The tail of the ceremony, in the order design.md §4.2 now mandates: import the
+    /// keys and then the policy, and verify all of it off the card.
     ///
-    /// The policy cannot be applied any earlier: writing a slot's algorithm
-    /// attributes resets that slot and the applet drops its touch policy with it,
-    /// so the write is silently discarded (amendment 26).
+    /// The policy cannot be written any earlier: writing a slot's algorithm attributes
+    /// resets that slot and the applet drops its touch policy with it, so an earlier
+    /// write is silently discarded (amendment 26). It is one step with the import, so
+    /// there is no ordering left to get wrong (amendment 32).
     @discardableResult
     private func finishProvisioning(_ ceremony: ProvisioningCeremony) async throws -> [KeyAlgorithm: ReadBackResult] {
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         let readBack = try await ceremony.verifyReadBack()
         try ceremony.advance()
-        try await ceremony.applyPolicy()
         return readBack
     }
 
@@ -135,7 +135,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(keys.secp256k1.publicKeyHex, Expected.secp256k1PublicKey)
         XCTAssertEqual(keys.ed25519.identity, Expected.ed25519PublicKey)
 
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
         // The card really holds both keys: verify against the mock's own state.
         XCTAssertTrue(transport.hasKey(in: .signature))
         XCTAssertTrue(transport.hasKey(in: .authentication))
@@ -154,12 +154,12 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(readBack[.secp256k1]?.cardPublicKeyHex, keys.secp256k1.publicKeyHex)
         XCTAssertEqual(readBack[.ed25519]?.cardPublicKeyHex, keys.ed25519.publicKeyHex)
 
-        // The policy is applied **after** the import, and the ceremony reads it
-        // back off the card. Writing a slot's algorithm attributes resets that
-        // slot, and the applet drops its touch policy with it: this order is the
-        // fix for a card that reported `9000` for every write and ended up with
-        // touch disabled (amendment 26).
-        try await ceremony.applyPolicy()
+        // The policy was written by the import step, **after** the last key, and the
+        // read-back above is what confirmed it. Writing a slot's algorithm attributes
+        // resets that slot, and the applet drops its touch policy with it, so the order
+        // is the fix for a card that reported `9000` for every write and ended up with
+        // touch disabled (amendment 26); doing both in one step is what keeps the order
+        // out of reach (amendment 32).
         XCTAssertEqual(transport.currentUIF(.signature), [0x02, 0x20])
         XCTAssertEqual(transport.currentUIF(.authentication), [0x02, 0x20])
         XCTAssertEqual(transport.currentPWStatus.first, 0x00)
@@ -233,9 +233,12 @@ final class ProvisioningIntegrationTests: XCTestCase {
     }
 
     /// A chosen retry limit (not the factory 3) travels through the APDU layer and
-    /// is readable afterwards. The UI test picks 4 through the picker; this is the
-    /// same number without the simulator.
-    func testAChosenRetryLimitReachesTheCard() async throws {
+    /// is readable afterwards — **per password**, which is what the two inputs are
+    /// for: one `F2` carries both choices, and the card keeps them apart.
+    ///
+    /// The UI walk raises both pickers to different numbers; this is the same thing
+    /// without the simulator.
+    func testChosenRetryLimitsReachTheCardPerPIN() async throws {
         let transport = MockYubikeyTransport()
         let (ceremony, _) = makeCeremony(transport: transport)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
@@ -243,12 +246,16 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try ceremony.advance()
         try await ceremony.resetCard()
         try await ceremony.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
-        try await ceremony.setPINRetries(4)
+        try await ceremony.setPINRetries(user: 4, admin: 6)
 
-        XCTAssertEqual(transport.receivedAPDUs.last { $0.hasPrefix("00f2") }, "00f20000030404" + "0400")
+        // One command carries all three counters: PW1 = 4, the resetting code's byte
+        // (inert — this app never sets a resetting code, and the card reports 0 for
+        // it, so it carries the User PIN's number), PW3 = 6.
+        XCTAssertEqual(transport.receivedAPDUs.last { $0.hasPrefix("00f2") }, "00f2000003" + "040406" + "00")
         XCTAssertEqual(transport.currentRetryLimits.user, 4)
-        XCTAssertEqual(transport.currentRetryLimits.admin, 4)
-        XCTAssertEqual(ceremony.report.pinRetryLimit, 4)
+        XCTAssertEqual(transport.currentRetryLimits.admin, 6, "the Admin PIN's limit is its own choice")
+        XCTAssertEqual(ceremony.report.userPINRetryLimit, 4)
+        XCTAssertEqual(ceremony.report.adminPINRetryLimit, 6)
         XCTAssertEqual(ceremony.step, .entropy)
     }
 
@@ -291,8 +298,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
     }
 
-    /// With the policy applied *after* the import, everything the ceremony still
-    /// does to the card leaves it alone.
+    /// With the policy written after the last key import, everything the ceremony
+    /// still does to the card leaves it alone.
     ///
     /// This is the other half of the ordering guarantee: it is not enough for the
     /// policy write to land, it has to survive the rest of the run.
@@ -300,7 +307,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let (ceremony, _) = makeCeremony(transport: transport)
         _ = try await walkToDerivation(ceremony)
-        try await finishProvisioning(ceremony)   // import, read-back, policy
+        try await finishProvisioning(ceremony)   // import + policy, then read-back
 
         XCTAssertEqual(transport.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
         XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
@@ -316,7 +323,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(
             transport.currentUIF(.signature),
             OpenPGPTouchPolicy.fixedEncoded,
-            "nothing after the policy step may disturb the touch policy"
+            "nothing after the policy write may disturb the touch policy"
         )
         XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
     }
@@ -423,7 +430,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         ))
         let (ceremony, _) = makeCeremony(transport: transport)
         try await walkToDerivation(ceremony)
-        try await ceremony.importKeys()
+        try await ceremony.importKeysAndPolicy()
 
         await XCTAssertThrowsErrorAsync { try await ceremony.verifyReadBack() } verify: { error in
             guard case .readBackMismatch = (error as? CeremonyError) else {
@@ -441,7 +448,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try await walkToDerivation(ceremony)
 
         transport.injectedFailure = .transportError("NFC session invalidated")
-        await XCTAssertThrowsErrorAsync { try await ceremony.importKeys() }
+        await XCTAssertThrowsErrorAsync { try await ceremony.importKeysAndPolicy() }
         ceremony.noteInterruption()
         XCTAssertEqual(ceremony.step, .cardInventory, "the card state is unknown and must be re-read")
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("re-inspect") })

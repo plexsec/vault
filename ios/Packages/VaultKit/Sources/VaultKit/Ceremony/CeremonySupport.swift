@@ -542,18 +542,25 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case entropy
     case mnemonic
     case derivation
-    case keyImport
-    case readBackCheck
-    /// Writes the touch policy (UIF fixed on both signing-capable slots) and the
-    /// PIN policy (PW1 status), then **reads both back** and fails if the card does
-    /// not report them.
+    /// Writes both private keys **and then the policy** — the touch policy (UIF fixed
+    /// on both signing-capable slots) and the PIN policy (PW1 status `0x00`).
     ///
-    /// It sits after the key import because writing a slot's algorithm attributes
-    /// resets that slot and the applet drops its touch policy with it, so a policy
-    /// written earlier is silently discarded — the bug this order exists to prevent
-    /// (amendment 26). Nothing after this step writes to those slots except the
+    /// The two are one step on purpose. Writing a slot's algorithm attributes resets
+    /// that slot, and the applet drops that slot's touch policy with it, so the policy
+    /// write has to follow the last key write; and a policy step of its own is a step
+    /// that can be moved (amendment 26 measured the loss on hardware, four times;
+    /// amendment 32 merged the writes into this one step so the order cannot be got
+    /// wrong). Nothing later in the ceremony writes to those slots except the
     /// private-use object, which does not disturb the UIF objects.
-    case policy
+    case keyImport
+    /// Reads both public keys back **and the policy with them**: the UIF objects, the
+    /// PW1 status and the retry counters, each against what the ceremony asked for.
+    ///
+    /// A key that does not match voids the procedure (design.md §4.2 step 7); a policy
+    /// the card does not report stops the ceremony, because a card the operator
+    /// believes requires a touch, and which does not, is worse than an unprovisioned
+    /// one (amendment 26).
+    case readBackCheck
     /// Writes the pairing manifest into the card's private-use data object, so
     /// that the pairing codes can be produced again later without resetting the
     /// applet. Sits after the read-back check on purpose: nothing is advertised
@@ -580,8 +587,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .mnemonic: return "Write down the mnemonic"
         case .derivation: return "Derive the signing keys"
         case .keyImport: return "Import keys into YubiKey"
-        case .readBackCheck: return "Verify the keys in the card"
-        case .policy: return "Apply touch and PIN policy"
+        case .readBackCheck: return "Verify the keys and the policy in the card"
         case .pairingManifest: return "Store the pairing manifest"
         case .pairingExport: return "Pair with the desktop wallet"
         case .counterBaseline: return "Record signature counter baseline"
@@ -594,7 +600,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     /// anything else happens (design.md §5.2 rule 1 forbids blind retries).
     public var isMutatingCardState: Bool {
         switch self {
-        case .reset, .pinProvisioning, .pinRetries, .policy, .keyImport, .pairingManifest: return true
+        case .reset, .pinProvisioning, .pinRetries, .keyImport, .pairingManifest: return true
         default: return false
         }
     }
@@ -622,14 +628,16 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
     public var path: [CeremonyStep] {
         switch self {
         case .freshGeneration, .restoreFromMnemonic:
-            // The policy step sits **after** the key import on purpose. Writing a
-            // slot's algorithm attributes resets that slot, and the applet drops
-            // its touch policy with it, so a policy applied before the import does
-            // not survive it — verified on hardware and reported for `gpg
-            // keytocard` in ykman#693 (amendment 26).
+            // There is no policy step: the policy is written at the end of the key
+            // import and verified by the read-back step that follows it. Writing a
+            // slot's algorithm attributes resets that slot and the applet discards
+            // its touch policy with it, so the policy write must follow the last key
+            // write — verified on hardware and reported for `gpg keytocard` in
+            // ykman#693 (amendment 26); amendment 32 folded the two into one step so
+            // that no ordering exists to get wrong.
             return [
                 .cardInventory, .reset, .pinProvisioning, .pinRetries, .entropy, .mnemonic,
-                .derivation, .keyImport, .readBackCheck, .policy,
+                .derivation, .keyImport, .readBackCheck,
                 .pairingManifest, .pairingExport, .counterBaseline, .teardown,
             ]
         case .rePair:
@@ -663,7 +671,9 @@ public enum CeremonyError: Swift.Error, Equatable {
     case diceRollsOutOfRange
     case keysNotDerived
     case readBackMismatch(algorithm: KeyAlgorithm, local: String, card: String)
-    /// The touch/PIN policy was written and the card did not report it back.
+    /// The touch/PIN policy is not on the card: the write was refused, or the
+    /// read-back did not report what the ceremony asked for. Either way the card
+    /// must not be used as provisioned, and a second write is a blind retry.
     case policyNotApplied(detail: String)
     /// A key import failed after at least one slot had already been written, so the
     /// applet holds a half-provisioned key set. The only way forward is a reset.

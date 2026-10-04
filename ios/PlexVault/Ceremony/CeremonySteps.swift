@@ -184,27 +184,36 @@ struct PINStepView: View {
 struct RetryLimitStepView: View {
     @Bindable var viewModel: CeremonyViewModel
 
-    private var limit: Int { viewModel.pinRetryLimit }
+    private var userLimit: Int { viewModel.userPINRetryLimit }
+    private var adminLimit: Int { viewModel.adminPINRetryLimit }
 
     var body: some View {
         StepScaffold(
-            why: "How many wrong PIN entries each password tolerates before the card blocks it. The card refills a counter to this number on every correct entry; three is its factory value.",
-            caution: "This number is the brute-force budget for a 6-digit PIN, and also how many typos stand between you and a blocked card. Keep it low if the PIN is memorised.",
+            why: "How many wrong PIN entries each password tolerates before the card blocks it. The card keeps one counter per password and refills it to this number on every correct entry; three is its factory value. The two are set separately because the passwords are not used alike — the User PIN is typed on every signature, the Admin PIN almost never — and the card stores them separately anyway.",
+            caution: "Each number is that password's brute-force budget, and also how many typos stand between you and a blocked card. The User PIN is 6 digits and typed often; the Admin PIN is 8 and rarely typed at all. Keep both low.",
             actionTitle: "Set PIN retry limits",
             isBusy: viewModel.busy,
             action: { Task { await viewModel.setPINRetryLimits() } }
         ) {
             Stepper(value: Binding(
-                get: { viewModel.pinRetryLimit },
-                set: { viewModel.pinRetryLimit = $0 }
+                get: { viewModel.userPINRetryLimit },
+                set: { viewModel.userPINRetryLimit = $0 }
             ), in: CardPolicy.retryLimits) {
-                Text("PIN attempts allowed: **\(limit)**")
+                Text("User PIN attempts allowed: **\(userLimit)**")
             }
-            .accessibilityIdentifier("pin-retry-limit")
+            .accessibilityIdentifier("pin-retry-limit-user")
+
+            Stepper(value: Binding(
+                get: { viewModel.adminPINRetryLimit },
+                set: { viewModel.adminPINRetryLimit = $0 }
+            ), in: CardPolicy.retryLimits) {
+                Text("Admin PIN attempts allowed: **\(adminLimit)**")
+            }
+            .accessibilityIdentifier("pin-retry-limit-admin")
 
             KeyValueRows(rows: [
-                ("User PIN (PW1)", "\(limit) wrong entries, then blocked"),
-                ("Admin PIN (PW3)", "\(limit) wrong entries, then blocked"),
+                ("User PIN (PW1)", "\(userLimit) wrong entries, then blocked"),
+                ("Admin PIN (PW3)", "\(adminLimit) wrong entries, then blocked"),
                 ("Resetting code", "not set by this app, so nothing can unblock with it"),
             ])
 
@@ -220,32 +229,6 @@ struct RetryLimitStepView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-        }
-    }
-}
-
-// MARK: - Step 5: policy
-
-struct PolicyStepView: View {
-    @Bindable var viewModel: CeremonyViewModel
-
-    var body: some View {
-        StepScaffold(
-            why: "Writes two permanent policies to both signing-capable slots: the key requires a physical touch for every use and cannot be relaxed later, and the User PIN must be re-entered for every signature.",
-            caution: "These policies are the basis of the whole scheme's security. If the read-back check after this step reports a discrepancy, stop.",
-            actionTitle: "Apply policy",
-            isBusy: viewModel.busy,
-            action: { Task { await viewModel.applyPolicy() } }
-        ) {
-            KeyValueRows(rows: [
-                ("Signature slot touch policy (UIF 0xD6)", "Fixed — 02"),
-                ("Authentication slot touch policy (UIF 0xD8)", "Fixed — 02"),
-                ("PW1 status (0xC4[0])", "0x00 — PIN required per signature"),
-                ("Expected APDUs", "00 DA 00 D6 02 02 20, 00 DA 00 D8 02 02 20"),
-            ])
-            Text("Touch policy is written to the authentication slot too, even though that key's signatures are not counted by the hardware counter.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 }
@@ -501,8 +484,8 @@ struct ImportStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — along with each key's algorithm attributes, fingerprint and creation time. This is the only step that puts key material on the card.",
-            caution: "Do not remove the YubiKey during this step.",
+            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — along with each key's algorithm attributes, fingerprint and creation time, and then the two policies that make the keys safe to hold: a physical touch for every use on both slots, and the User PIN re-entered for every signature. This is the only step that puts key material on the card, and the policy is written last, in the same step, because writing a slot's algorithm attributes resets that slot and the applet drops that slot's touch policy with it.",
+            caution: "Do not remove the YubiKey during this step. The next step reads both keys and both policies back off the card; if it reports a discrepancy, stop and reset the card.",
             actionTitle: "Import keys into YubiKey",
             isBusy: viewModel.busy,
             action: { Task { await viewModel.importKeys() } }
@@ -523,7 +506,7 @@ struct ImportStepView: View {
                         ]
                     )
                 }
-                Text("Both keys are written in one pass; the card must accept each before the ceremony continues.")
+                Text("Both keys are written in one pass, then the touch policy and the PW1 status are written over them; the card must accept each before the ceremony continues. The next step reads all four values back.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -537,7 +520,7 @@ struct ReadBackStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Reads each public key back out of the YubiKey and compares it byte-for-byte against the key derived on this device. This is the mandatory check that the card holds the keys you think it does; a mismatch on either key voids the whole procedure.",
+            why: "Reads each public key back out of the YubiKey and compares it byte-for-byte against the key derived on this device, and reads the policy back with it: the touch policy on both signing-capable slots, the PW1 status and the PIN retry limits. This is the mandatory check that the card holds the keys — and the policy — you think it does; a key mismatch voids the whole procedure, and a policy the card does not report stops it.",
             actionTitle: viewModel.readBack.isEmpty ? "Verify read-back" : "Continue",
             isBusy: viewModel.busy,
             action: {
@@ -568,6 +551,17 @@ struct ReadBackStepView: View {
                         .font(.footnote)
                         .foregroundStyle(.green)
                 }
+
+                // The policy half of the same read. Shown as the card reports it, not
+                // as the app asked for it: this is the check that the touch policy
+                // survived the key import (amendment 26).
+                KeySection(
+                    title: "Policy read back from the YubiKey",
+                    subtitle: "The card's own answer, after the last write to those slots",
+                    rows: viewModel.policyConfirmationRows
+                )
+                Text("A card the app cannot read this policy back from is not a card that may be used. If any value above is wrong, do not sign with it: reset the OpenPGP applet and start again.")
+                    .font(.caption).foregroundStyle(.secondary)
             } else {
                 Text("No PIN is required for this read. The card returns public keys, which are public data.")
                     .font(.caption).foregroundStyle(.secondary)
