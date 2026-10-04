@@ -1142,8 +1142,9 @@ public final class ProvisioningCeremony {
     /// applet holds a key, not a BIP32 node (design.md §4.3) — so without this
     /// step the only way to show the codes again is to re-run the whole ceremony,
     /// which destroys the keys. The manifest stores the extended public keys a
-    /// wallet needs, and storing them on the card keeps the app stateless: the
-    /// phone persists nothing, and a re-pair on a fresh install works.
+    /// wallet needs, and storing them on the card keeps the app stateless: the only
+    /// value the phone stores is the card connection (amendment 31), so a re-pair on a
+    /// fresh install works.
     ///
     /// Deliberately *after* the read-back check: the card must not be told to
     /// advertise a key until that key has been verified to be in it.

@@ -81,9 +81,17 @@ extension XCTestCase {
     }
 
     /// Taps the pinned primary action, which must be reachable without scrolling.
+    ///
+    /// The identifier is a parameter because the same shape is used by more than one
+    /// screen (the ceremony's setup, the device screen); what they share is the claim
+    /// being made — an action pinned to the bottom of the screen is on screen and
+    /// unobstructed, so it must be tappable without scrolling. `tapWhenVisible` cannot
+    /// check that: its `visibleBand` stops short of the bottom precisely because a
+    /// pinned action lives there.
     func tapPinnedPrimaryAction(_ app: XCUIApplication,
+                                identifier: String = "begin-ceremony",
                                 file: StaticString = #filePath, line: UInt = #line) {
-        let begin = app.buttons["begin-ceremony"]
+        let begin = app.buttons[identifier]
         XCTAssertTrue(begin.waitForExistence(timeout: 15),
                       "the primary action never appeared", file: file, line: line)
         XCTAssertTrue(begin.isHittable,
@@ -137,6 +145,34 @@ extension XCTestCase {
 }
 
 extension XCTestCase {
+    /// Launches the app, with the card connection already answered.
+    ///
+    /// The app asks how the YubiKey is connected on first launch and stores the answer,
+    /// so a test that is about something else seeds it rather than tapping through the
+    /// screen — and a test that *is* about that screen starts from `firstRun: true`,
+    /// which clears the stored value so the gate really appears. Both hooks are DEBUG-only
+    /// (`DeviceChoiceStore.applyLaunchArguments`).
+    ///
+    /// - Parameters:
+    ///   - deviceChoice: raw value of the connection to store before the first screen
+    ///     (`"nfc"`, `"usbC"`, `"simulated"`).
+    ///   - firstRun: start with no stored choice, which is what puts the device screen in
+    ///     front of the app.
+    ///   - arguments: further launch arguments, e.g. `-deterministic-entropy`.
+    func launchApp(
+        deviceChoice: String = "nfc",
+        firstRun: Bool = false,
+        arguments: [String] = []
+    ) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = arguments
+        app.launchArguments += firstRun
+            ? ["-reset-device-choice"]
+            : ["-device-choice", deviceChoice]
+        app.launch()
+        return app
+    }
+
     /// Opens the provisioning flow from the app's home screen.
     ///
     /// The app has two routes — provisioning and signing — and the provisioning
@@ -163,8 +199,11 @@ extension XCTestCase {
             )
             tapWhenVisible(entry, in: app, file: file, line: line)
         }
+        // The setup screen's own pinned action: the transport rows that used to
+        // identify this screen now live on the device screen, which is a separate
+        // route and must not be mistaken for this one.
         XCTAssertTrue(
-            app.buttons["choice-NFC"].waitForExistence(timeout: 15),
+            app.buttons["begin-ceremony"].waitForExistence(timeout: 15),
             "the provisioning setup screen did not appear:\n\(app.debugDescription)",
             file: file, line: line
         )
@@ -238,7 +277,8 @@ extension XCTestCase {
         line: UInt = #line
     ) {
         openProvisioningFlow(app, file: file, line: line)
-        tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app, file: file, line: line)
+        // The connection was seeded at launch: this walk is about the ceremony, and the
+        // simulated card is what a simulator can reach (`launchApp(deviceChoice:)`).
         acknowledgePosture(in: app, file: file, line: line)
         tapPinnedPrimaryAction(app, file: file, line: line)
 

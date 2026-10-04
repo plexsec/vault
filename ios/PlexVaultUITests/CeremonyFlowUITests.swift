@@ -21,11 +21,12 @@ final class CeremonyFlowUITests: XCTestCase {
     private static let userPIN = "246810"
     private static let adminPIN = "87654321"
 
-    private func launchApp() -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments = ["-deterministic-entropy", Self.zeroEntropyHex]
-        app.launch()
-        // The app opens on its home screen now; the ceremony screens are behind it.
+    private func launchForCeremony() -> XCUIApplication {
+        let app = launchApp(
+            deviceChoice: "simulated",
+            arguments: ["-deterministic-entropy", Self.zeroEntropyHex]
+        )
+        // The app opens on its home screen; the ceremony screens are behind it.
         openProvisioningFlow(app)
         return app
     }
@@ -37,7 +38,7 @@ final class CeremonyFlowUITests: XCTestCase {
     /// The regression test for the reported bug: after the entropy step, the
     /// mnemonic step must show 24 words.
     func testMnemonicStepShowsTwentyFourWords() throws {
-        let app = launchApp()
+        let app = launchForCeremony()
         advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
 
         // Nothing is shown until the operator asks for it.
@@ -66,7 +67,7 @@ final class CeremonyFlowUITests: XCTestCase {
     /// Completing the back-fill must actually advance the ceremony, which is what
     /// proves the mnemonic the user sees is the one the ceremony derived.
     func testBackfillAdvancesToDerivation() throws {
-        let app = launchApp()
+        let app = launchForCeremony()
         advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         try revealAndConfirmMnemonic(app, entropy: [UInt8](repeating: 0, count: 32))
 

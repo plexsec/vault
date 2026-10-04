@@ -40,8 +40,24 @@ struct SigningRootView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(viewModel.phase == .finished ? "Done" : "Cancel") {
-                        if viewModel.phase == .finished { onExit() } else { viewModel.abort() }
+                    if viewModel.phase == .setup {
+                        // Leaving the flow, exactly as the provisioning flow's Cancel
+                        // does. This used to call `abort()` in every phase, and on
+                        // this screen that only reset state which was already empty:
+                        // the button did nothing and the screen had no way out.
+                        Button("Cancel") {
+                            viewModel.abort()
+                            onExit()
+                        }
+                        .accessibilityIdentifier("cancel-setup")
+                    } else if viewModel.phase == .finished {
+                        Button("Done") { onExit() }
+                    } else {
+                        // A session that is already talking to the card is abandoned
+                        // rather than "left": the request is dropped, and a touch that
+                        // completed cannot be shown afterwards.
+                        Button("Abort", role: .destructive) { viewModel.abort() }
+                            .accessibilityIdentifier("abort-signing")
                     }
                 }
                 if viewModel.phase == .running {
@@ -91,6 +107,10 @@ struct SigningRootView: View {
 
     // MARK: Setup
 
+    /// No connection picker here, and no connection summary either: it is one setting for
+    /// the phone, chosen on the device screen (`DeviceChoiceView`) and changed from the
+    /// home screen. A picker on this screen was a second source of truth for the same
+    /// value, and the one place it could be switched between the read and the signature.
     private var setupView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -105,18 +125,6 @@ struct SigningRootView: View {
 
                 if let message = viewModel.errorMessage {
                     SigningErrorBanner(message: message)
-                }
-
-                Text("Card connection").font(.headline)
-                ForEach(CardTransportChoice.allCases) { choice in
-                    ChoiceRow(
-                        title: choice.title,
-                        detail: choice.detail,
-                        isSelected: viewModel.transportChoice == choice
-                    ) {
-                        viewModel.transportChoice = choice
-                    }
-                    .accessibilityIdentifier("sign-choice-\(choice.title)")
                 }
 
                 Button {

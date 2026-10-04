@@ -1283,3 +1283,55 @@ ceremony's reaction to a reset that fails are all tested; VaultKit 255 (unchange
 PIN works, one on a card whose Admin PIN is blocked, a reset interrupted between the burn and the
 terminate and finished by a second tap, and the factory PINs and empty slots afterwards.
 
+## 31. v0.2: the card connection is chosen once, and it is the one thing the app remembers
+
+**Sections:** §4.2 (step 1), §5.2 (rule 7), §9.5. Changes check 3 of `tools/audit-release.sh` and the
+persistence row of `docs/v1-threat-notes.md`.
+
+**What changed.** NFC / USB-C / Simulated used to be offered *inside* each flow — a "Transport"
+section on the provisioning setup screen, a "Card connection" section on the signing one — with the
+value held by each view model. Both pickers are gone, and nothing inside either flow echoes the
+choice: the connection is asked once, on a device screen that now stands in front of the app on
+first launch, stored, summarised at the bottom of the home screen, and changed only from there.
+Picking a row stores it immediately, so there is no save step that can disagree with the row.
+
+**Why the pickers had to go.** The connection is a property of the phone and its reader, not of a
+ceremony: it does not change between provisioning and signing, or between two signatures. Two
+pickers were therefore two sources of truth for one value — and the one place that value could be
+changed *while a ceremony was running*, which is how a step ends up talking to a card the operator
+is not holding. The value now has one owner, `DeviceChoiceStore`; both view models read it
+(`transportChoice` is derived, not stored) and neither flow can write it.
+
+**The persistence exception, stated rather than slipped in.** This is the first thing the app
+stores. The audit used to fail the build on *any* persistence API in the app or the ceremony layer,
+and the threat notes claimed the app writes nothing anywhere. Both are now narrowly different, and
+the audit was tightened rather than loosened:
+
+* the grep still fails on every persistence API except one named file, `Support/DeviceChoiceStore.swift`;
+* that file is positively asserted to exist, to name the expected key, to touch no other key, and to
+  reach for neither the keychain nor the filesystem — so deleting it turns the check red instead of
+  green;
+* the UI-test hooks (`-device-choice`, `-reset-device-choice`) exist only in DEBUG, in the same
+  spirit as `-deterministic-entropy`.
+
+**What is stored, and why it cannot weaken anything.** One key, one of three strings: the connection's
+raw value. That selects a *channel*, not a policy — both real values reach the same card through the
+same gates, and check 1 of the audit asserts a release build has no simulated transport to be pointed
+at. A stored `"simulated"` (left by a debug build) is therefore not a value a release build
+recognises: it is treated as no choice, and the app asks again rather than silently using a default.
+A wrong or tampered value sends the operator to the wrong reader, which shows up at once as a card
+that cannot be found. It is not secret, it is not key material, and deleting it costs one tap.
+
+**What it deliberately still does not remember.** Not the card, not the wallet, not the pairing, not
+a chain id, and nothing about any ceremony. `-deterministic-entropy`, the simulated card and every
+other test hook remain DEBUG-only, and the app is still stateless in the sense §4.3 and §5.2 rule 8
+mean: a fresh install can re-pair from the card alone.
+
+**Verified.** `DeviceChoiceUITests` (3 tests): a first run asks and cannot be got past without an
+answer, the choice survives a relaunch and a change *replaces* it, and a choice made on that screen
+is the one the ceremony then reads (behavioural proof, since no screen inside the flow echoes it).
+Every other UI test now seeds the connection at launch (`launchApp(deviceChoice:)`) instead of
+tapping a picker, so the count went 9 → 13 and the walk helpers no longer tap a transport at all.
+Packages unchanged (VaultKit 255, YubikeyKit 88). Release build and `tools/audit-release.sh` pass
+with the narrowed check.
+

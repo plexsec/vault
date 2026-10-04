@@ -144,10 +144,11 @@ public final class SigningCeremony {
 
     private let transport: SignerCard
     private let clock: () -> Date
-    /// Chain ids the operator has confirmed **in this session**. Nothing is
-    /// persisted — the app stores nothing (audit) — so this is stricter than
-    /// design.md §5.2 rule 7's remembered list: every chain id is confirmed
-    /// afresh, and an unconfirmed one is never signed for.
+    /// Chain ids the operator has confirmed **in this session**. Nothing about a
+    /// request is persisted — the app's only stored value is the card connection
+    /// (amendment 31) — so this is stricter than design.md §5.2 rule 7's remembered
+    /// list: every chain id is confirmed afresh, and an unconfirmed one is never
+    /// signed for.
     private var confirmedChainIDs: Set<String> = []
     /// The digest that was actually sent to the card, so the signature can be
     /// checked against it rather than against whatever is on screen later.

@@ -167,7 +167,7 @@ option is documented rather than implemented.
 | Malicious card (counterfeit) | Read-back mismatch; report records serial/applet and the operator writes down the fingerprint | **Low** |
 | Fake card accepted by the app | Release build contains no simulation, asserted mechanically by `tools/audit-release.sh` on every verification run | **Low** |
 | Mnemonic disclosed by screen capture | Mnemonic hidden unless pressed and hidden entirely while `UIScreen.isCaptured`; no pasteboard use; camera warning | **Low** |
-| Mnemonic disclosed by the app writing it somewhere | No persistence API is referenced in the app or the ceremony layer, asserted by the release audit; secrets live in `SensitiveBytes` and are wiped on every exit path | **Low** |
+| Mnemonic disclosed by the app writing it somewhere | The app's only stored value is one non-secret preference, the card connection (`DeviceChoiceStore`, amendment 31); the release audit fails on any other persistence API and on a keychain or file access in that one file; secrets live in `SensitiveBytes` and are wiped on every exit path | **Low** |
 | App update introduces a malicious card simulation | Simulation is DEBUG-only and compiled out of Release; the exclusion is a build setting, and the audit re-checks the built product | **Low** |
 | User error: wrong PIN entered three times | PIN rules enforced before touching the card; the retry-limit and PIN screens state the consequences; the reset step takes no PIN at all (it blocks both PINs on purpose), so there is no PIN to mistype there | **Medium** — user error is not removable |
 | Protocol assumption wrong (import template, `0xC4`, `0xCE`) | Fails visibly: rejection status words or a read-back mismatch; all four documented in `m0-hardware-verification.md` | **Low** |
@@ -197,6 +197,27 @@ sections are collapsed so the controls fit on the first screen.
 this in, including an assertion that the mode rows are visible and unobscured on
 launch. Running the audit's sibling check by hand would not have caught any of
 it: the defect was only visible by tapping the actual screen.
+
+### A later one, found by hand: the signing flow's Cancel did nothing
+
+The signing flow's toolbar button called `SigningViewModel.abort()` in every
+phase. On the setup screen `abort()` only reset state that was already empty, so
+"Cancel" had no visible effect and the screen was a one-way door — the operator
+had to kill the app to get back to the home screen. The provisioning flow had
+already been fixed the same way (Cancel exits; a session that is already running
+gets a destructive "Abort" instead), and the signing flow now matches it, with
+`cancel-setup` carrying the same identifier in both flows, and a UI test
+asserting that cancelling the signing setup returns home.
+
+Abandoning a session also no longer lets a result from it land in the flow that
+was left. A card operation can be in flight when the operator leaves — reading
+the card waits for a tap on the reader, and `PSO:CDS` waits for a touch — and the
+task that owned it used to carry on writing: a cancelled read started the camera
+again on the setup screen, and a cancelled signature moved the flow to the report
+screen offering a QR code for the request that was abandoned. Each entry point now
+checks the session it started in after its awaits, which is §5.2 rule 8 (a
+ceremony inherits nothing) applied to work that is still running rather than to
+the state left behind.
 
 ## What would raise confidence most, in order
 

@@ -13,13 +13,18 @@ import XCTest
 ///    nothing and the screen looked broken.
 /// 2. The primary action must be reachable without scrolling and must say why it
 ///    is disabled, instead of appearing to ignore taps.
+/// 3. A Cancel button must leave the flow it is on. The signing flow's toolbar
+///    button called the view model's `abort()` in every phase, which on the setup
+///    screen reset state that was already empty: the button did nothing, and the
+///    screen was a one-way door.
 ///
 /// Scrolling to a control is done with `tapWhenVisible`, from `UITestSupport`.
 final class SetupFlowUITests: XCTestCase {
 
     private func launch() -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launch()
+        // The connection is seeded: it is chosen once on the device screen, and these
+        // tests are about the provisioning setup screen behind it.
+        let app = launchApp()
         openProvisioningFlow(app)
         return app
     }
@@ -27,8 +32,7 @@ final class SetupFlowUITests: XCTestCase {
     /// The three mode entries live on the home screen, collapsed by default, and
     /// expand when the section is tapped.
     func testWalletKeyManagementSectionIsCollapsedByDefaultAndExpands() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp()
 
         let section = app.buttons["wallet-key-management"]
         XCTAssertTrue(section.waitForExistence(timeout: 10), app.debugDescription)
@@ -48,21 +52,22 @@ final class SetupFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["wallet-mode-Pair a wallet"].exists)
     }
 
-    func testTransportRowIsSelectableAndChainPickerIsGone() {
+    /// Neither flow offers a connection picker any more, and neither repeats the choice as
+    /// read-only prose: it is one setting for the phone, chosen on the device screen and
+    /// shown on the home screen. The chain picker is gone for a different reason — one
+    /// ceremony always writes both algorithms.
+    func testTheSetupScreenHasNoConnectionOrChainPicker() {
         let app = launch()
 
-        let usbC = app.buttons["choice-USB-C"]
-        XCTAssertTrue(usbC.exists, app.debugDescription)
-        XCTAssertFalse(usbC.isSelected)
-        tapWhenVisible(usbC, in: app)
-        XCTAssertTrue(usbC.isSelected)
-
-        // There is no chain picker any more: one ceremony always writes both
-        // algorithms. Asserted by identifier count rather than by a negative
-        // `.exists` lookup, which XCTest reports as a snapshot error even when the
-        // element is legitimately absent.
+        // Asserted by identifier count rather than by a negative `.exists` lookup, which
+        // XCTest reports as a snapshot error even when the element is legitimately absent.
+        XCTAssertEqual(app.buttons.matching(identifier: "device-choice-NFC").count, 0,
+                       "the connection is chosen once, on the device screen")
+        XCTAssertEqual(app.buttons.matching(identifier: "device-choice-USB-C").count, 0)
         XCTAssertEqual(app.buttons.matching(identifier: "choice-Bitcoin (native segwit)").count, 0)
         XCTAssertEqual(app.buttons.matching(identifier: "choice-Ethereum (EVM)").count, 0)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "Card connection")).count, 0,
+                       "the setup screen does not summarise the connection either")
     }
 
     /// The gate: the ceremony must not start until the posture checks are ticked,
@@ -86,6 +91,31 @@ final class SetupFlowUITests: XCTestCase {
         XCTAssertTrue(
             app.buttons["Read YubiKey"].waitForExistence(timeout: 10),
             "Begin ceremony must advance to the card-inventory step:\n\(app.debugDescription)"
+        )
+    }
+
+    /// Cancel on the signing setup screen leaves the flow.
+    ///
+    /// It used to do nothing at all: the toolbar button called `abort()` in every
+    /// phase, and on this screen that only reset state which was already empty, so
+    /// the only way out was to kill the app. The provisioning flow's Cancel already
+    /// exits — the two now behave the same, down to the identifier.
+    func testSigningSetupCancelReturnsToTheHomeScreen() {
+        let app = XCUIApplication()
+        app.launch()
+
+        tapWhenVisible(app.buttons["route-signing"], in: app)
+        let cancel = app.buttons["cancel-setup"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10), app.debugDescription)
+        // Tapped directly rather than with `tapWhenVisible`: the helper scrolls until
+        // an element lands in `visibleBand`, which deliberately starts below the
+        // navigation bar, so a toolbar button can never be brought into it.
+        XCTAssertTrue(cancel.isHittable, "the Cancel button must be tappable")
+        cancel.tap()
+
+        XCTAssertTrue(
+            app.buttons["route-signing"].waitForExistence(timeout: 10),
+            "cancelling the signing setup must return to the home screen:\(app.debugDescription)"
         )
     }
 

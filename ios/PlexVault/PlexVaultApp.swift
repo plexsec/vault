@@ -4,13 +4,27 @@ import VaultKit
 
 @main
 struct PlexVaultApp: App {
-    @State private var viewModel = CeremonyViewModel()
-    @State private var signingViewModel = SigningViewModel()
+    /// The one thing the app remembers between launches, created here so both flows and
+    /// the home screen read the same value (`DeviceChoiceStore`).
+    @State private var device: DeviceChoiceStore
+    @State private var viewModel: CeremonyViewModel
+    @State private var signingViewModel: SigningViewModel
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        let device = DeviceChoiceStore()
+        _device = State(initialValue: device)
+        _viewModel = State(initialValue: CeremonyViewModel(device: device))
+        _signingViewModel = State(initialValue: SigningViewModel(device: device))
+    }
 
     var body: some Scene {
         WindowGroup {
-            HomeView(ceremonyViewModel: viewModel, signingViewModel: signingViewModel)
+            HomeView(
+                ceremonyViewModel: viewModel,
+                signingViewModel: signingViewModel,
+                deviceChoice: device
+            )
                 .onChange(of: scenePhase) { _, phase in
                     viewModel.screenIsCaptured = Self.activeScreen?.isCaptured ?? false
                     if phase == .active {

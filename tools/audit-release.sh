@@ -11,7 +11,9 @@
 #   2. No network API is linked or referenced. The app must be offline by
 #      construction, not by policy.
 #   3. No secret material is persisted: no writes of mnemonic/PIN/key data and no
-#      use of UserDefaults/Keychain for ceremony secrets.
+#      use of UserDefaults/Keychain for ceremony secrets. One non-secret preference —
+#      the card connection the operator chose once — is permitted, and the check names
+#      the single file and key rather than ignoring persistence in general.
 #   4. The NSCameraUsageDescription / NFC keys are present, and NFC declares the
 #      OpenPGP AID (without it iOS never surfaces the card).
 #
@@ -100,16 +102,44 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "[3] No secret persistence"
+# One persistence site is permitted, and it is named here rather than excluded by
+# silence: `DeviceChoiceStore` holds which reader the YubiKey is on. That value is not
+# a secret — it selects a channel, not a policy, and a release build has no simulated
+# transport for it to be pointed at (check 1) — and remembering it is the whole point
+# of asking once. Everything else must still be untouched: no key material, no PINs,
+# no pairing material, no ceremony state.
+DEVICE_STORE="$REPO_ROOT/ios/PlexVault/Support/DeviceChoiceStore.swift"
 persist_hits="$(grep -rnE 'UserDefaults|NSUbiquitousKeyValueStore|FileManager\.default\.createFile|SecItemAdd|\.write\(to:' \
       "$REPO_ROOT/ios/PlexVault" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Ceremony" \
-      "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Signing" 2>/dev/null || true)"
+      "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Signing" 2>/dev/null \
+      | grep -v "^${DEVICE_STORE}:" || true)"
 persist_hits="$(grep -v '^\s*//' <<<"$persist_hits" || true)"
 if [[ -n "$persist_hits" ]]; then
-  note_fail "persistence API referenced in the app or ceremony layer:"
+  note_fail "persistence API referenced outside the device-choice store:"
   sed 's/^/        /' <<<"$persist_hits"
 else
-  note_ok "ceremony and app do not persist anything"
+  note_ok "the only persistence site is the device-choice store"
+fi
+# The exception is one key in one file, so assert exactly that: the store exists, it
+# names the key the device screen reads, it stores nothing else, and it does not reach
+# for a secret-bearing API (the keychain) or the filesystem. Without these, deleting the
+# store would turn the check above into a pass for the wrong reason.
+if [[ ! -f "$DEVICE_STORE" ]]; then
+  note_fail "the permitted persistence site is missing; the check above proved nothing"
+else
+  if ! grep -q 'com\.plexsec\.vault\.device-choice' "$DEVICE_STORE"; then
+    note_fail "the device-choice store does not name the expected key"
+  fi
+  store_keys="$(grep -cE '\.set\(|\.string\(forKey:|\.removeObject\(forKey:' "$DEVICE_STORE" || true)"
+  if [[ "$store_keys" -gt 3 ]]; then
+    note_fail "the device-choice store touches more than one key ($store_keys accesses)"
+  fi
+  if grep -qE 'SecItem(Add|Copy|Update)|FileManager|NSKeyedArchiver|\.write\(to:' "$DEVICE_STORE"; then
+    note_fail "the device-choice store reaches for something other than UserDefaults"
+  else
+    note_ok "device choice: one UserDefaults key, no keychain, no files"
+  fi
 fi
 # The only persisted item permitted is the redacted report, which the operator
 # exports deliberately. Assert the report type holds no secret-bearing field.

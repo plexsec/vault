@@ -30,7 +30,11 @@ public final class SigningViewModel {
         case signature
     }
 
-    public var transportChoice: CardTransportChoice = .nfc
+    /// The connection the signing flow reaches the card over, read from the store the
+    /// device screen writes. See `CeremonyViewModel.transportChoice`.
+    public var transportChoice: CardTransportChoice { device.choice }
+
+    private let device: DeviceChoiceStore
     public private(set) var phase: Phase = .setup
     public private(set) var screen: Screen = .readCard
     public private(set) var busy = false
@@ -58,7 +62,20 @@ public final class SigningViewModel {
     private var ceremony: SigningCeremony?
     private var scannedUR: UR?
 
-    public init() {
+    /// Bumped by every `abort()`.
+    ///
+    /// A card operation can be in flight when the operator leaves — reading the card
+    /// takes a tap on the reader, and `PSO:CDS` waits for a touch — and the task that
+    /// owns it would otherwise carry on writing into the flow the operator has left: a
+    /// cancelled read started the camera again on the setup screen, and a cancelled
+    /// signature moved the flow to a report screen offering the QR code for a request
+    /// that was abandoned. Every entry point captures this value and checks it after
+    /// its awaits; a mismatch means the session it belongs to is gone, so nothing it
+    /// produced may be written, reported or retried.
+    private var session = 0
+
+    init(device: DeviceChoiceStore) {
+        self.device = device
         // The scanner reports a decoded request; this flow is what decides to give it to the
         // ceremony. Wiring it here means the handoff cannot be forgotten by a view: the
         // scanner's callback is set for the lifetime of the model.
@@ -76,7 +93,8 @@ public final class SigningViewModel {
     public var pinnedPath: String { card?.pinnedPath.description ?? "—" }
 
     /// True when the request came from a chain the operator has confirmed in this
-    /// session. Nothing is persisted, so this is asked again next time.
+    /// session. Nothing about the request is persisted — the app's only stored value is
+    /// the card connection (amendment 31) — so this is asked again next time.
     public var needsChainConfirmation: Bool { chainConfirmationNeeded != nil }
 
     /// The chain the operator is being asked to confirm, named when this app knows it.
@@ -91,6 +109,9 @@ public final class SigningViewModel {
     // MARK: Lifecycle
 
     public func abort() {
+        // Everything already in flight belongs to the session being abandoned; the
+        // counter is what tells those tasks not to write into the flow they left.
+        session &+= 1
         // `reset` rather than `stop`: leaving the flow must not carry the previous attempt's
         // decoded request (or its camera state) into the next one. See design.md §5.2 rule 8
         // — a ceremony inherits nothing from the previous one — which applies to the scanner
@@ -133,8 +154,10 @@ public final class SigningViewModel {
 
     /// Reads the card's manifest and key. Read-only: no PIN, no writes.
     public func readCard() async {
+        let session = self.session
         await run { ceremony in
             try await ceremony.readCard()
+            guard session == self.session else { return }
             self.card = ceremony.card
             self.counterBefore = ceremony.report.counterBeforeSigning
             self.screen = .scan
@@ -146,6 +169,7 @@ public final class SigningViewModel {
 
     /// The only way a request reaches the ceremony, from the camera or from a debug sample.
     public func accept(_ ur: UR) async {
+        let session = self.session
         await run { ceremony in
             do {
                 try ceremony.accept(requestUR: ur)
@@ -156,10 +180,15 @@ public final class SigningViewModel {
                 // camera at the new code. Without this the scanner keeps the refused
                 // request, refuses to start again (`.received` is not a startable state) and
                 // the only way forward is Cancel, which no message says.
+                //
+                // Unless the operator has already left, in which case the camera must
+                // stay off: `abort()` has stopped it and put the flow back on setup.
+                guard session == self.session else { throw error }
                 self.scan.reset()
                 await self.scan.start()
                 throw error
             }
+            guard session == self.session else { return }
             self.scannedUR = ur
             self.summary = ceremony.summary
             self.digestHex = ceremony.transaction?.signingDigest.hexString ?? ""
@@ -210,8 +239,14 @@ public final class SigningViewModel {
             return
         }
         screen = .signing
+        let session = self.session
         await run { _ in
             let response = try await ceremony.sign(userPIN: pin)
+            // The touch can complete after the operator has left. The card signed, and
+            // this flow no longer owns the result, so it is not shown: the request was
+            // abandoned, and §5.2 rule 1 makes restarting it the wallet's business, not
+            // a retry this app performs.
+            guard session == self.session else { return }
             self.userPIN = ""
             try ceremony.verifySignature(cardResponse: response)
             self.signatureUR = try ceremony.exportSignature()
@@ -219,7 +254,7 @@ public final class SigningViewModel {
             self.report = ceremony.finish()
             self.phase = .finished
         }
-        if phase != .finished {
+        if session == self.session, phase != .finished {
             // Failed: back to the PIN screen, or to the report if the signature
             // could not be produced at all. The message says what to do next.
             self.screen = .pin
@@ -243,12 +278,14 @@ public final class SigningViewModel {
             phase = .running
         }
         guard let ceremony else { return }
+        let session = self.session
         busy = true
         errorMessage = nil
         defer { busy = false }
         do {
             try await body(ceremony)
         } catch let error as SigningError {
+            guard session == self.session else { return }
             errorMessage = error.userFacingDescription
             if case .signatureAlreadyAttempted = error {
                 // Nothing further can be done with this request: it has to be
@@ -257,12 +294,16 @@ public final class SigningViewModel {
                 self.phase = .finished
             }
         } catch let error as EthSignRequestError {
+            guard session == self.session else { return }
             errorMessage = error.userFacingDescription
         } catch let error as EVMTransactionError {
+            guard session == self.session else { return }
             errorMessage = Self.describe(error)
         } catch let error as CardError {
+            guard session == self.session else { return }
             errorMessage = error.userFacingDescription
         } catch {
+            guard session == self.session else { return }
             errorMessage = "\(error)"
         }
     }

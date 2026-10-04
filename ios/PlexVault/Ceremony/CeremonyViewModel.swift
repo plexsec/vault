@@ -39,8 +39,20 @@ public final class CeremonyViewModel {
 
     // MARK: Selection state
 
-    public var transportChoice: TransportChoice = .nfc
+    /// The connection the ceremony reaches the card over, read from the store the device
+    /// screen writes.
+    ///
+    /// One source of truth: the choice belongs to the phone, so a copy here could
+    /// disagree with what the operator just picked — and a transport swapped mid-ceremony
+    /// is a ceremony talking to a card nobody is holding.
+    public var transportChoice: TransportChoice { device.choice }
     public var mode: CeremonyMode = .freshGeneration
+
+    private let device: DeviceChoiceStore
+
+    init(device: DeviceChoiceStore) {
+        self.device = device
+    }
 
     // MARK: Ceremony state
 
@@ -106,8 +118,6 @@ public final class CeremonyViewModel {
     }
 
     private var ceremony: ProvisioningCeremony?
-
-    public init() {}
 
     // MARK: Derived view state
 

@@ -31,9 +31,12 @@ final class SigningFlowUITests: XCTestCase {
 
     func testSigningAProvisionedCardProducesAScannableSignature() throws {
         let expectedAddress = try Self.expectedAddress()
-        let app = XCUIApplication()
-        app.launchArguments += ["-deterministic-entropy", String(repeating: "00", count: 32)]
-        app.launch()
+        // The simulated card, seeded as the connection: a simulator cannot do NFC, and the
+        // choice is made once on the device screen rather than per flow.
+        let app = launchApp(
+            deviceChoice: "simulated",
+            arguments: ["-deterministic-entropy", String(repeating: "00", count: 32)]
+        )
 
         // 1. Provision the simulated card through the real ceremony, so the card
         //    carries a key and a pairing manifest.
@@ -49,7 +52,6 @@ final class SigningFlowUITests: XCTestCase {
         tapWhenVisible(signingRoute, in: app)
 
         // 3. Read the card (read-only; no PIN).
-        tapWhenVisible(app.buttons["sign-choice-Simulated (debug)"], in: app)
         tapWhenVisible(app.buttons["read-card"], in: app)
 
         // The address on screen is derived from the card's own key, and must be the

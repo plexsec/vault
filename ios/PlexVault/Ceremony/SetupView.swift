@@ -2,15 +2,16 @@ import SwiftUI
 import VaultKit
 import YubikeyKit
 
-/// Step 1 — choose transport, confirm device posture, review the rules.
+/// Step 1 — confirm device posture and review the rules.
 ///
 /// Two deliberate UI decisions, both learned from driving the real screen:
 ///
-/// * Selection is made with explicit, tappable rows rather than a `Picker`. An
-///   `.inline` picker outside a `Form`/`List` renders as a **wheel** on iOS 26 —
-///   a 216pt spinning control whose selected value is already the default, so
-///   tapping it appears to do nothing. Rows are unambiguous and, unlike a wheel,
-///   are real buttons for VoiceOver and for UI tests.
+/// * The card connection is not on this screen at all, in any form. It is one setting
+///   for the phone, chosen once on the device screen (`DeviceChoiceView`), summarised on
+///   the home screen, and changed only there. A picker here was a second place for the
+///   same value to be set — and the one place it could be changed *halfway through* a
+///   ceremony, which is how a step ends up talking to a card the operator is not holding.
+///   Repeating it here as read-only prose only spread it further.
 /// * The primary action sits in a pinned bottom bar, so it is visible without
 ///   scrolling, and it states *why* it is disabled instead of silently ignoring
 ///   taps.
@@ -41,18 +42,6 @@ struct SetupView: View {
                         .padding(.top, 6)
                     }
                     .font(.callout.weight(.medium))
-                }
-
-                section("Transport") {
-                    ForEach(CeremonyViewModel.TransportChoice.allCases) { choice in
-                        ChoiceRow(
-                            title: choice.title,
-                            detail: choice.detail,
-                            isSelected: viewModel.transportChoice == choice
-                        ) {
-                            viewModel.transportChoice = choice
-                        }
-                    }
                 }
 
                 section("Keys") {
@@ -186,44 +175,3 @@ struct SetupView: View {
     }
 }
 
-/// A selectable row.
-///
-/// Exposed to accessibility (and to UI tests) as a button labelled with just its
-/// title, plus the `selected` trait — rather than a button whose label is the
-/// title concatenated with its description, which reads badly in VoiceOver and
-/// makes the element impossible to address by name.
-struct ChoiceRow: View {
-    let title: String
-    let detail: String?
-    let isSelected: Bool
-    let select: () -> Void
-
-    var body: some View {
-        Button(action: select) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.callout.weight(.medium))
-                    if let detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        // Label override + selected trait, applied directly to the button.
-        // Wrapping the button in `.accessibilityElement(children: .ignore)`
-        // instead replaces the element entirely, so it stops being a button and
-        // can no longer be addressed as one.
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .accessibilityIdentifier("choice-\(title)")
-    }
-}

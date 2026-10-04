@@ -22,6 +22,13 @@ for a chain the app does not know rather than assuming ETH. Nothing is
 written to the card, and the mnemonic is never needed. Bitcoin PSBTs, EIP-712 and
 `personal_sign` are refused with an explanation (§3.2, §10 item 9).
 
+**One setting is remembered.** The app asks how the YubiKey is connected (NFC, USB-C, or the
+Debug-only simulated card) on first launch, stores that answer, and shows it at the bottom of the
+home screen with a way to change it. It is the only thing the app persists between launches: the
+connection is a property of the phone's reader rather than of a ceremony, so it is asked once and
+not re-litigated on every screen (§5.2 rule 7, amendment 31, and check 3 of
+`tools/audit-release.sh`).
+
 ## What is here
 
 ```
@@ -37,7 +44,8 @@ ios/
 tools/
   derive/                     independent Python oracle for the differential-testing fixtures
   verify.sh                   every off-hardware check in one command
-  audit-release.sh            mechanical release checks (no simulated card, no networking, no persistence)
+  audit-release.sh            mechanical release checks (no simulated card, no networking, no persistence except the
+                              one named non-secret preference)
   hash-app.sh                 unsigned reproducible-build hashing + toolchain record
   generate-bip39-wordlist.sh  regenerate the pinned wordlist (asserts its SHA-256)
 docs/
@@ -65,7 +73,7 @@ cd ios/Packages/VaultKit  && swift test      # 255 tests: crypto, BIP39/BIP32 in
 cd ios/Packages/YubikeyKit && swift test     # 88 tests: APDU codec, both OpenPGP slots, private-use data objects, PSO:CDS,
                                              #            transports, NFC session policy, end-to-end signing, and the
                                              #            applet behaviours that broke provisioning (amendments 26, 30)
-cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 9 UI tests (~4 min each for the two that walk a whole flow)
+cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 13 UI tests (~3 min each for the three that walk a whole flow)
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest
 

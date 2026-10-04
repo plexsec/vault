@@ -69,7 +69,8 @@ targets:
         # The signing flow reads the wallet's request from an animated QR code, so
         # the camera is an input channel. It is used for nothing else: no frames
         # are stored, and nothing leaves the device (tools/audit-release.sh checks
-        # that the app has no networking and persists nothing).
+        # that the app has no networking, and that its one persisted value — the
+        # card connection — is the non-secret preference it is allowed).
         NSCameraUsageDescription: >-
           PlexVault uses the camera to read the unsigned transaction your wallet
           shows as a QR code. Nothing is recorded and nothing leaves this device.

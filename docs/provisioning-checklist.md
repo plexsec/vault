@@ -11,6 +11,9 @@ look for a way around it — the ordering gates are the security property.
 ## Part 1 — Prepare
 
 - [ ] YubiKey 5 NFC or 5C NFC, firmware ≥ 5.2.3, from an official channel
+- [ ] Tell the app how the YubiKey is connected — it asks once, on first launch (NFC, or USB-C
+      with the key plugged in), and remembers it. Check it at the bottom of the home screen before
+      you start; change it there if it is wrong
 - [ ] (USB-C only) YubiKey OTP interface disabled over USB, or the iPhone
       keyboard will not appear for PIN entry: `ykman config usb --disable OTP`
 - [ ] A second YubiKey (optional) for a recovery drill later

@@ -9,22 +9,21 @@ import VaultKit
 /// which would erase the keys an operator chose this mode to keep.
 final class RePairUITests: XCTestCase {
 
-    private func launchApp() -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launch()
-        // The app opens on its home screen now; the ceremony screens are behind it.
+    private func launchForRePair() -> XCUIApplication {
+        // The simulated card, as in the ceremony walk: NFC is not something a simulator
+        // can provide, and the connection is seeded at launch because it is chosen once on
+        // the device screen rather than on this flow's setup screen.
+        let app = launchApp(deviceChoice: "simulated")
+        // The app opens on its home screen; the ceremony screens are behind it.
         openProvisioningFlow(app, mode: "Pair a wallet")
         return app
     }
 
     func testRePairModeIsSelectableAndReadsWithoutErasing() throws {
-        let app = launchApp()
+        let app = launchForRePair()
 
-        // The mode was picked on the home screen (`launchApp`), so the setup screen
+        // The mode was picked on the home screen (`launchForRePair`), so the setup screen
         // here is the shared pre-flight for the read-only route.
-        // The simulated card, as in the ceremony walk: the default transport is NFC,
-        // which a simulator cannot provide.
-        tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app)
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)
 
@@ -97,7 +96,6 @@ final class RePairUITests: XCTestCase {
         tapStepAction("Provision another wallet", in: app)
         // That button returns to the home screen, so the flow is re-entered.
         openProvisioningFlow(app, mode: "Pair a wallet")
-        tapWhenVisible(app.buttons["choice-Simulated (debug)"], in: app)
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)
 

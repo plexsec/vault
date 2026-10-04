@@ -14,16 +14,42 @@ import VaultKit
 /// Management", which stay collapsed until tapped so the home screen does not
 /// stack three near-identical cards under the title. Each entry picks the
 /// ceremony's mode before the provisioning flow opens.
+///
+/// The device choice is above both routes: on first launch this screen is not shown
+/// at all until the operator has said how the YubiKey is connected, because the
+/// connection is the one thing the app cannot work out for itself. Afterwards it is
+/// summarised at the bottom, with a way to change it.
 struct HomeView: View {
     /// Owned by the app so a scene-phase change can reach both flows.
     let ceremonyViewModel: CeremonyViewModel
     let signingViewModel: SigningViewModel
-    @State private var route: Route = .home
+    let deviceChoice: DeviceChoiceStore
+    @State private var route: Route
+    /// True while the device screen is the way *into* the app, so it cannot be left
+    /// without an answer. Set when the route was decided at construction, and cleared
+    /// when the operator comes back to change the choice.
+    @State private var deviceIsFirstRun: Bool
 
     private enum Route: Equatable {
         case home
         case provisioning
         case signing
+        case device
+    }
+
+    /// The first screen is decided here rather than in `onAppear`, so a first run never
+    /// renders the home screen for a frame and then replaces it.
+    init(
+        ceremonyViewModel: CeremonyViewModel,
+        signingViewModel: SigningViewModel,
+        deviceChoice: DeviceChoiceStore
+    ) {
+        self.ceremonyViewModel = ceremonyViewModel
+        self.signingViewModel = signingViewModel
+        self.deviceChoice = deviceChoice
+        let needsChoice = !deviceChoice.hasChosen
+        _route = State(initialValue: needsChoice ? .device : .home)
+        _deviceIsFirstRun = State(initialValue: needsChoice)
     }
 
     var body: some View {
@@ -40,6 +66,20 @@ struct HomeView: View {
                 }
         case .signing:
             SigningRootView(viewModel: signingViewModel, onExit: { route = .home })
+        case .device:
+            DeviceChoiceView(device: deviceChoice, isFirstRun: deviceIsFirstRun) {
+                deviceIsFirstRun = false
+                route = .home
+            }
+        }
+    }
+
+    /// The connection, shown at the bottom of the home screen: one line to confirm the
+    /// app is about to talk to the right reader, and the button that changes it.
+    private var deviceSummary: some View {
+        DeviceSummary(choice: deviceChoice.choice) {
+            deviceIsFirstRun = false
+            route = .device
         }
     }
 
@@ -71,12 +111,41 @@ struct HomeView: View {
                     Text("Signing never writes to the card — every signature needs the PIN and a touch.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    deviceSummary
                 }
                 .padding()
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+}
+
+/// The connection the app will use, and the way to change it.
+private struct DeviceSummary: View {
+    let choice: CardTransportChoice
+    let change: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Card connection").font(.footnote).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Button("Change", action: change)
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("change-device")
+            }
+            Text(choice.title).font(.callout.weight(.medium))
+            Text(choice.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.25)))
     }
 }
 

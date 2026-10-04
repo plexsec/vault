@@ -24,7 +24,9 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
 ## The procedure
 
 1. **Read the YubiKey.** Card connection: NFC (hold the iPhone against the key when asked) or
-   USB-C (plug it in and leave it). No PIN is needed to read, and nothing is written.
+   USB-C (plug it in and leave it). The connection was chosen once, on first launch, and is shown
+   at the bottom of the home screen — check it there if the card is not found. No PIN is needed to
+   read, and nothing is written.
 2. **Check the address on screen** against the account in your wallet.
 3. **Build the transaction in the wallet** (as small a value as you can make it the first
    time), confirm it there, and choose the QR signing option. The wallet shows an animated QR.
