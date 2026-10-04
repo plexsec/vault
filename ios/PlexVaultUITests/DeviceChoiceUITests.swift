@@ -111,12 +111,8 @@ final class DeviceChoiceUITests: XCTestCase {
             "the stored choice must be what comes back, got '\(deviceButton(in: app).label)'"
         )
 
-        // Change it, from the top-right button only. Tapped directly rather than with
-        // `tapWhenVisible`: that helper scrolls into `visibleBand`, which deliberately starts
-        // below the navigation bar, so a toolbar button can never be brought into it.
-        let device = deviceButton(in: app)
-        XCTAssertTrue(device.isHittable, "the device button must be tappable")
-        device.tap()
+        // Change it, from the title-line button only.
+        tapWhenVisible(app.buttons["device-button"], in: app)
         let nfc = app.buttons["device-choice-NFC"]
         XCTAssertTrue(nfc.waitForExistence(timeout: 15), app.debugDescription)
         XCTAssertTrue(
@@ -147,6 +143,28 @@ final class DeviceChoiceUITests: XCTestCase {
         XCTAssertTrue(app.buttons["route-signing"].waitForExistence(timeout: 15), app.debugDescription)
         XCTAssertEqual(deviceButton(in: app).label, "Card connection: NFC",
                        "the change must survive a relaunch")
+    }
+
+    /// The button sits on the title line, not in a navigation bar.
+    ///
+    /// It started life as a `.topBarTrailing` toolbar item, which put it in the empty strip
+    /// *above* the "PlexVault" title — visibly higher than everything it belongs to. This
+    /// pins the fix: the two are centred on each other.
+    func testTheDeviceButtonSitsOnTheTitleLine() {
+        let app = launchApp()
+
+        let title = app.staticTexts["PlexVault"]
+        let device = deviceButton(in: app)
+        XCTAssertTrue(title.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(device.waitForExistence(timeout: 10), app.debugDescription)
+
+        XCTAssertEqual(
+            title.frame.midY, device.frame.midY, accuracy: 6,
+            "the button must be centred on the title's line, not on the top of the screen "
+                + "(title \(title.frame), button \(device.frame))"
+        )
+        // And it is in a corner of the title's row, not in the content column.
+        XCTAssertGreaterThan(device.frame.minX, title.frame.maxX, "the button belongs on the right")
     }
 
     /// What the device screen stores is what the ceremony then uses.

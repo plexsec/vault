@@ -18,8 +18,8 @@ import VaultKit
 /// The device choice is above both routes: on first launch this screen is not shown at
 /// all until the operator has said how the YubiKey is connected, because the connection is
 /// the one thing the app cannot work out for itself. Afterwards it lives behind the YubiKey
-/// button in the top-right corner, which shows the key it will use, how it is connected, and
-/// — on USB-C — whether the key is plugged in.
+/// button on the title line, which shows the key it will use, how it is connected, and — on
+/// USB-C — whether the key is plugged in.
 struct HomeView: View {
     /// Owned by the app so a scene-phase change can reach both flows.
     let ceremonyViewModel: CeremonyViewModel
@@ -79,62 +79,63 @@ struct HomeView: View {
     }
 
     private var home: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 6) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    // The button sits on the title line rather than in a navigation bar.
+                    // The bar was an empty strip *above* the title, so the icon floated
+                    // higher than anything it belongs to; here it is centred on the title's
+                    // own line box.
+                    HStack(alignment: .center) {
                         Text("PlexVault").font(.largeTitle.bold())
-                        Text(BuildInfo.summary).font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 12)
+                        deviceButton
                     }
-
-                    RouteCard(
-                        title: "Sign a transaction",
-                        detail: "Scan the unsigned transaction, check what it does, and sign it with one touch.",
-                        systemImage: "signature",
-                        identifier: "route-signing"
-                    ) {
-                        signingViewModel.abort()
-                        route = .signing
-                    }
-
-                    WalletKeyManagementSection { mode in
-                        ceremonyViewModel.abort()
-                        ceremonyViewModel.mode = mode
-                        route = .provisioning
-                    }
-
-                    Text("Signing never writes to the card — every signature needs the PIN and a touch.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    Text(BuildInfo.summary).font(.caption).foregroundStyle(.secondary)
                 }
-                .padding()
-            }
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        deviceIsFirstRun = false
-                        route = .device
-                    } label: {
-                        YubiKeyGlyph(choice: deviceChoice.choice, isPresent: presence.presence)
-                    }
-                    .accessibilityLabel(presenceLabel)
-                    .accessibilityHint("Change how the YubiKey is connected")
-                    .accessibilityIdentifier("device-button")
+
+                RouteCard(
+                    title: "Sign a transaction",
+                    detail: "Scan the unsigned transaction, check what it does, and sign it with one touch.",
+                    systemImage: "signature",
+                    identifier: "route-signing"
+                ) {
+                    signingViewModel.abort()
+                    route = .signing
                 }
+
+                WalletKeyManagementSection { mode in
+                    ceremonyViewModel.abort()
+                    ceremonyViewModel.mode = mode
+                    route = .provisioning
+                }
+
+                Text("Signing never writes to the card — every signature needs the PIN and a touch.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
-            // Polls the USB-C slot while that is the chosen connection, and stops the
-            // moment the choice changes or this screen goes away — the card's presence is
-            // only interesting here.
-            .task(id: deviceChoice.choice) {
-                await presence.watch(deviceChoice.choice)
-            }
+            .padding()
+        }
+        // Polls the USB-C slot while that is the chosen connection, and stops the moment the
+        // choice changes or this screen goes away — the card's presence is only interesting
+        // here.
+        .task(id: deviceChoice.choice) {
+            await presence.watch(deviceChoice.choice)
         }
     }
 
-    private var presenceLabel: String {
-        deviceChoice.choice.connectionLabel(isPresent: presence.presence)
+    /// The YubiKey button: the key the app will use, the connection it is on, and — where it
+    /// can be known — whether it is plugged in.
+    private var deviceButton: some View {
+        Button {
+            deviceIsFirstRun = false
+            route = .device
+        } label: {
+            YubiKeyGlyph(choice: deviceChoice.choice, isPresent: presence.presence)
+        }
+        .accessibilityLabel(deviceChoice.choice.connectionLabel(isPresent: presence.presence))
+        .accessibilityHint("Change how the YubiKey is connected")
+        .accessibilityIdentifier("device-button")
     }
 }
 private struct RouteCard: View {

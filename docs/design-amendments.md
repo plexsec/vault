@@ -1339,11 +1339,12 @@ a chain id, and nothing about any ceremony. `-deterministic-entropy`, the simula
 other test hook remain DEBUG-only, and the app is still stateless in the sense §4.3 and §5.2 rule 8
 mean: a fresh install can re-pair from the card alone.
 
-**Verified.** `DeviceChoiceUITests` (4 tests): a first run asks and cannot be got past without an
+**Verified.** `DeviceChoiceUITests` (5 tests): a first run asks and cannot be got past without an
 answer, the choice survives a relaunch and a change *replaces* it, a choice made on that screen is
-the one the ceremony then reads (behavioural proof, since no screen inside the flow echoes it), and
-the USB-C button reports the plug-in state. Every other UI test now seeds the connection at launch
-(`launchApp(deviceChoice:)`) instead of tapping a picker, so the count went 9 → 14 and the walk
+the one the ceremony then reads (behavioural proof, since no screen inside the flow echoes it), the
+USB-C button reports the plug-in state, and the button is centred on the title line rather than
+floating in a navigation bar above it. Every other UI test now seeds the connection at launch
+(`launchApp(deviceChoice:)`) instead of tapping a picker, so the count went 9 → 15 and the walk
 helpers no longer tap a transport at all. Packages unchanged (VaultKit 255, YubikeyKit 88). Release
 build and `tools/audit-release.sh` pass with the narrowed check.
 
