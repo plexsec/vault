@@ -103,11 +103,10 @@ struct ResetStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Terminates and re-activates the OpenPGP applet, which clears the keys in every slot, resets the PINs to their factory defaults and sets the signature counter back to zero.",
-            caution: "This erases everything already on the OpenPGP applet, in both the signature and authentication slots. Three wrong Admin PIN entries also make this card unusable for provisioning, so check the PIN before confirming.",
+            why: "Terminates and re-activates the OpenPGP applet, which clears the keys in every slot, resets the PINs to their factory defaults and sets the signature counter back to zero. No PIN is needed: the app blocks both PINs and then terminates the applet, exactly as `ykman openpgp reset` does.",
+            caution: "This erases everything already on the OpenPGP applet, in both the signature and authentication slots — and it does so without the Admin PIN, so a card whose Admin PIN is unknown or blocked can be reset too.",
             actionTitle: "Reset applet",
             isBusy: viewModel.busy,
-            isEnabled: viewModel.resetAdminPIN.count >= 8,
             action: { confirmReset = true }
         ) {
             if viewModel.cardHoldsAnyKey {
@@ -118,14 +117,7 @@ struct ResetStepView: View {
                 .font(.footnote)
             }
 
-            SecretEntryField(
-                title: "Admin PIN (PW3)",
-                prompt: "Factory default is 12345678",
-                text: $viewModel.resetAdminPIN,
-                isNumeric: true
-            )
-
-            Text("A factory-reset key uses 12345678. If this YubiKey was provisioned before, enter the Admin PIN you set then — and note that three wrong attempts permanently block this card for provisioning.")
+            Text("The app sends wrong PINs until the card blocks PW1 and PW3, then terminates the applet — the applet only accepts TERMINATE DF without a verified Admin PIN while that PIN is blocked, so this is the half of the reset that a wrong attempt cannot spoil. If the tap is interrupted between the two, the card is left with blocked PINs and its keys still in place; tapping reset again finishes the job, and that needs no PIN either.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -139,7 +131,7 @@ struct ResetStepView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("All keys on the applet are deleted and the PINs return to their factory defaults.")
+            Text("All keys on the applet are deleted and the PINs return to their factory defaults. No PIN is needed for this.")
         }
     }
 }
@@ -159,8 +151,8 @@ struct PINStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "The User PIN is required for every signature; the Admin PIN protects configuration and is needed if the card is ever reset.",
-            caution: "Three wrong Admin PIN entries permanently block this card for provisioning. Record both PINs in your password manager before continuing.",
+            why: "The User PIN is required for every signature; the Admin PIN protects configuration and is needed to provision, re-pair or set the retry limits.",
+            caution: "Three wrong Admin PIN entries block this card for provisioning and re-pairing — the reset step can clear it again without a PIN, but only by erasing both keys. Record both PINs in your password manager before continuing.",
             actionTitle: "Set PINs",
             isBusy: viewModel.busy,
             isEnabled: pinsValid,
@@ -221,7 +213,7 @@ struct RetryLimitStepView: View {
                 Text("""
                 **User PIN blocked** — nothing can be signed until it is unblocked, and unblocking needs the Admin PIN (the card's `RESET RETRY COUNTER`), which this version does not do. In practice the card is set up again from the 24 words, which erases both keys.
 
-                **Admin PIN blocked** — the card can no longer be provisioned or re-paired. A full applet reset (allowed even when PW3 is blocked) also erases both keys.
+                **Admin PIN blocked** — the card can no longer be provisioned or re-paired. The reset step clears it again and needs no PIN, but it also erases both keys.
 
                 The funds are not lost while the 24 words are safe, but the card has to be set up again from them.
                 """)

@@ -77,9 +77,14 @@ public protocol SignerCard: AnyObject {
     /// mnemonic generation (design.md §4.2 step 4).
     func randomBytes(count: Int) async throws -> SensitiveBytes
 
-    /// `VERIFY PW3` + `TERMINATE DF` + `ACTIVATE FILE`, then re-selects.
+    /// Blocks PW1 and PW3, then `TERMINATE DF` + `ACTIVATE FILE`, then re-selects.
     /// Resets **all** slots.
-    func reset(adminPIN: [UInt8]) async throws
+    ///
+    /// No Admin PIN: the applet accepts `TERMINATE DF` without one only while PW3
+    /// is already blocked, so a PIN-free reset has to block it first. Implementations
+    /// mirror `ykman openpgp reset`; see `OpenPGPCard.reset()` for the sequence, and
+    /// for what a reset that is cut in half leaves behind.
+    func reset() async throws
 
     /// Sets PW1 (user) and PW3 (admin) via `CHANGE REFERENCE DATA`.
     func setPINs(userPIN: [UInt8], adminPIN: [UInt8]) async throws
@@ -172,6 +177,11 @@ public enum CardError: Swift.Error, Equatable {
     case pinBlocked
     case adminPinBlocked
     case conditionsNotSatisfied
+    /// The reset could not block the PIN counters it needs blocked, so the applet
+    /// would refuse `TERMINATE DF` (`6982`) and nothing was erased. Distinct from a
+    /// transport failure because the card *has* changed: whatever attempts were
+    /// burnt are gone.
+    case pinBlockingIncomplete(user: UInt8, admin: UInt8)
     /// The applet refused an algorithm-attributes object (`6A80` on `PUT DATA`
     /// `0xC1`/`0xC3`). Named, because "unsupported firmware" is one of several
     /// causes and the wrong one sends the operator looking for an upgrade they
@@ -239,6 +249,11 @@ public enum CardError: Swift.Error, Equatable {
         case .retryCountOutOfRange:
             // Refused before the card was asked; the applet's range is known.
             return true
+        case .pinBlockingIncomplete:
+            // The PIN burn is the first thing a reset does, so by the time this is
+            // thrown the card may already have blocked a password. "Unknown" is the
+            // conservative reading, and re-reading costs one tap.
+            return false
         case .transportUnavailable, .cardNotSelected, .malformedResponse:
             return false
         case .unexpectedStatusWord, .signatureFailed:
@@ -266,10 +281,10 @@ public enum CardError: Swift.Error, Equatable {
             return "The User PIN is blocked. Nothing can be signed until it is unblocked, which needs the Admin PIN (the card's RESET RETRY COUNTER command) — this version of the app does not do that, so plan on setting the card up again from the 24 words. Terminating the applet would erase the keys, not restore them."
         case .adminPinBlocked:
             // The applet allows `TERMINATE DF` when PW3 is blocked (spec 3.4.1:
-            // "VERIFY of PW3 or Always if PW3 is blocked"), which is how `ykman
-            // openpgp reset` manages without an Admin PIN. So the card is not a
-            // brick; it is a card with two erased keys.
-            return "The Admin PIN is blocked. This card can no longer be provisioned with it, but a full applet reset is still possible (the applet permits TERMINATE DF when the Admin PIN is blocked) — that erases both keys and returns the card to factory settings, so the wallet has to be set up again from the 24 words."
+            // "VERIFY of PW3 or Always if PW3 is blocked"). The reset step gets
+            // there on its own — it blocks the PINs rather than verifying one — so
+            // this card is not a dead end any more, at the cost of both keys.
+            return "The Admin PIN is blocked, so this card can no longer be provisioned or re-paired with that PIN. A full applet reset brings it back, and that step needs no PIN — it blocks the PINs itself. Either way both keys are erased and the wallet has to be set up again from the 24 words."
         case .conditionsNotSatisfied:
             return "The YubiKey refused the operation because its preconditions were not met (wrong state, or a PIN step was skipped)."
         case .algorithmAttributesRejected(let algorithm, let slot, let detail):
@@ -300,6 +315,8 @@ public enum CardError: Swift.Error, Equatable {
             return "The value is \(byteCount) bytes but this card holds at most \(maximum) in that object."
         case .retryCountOutOfRange(let requested, let allowed):
             return "This card accepts between \(allowed.lowerBound) and \(allowed.upperBound) PIN retries; \(requested) is outside that range."
+        case .pinBlockingIncomplete(let user, let admin):
+            return "The YubiKey did not block its PIN retry counters (\(user) attempts left on the User PIN, \(admin) on the Admin PIN), so it would refuse to terminate the applet — nothing was erased. The PINs may still be blocked or partly used up; tap reset again to finish."
         }
     }
 }

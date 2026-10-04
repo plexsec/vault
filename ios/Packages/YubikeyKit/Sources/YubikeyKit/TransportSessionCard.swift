@@ -61,8 +61,16 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.inventory() }
     }
 
-    public func reset(adminPIN: [UInt8]) async throws {
-        try await withSession { try await $0.reset(adminPIN: adminPIN) }
+    /// The whole reset — blocking both PINs, `TERMINATE DF`, `ACTIVATE FILE` and
+    /// the re-SELECT — inside **one** session, like `ykman`.
+    ///
+    /// The access condition that makes it PIN-free is the *card's* state (PW3's
+    /// counter at zero), not a VERIFY in this session, so it would survive a split
+    /// across sessions; it is kept whole because the recovery path for a reset
+    /// that stopped half-way is a re-SELECT, and one session is easier to reason
+    /// about than two.
+    public func reset() async throws {
+        try await withSession { try await $0.reset() }
     }
 
     public func setPINs(userPIN: [UInt8], adminPIN: [UInt8]) async throws {

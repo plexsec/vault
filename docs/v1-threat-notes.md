@@ -169,7 +169,7 @@ option is documented rather than implemented.
 | Mnemonic disclosed by screen capture | Mnemonic hidden unless pressed and hidden entirely while `UIScreen.isCaptured`; no pasteboard use; camera warning | **Low** |
 | Mnemonic disclosed by the app writing it somewhere | No persistence API is referenced in the app or the ceremony layer, asserted by the release audit; secrets live in `SensitiveBytes` and are wiped on every exit path | **Low** |
 | App update introduces a malicious card simulation | Simulation is DEBUG-only and compiled out of Release; the exclusion is a build setting, and the audit re-checks the built product | **Low** |
-| User error: wrong PIN entered three times | PIN rules enforced before touching the card; the Admin-PIN lockout warning is shown on the reset and PIN screens | **Medium** — user error is not removable |
+| User error: wrong PIN entered three times | PIN rules enforced before touching the card; the retry-limit and PIN screens state the consequences; the reset step takes no PIN at all (it blocks both PINs on purpose), so there is no PIN to mistype there | **Medium** — user error is not removable |
 | Protocol assumption wrong (import template, `0xC4`, `0xCE`) | Fails visibly: rejection status words or a read-back mismatch; all four documented in `m0-hardware-verification.md` | **Low** |
 | Extra touch on the **Ed25519** key is not detectable by a counter | PIN + touch still required; touch policy `Fixed` written to UIF `0xD8`; one-touch-per-transaction rule; Desktop verification of what was signed (v0.2) | **Medium** — accepted in exchange for chain coverage (deviation 6) |
 | Loss of availability | Mnemonic recovery verified by the restore path; two steel plates | **Low** (operational) |

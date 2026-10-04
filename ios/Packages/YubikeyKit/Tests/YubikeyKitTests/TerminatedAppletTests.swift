@@ -96,7 +96,7 @@ final class TerminatedAppletTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
 
         XCTAssertFalse(transport.appletIsTerminated)
         XCTAssertFalse(transport.hasKey(in: .signature))

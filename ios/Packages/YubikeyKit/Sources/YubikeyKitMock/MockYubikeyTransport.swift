@@ -81,6 +81,13 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// counterfeit or tampered card that does not hold the key it claims to.
     public var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
     public var injectedFailure: InjectedFailure = .none
+
+    /// Models an applet that rejects a wrong-PIN `VERIFY` *without* counting it —
+    /// firmware that treats the value as malformed (`6A80`) rather than as a failed
+    /// attempt. A PIN burn cannot tell that apart from a counted rejection except by
+    /// reading `0xC4` back, so this is how the reset's read-back is exercised
+    /// without hardware. Default off: real cards count a wrong PIN.
+    public var refuseToCountFailedAttempts = false
     /// When set, `GENERATE ASYMMETRIC KEY PAIR` (read) answers with this status
     /// word instead of the key, simulating an applet that cannot read EC keys
     /// (e.g. firmware < 5.2.3 answering 6581).
@@ -198,7 +205,12 @@ public final class MockYubikeyTransport: YubikeyTransport {
         case (0xF2, _, _):
             return setPinRetries(command)
         case (0xE6, _, _):
-            guard pw3Verified else { return status(0x69, 0x82) }
+            // Spec 3.4.1: "VERIFY of PW3 or Always if PW3 is blocked". The mock has
+            // to model the exception or a PIN-free reset could not be tested at
+            // all — and, worse, a reset sequence that real hardware refuses would
+            // pass here. `ykman openpgp reset` reaches this branch by burning the
+            // counter first; `OpenPGPCard.reset()` does the same.
+            guard pw3Verified || adminRetriesRemaining == 0 else { return status(0x69, 0x82) }
             resetApplet()
             // TERMINATE DF wipes the applet *and* deactivates the DF; only
             // ACTIVATE FILE brings it back.
@@ -505,6 +517,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         if reference == OpenPGPPinReference.admin.rawValue {
             guard adminRetriesRemaining > 0 else { return status(0x69, 0x83) }
             guard command.data == adminPIN else {
+                if refuseToCountFailedAttempts { return status(0x6A, 0x80) }
                 adminRetriesRemaining -= 1
                 return status(0x63, UInt8(0xC0 | adminRetriesRemaining))
             }
@@ -514,6 +527,7 @@ public final class MockYubikeyTransport: YubikeyTransport {
         }
         guard userRetriesRemaining > 0 else { return status(0x69, 0x83) }
         guard command.data == userPIN else {
+            if refuseToCountFailedAttempts { return status(0x6A, 0x80) }
             userRetriesRemaining -= 1
             return status(0x63, UInt8(0xC0 | userRetriesRemaining))
         }

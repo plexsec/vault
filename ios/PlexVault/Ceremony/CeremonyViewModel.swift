@@ -72,7 +72,6 @@ public final class CeremonyViewModel {
     // MARK: Form state
 
     public var postureConfirmed = false
-    public var resetAdminPIN = ""
     public var acknowledgeDestructiveReset = false
     public var userPIN = ""
     public var userPINConfirmation = ""
@@ -238,7 +237,6 @@ public final class CeremonyViewModel {
 
         // Form state, including the gates: a stale acknowledgement would let a new
         // ceremony past a step the operator never saw this time.
-        resetAdminPIN = ""
         acknowledgeDestructiveReset = false
         userPIN = ""
         userPINConfirmation = ""
@@ -266,14 +264,11 @@ public final class CeremonyViewModel {
 
     public func resetCard() async {
         await run { ceremony in
-            guard let pin = Self.pinBytes(self.resetAdminPIN) else {
-                throw CeremonyError.invalidPINPolicy("Enter the Admin PIN (8 digits for a factory-reset key).")
-            }
+            // No Admin PIN: the ceremony's reset blocks both PINs and terminates
+            // the applet, which is what `ykman openpgp reset` does (amendment 30).
             try await ceremony.resetCard(
-                adminPIN: pin,
                 acknowledgingDestruction: self.acknowledgeDestructiveReset
             )
-            self.resetAdminPIN = ""
         }
     }
 

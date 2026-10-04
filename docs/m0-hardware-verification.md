@@ -602,7 +602,8 @@ mnemonic.
 
 **Measured on the YubiKey 5C NFC in hand (firmware 5.8.0, applet 3.4)** by replaying the bytes the
 app now sends, in the order the ceremony now uses. This is the evidence behind amendment 26 and
-amendment 27; it is *not* the app's own run (see the bottom of this item).
+amendment 27 (and, for the clause below, amendment 30); it is *not* the app's own run (see the bottom
+of this item).
 
 * **A fresh applet reports `01 7F 7F 7F 03 00 03`** — PW1 status `0x01`, then 3/0/3 attempts for
   PW1 / resetting code / PW3. So `0xC4[0] = 0x00` on a card is evidence the policy step ran, and
@@ -660,12 +661,32 @@ amendment 27; it is *not* the app's own run (see the bottom of this item).
    with the new one — three times — and blocked it. The card was recoverable (trap 5's rule), but
    the script now aborts on the first failed VERIFY, and any future probe should.
 
-**Consequence for the app: it cannot reset a card whose Admin PIN is blocked.** The applet allows
-`TERMINATE DF` without PW3 in exactly that state, and `ykman openpgp reset` relies on it — but this
-app's reset step verifies PW3 first, so as written it cannot rescue such a card and would report
-`pinBlocked` instead. That is recorded rather than fixed: offering a no-PIN reset is a destructive
-path (it erases both keys) and belongs with the unblock feature of item 19, in a version that can
-also replace the PINs afterwards.
+**The reset now uses that clause, and is a mirror of `ykman openpgp reset`.** Amendment 28 recorded
+that the app could not reset a card whose Admin PIN was blocked; amendment 30 closed that by adopting
+the reference implementation's route — read `0xC4`, block PW1 and PW3 with wrong `VERIFY`s, read
+`0xC4` back, then `TERMINATE DF` + `ACTIVATE FILE`. All of it is built on the measurement above, and
+none of it has been run against the card *in this exact form*:
+
+- [ ] **Reset from the app on a card whose Admin PIN works.** Confirm the APDU order the log shows
+      (`00CA00C4`, three `00200081`, three `00200083`, `00CA00C4`, `00E60000`, `00440000`,
+      `00A40000`) and that the ceremony reaches the PIN step with a factory-fresh applet
+      (`C4 = 01 7F 7F 7F 03 00 03`).
+- [ ] **Reset from the app on a card whose Admin PIN is blocked** (`C4[5] = 00`): the state clause
+      3.4.1 exists for. Every `VERIFY PW3` answers `63C0`/`6983`; `TERMINATE DF` must still answer
+      `9000`.
+- [ ] **Interrupt mid-reset** — pull the key away after the burn, before the terminate. Expect the
+      ceremony to return to *Inspect YubiKey* (not to sit on the reset screen), the card to be
+      blocked but not wiped, and a second tap on reset to finish with **no** PIN entered.
+- [ ] **After a reset from the app:** `ykman openpgp info` shows factory PINs (`123456` / `12345678`)
+      and no keys, and a fresh provisioning run from the mnemonic succeeds.
+
+**Not yet verified: the burn's status words on a card whose PW3 has a working PIN.** The measurement
+above was taken in the blocked state, where the applet answers `63C0`/`6983` to every VERIFY. On a
+card whose Admin PIN works, the same wrong-PIN VERIFYs must be counted as failures (that is the whole
+mechanism) rather than rejected as malformed — which is why `invalidPIN` is eight bytes, a legal
+length for both PINs. The read-back of `0xC4` is what makes a disagreement visible instead of silent:
+it reports `CardError.pinBlockingIncomplete` rather than terminating an applet whose PINs are still
+usable, which would answer `6982` and leave the operator with a reset that cannot proceed.
 
 The card was left **factory-fresh**: reset, default PINs, no keys, `UIF = 00 20`, `C4 = 01 7F 7F 7F
 03 00 03`. Nothing the probe wrote is still there, and the app's next provisioning run starts from

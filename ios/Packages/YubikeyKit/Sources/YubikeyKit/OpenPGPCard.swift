@@ -270,6 +270,16 @@ public final class OpenPGPCard: SignerCard {
         try Self.check(response, operation: operation)
     }
 
+    /// `TERMINATE DF` (INS 0xE6) — wipes the applet and deactivates the DF.
+    ///
+    /// **Access condition** (spec 3.4.1): "VERIFY of PW3 or Always if PW3 is
+    /// blocked". So this command needs an Admin PIN verification *unless* the
+    /// applet's PW3 counter is already at zero, which is the clause
+    /// `reset()` uses to reset a card without asking for a PIN at all.
+    ///
+    /// This method sends the command and nothing else: the access condition is
+    /// the caller's business, and `reset()` is the only caller that should ever
+    /// make this destructive call.
     public func terminateDF() async throws {
         // TERMINATE DF is a case-1 command (no data, no Le). The previous form
         // sent a Le byte (00 E6 00 00 00), which real hardware rejected; the
@@ -428,12 +438,90 @@ public final class OpenPGPCard: SignerCard {
         }
     }
 
-    public func reset(adminPIN: [UInt8]) async throws {
-        try await verify(pin: adminPIN, reference: .admin, operation: .verifyAdminPIN)
+    // MARK: Reset
+
+    /// A deliberately wrong PIN, sent to burn a retry counter (see `reset()`).
+    ///
+    /// All-zero, the same value `yubikit`'s `OpenPgpSession.reset()` sends
+    /// (`_INVALID_PIN`). It cannot be a *correct* PIN — the applet's PINs are
+    /// digits and this app never sets an all-zero one — and it is eight bytes,
+    /// which is a legal length for both PW1 and PW3, so the applet counts it as a
+    /// failed attempt instead of rejecting it as malformed (a malformed `VERIFY`
+    /// is rejected *without* decrementing a counter, which would leave the reset
+    /// unable to do its job — see the read-back in `blockPINRetryCounters()`).
+    static let invalidPIN: [UInt8] = [UInt8](repeating: 0x00, count: 8)
+
+    /// `ykman openpgp reset`, command for command: block both PINs, then
+    /// `TERMINATE DF`, `ACTIVATE FILE` and a re-SELECT.
+    ///
+    /// **No Admin PIN is asked for, and none can be given.** The applet's access
+    /// condition for `TERMINATE DF` is "VERIFY of PW3, or Always if PW3 is
+    /// blocked", so on a card whose Admin PIN still works the only PIN-free route
+    /// is to block PW3 *first* and terminate afterwards. That is what `yubikit`
+    /// does — its `reset()` logs "Ensure the User and Admin PINs are blocked"
+    /// before sending `TERMINATE` — and this method is a deliberate mirror of it,
+    /// including burning PW1, which the access condition does not require and the
+    /// reference implementation does anyway.
+    ///
+    /// The cost is recorded rather than hidden: the reset **begins** by making the
+    /// card unusable. If the session drops after the burn and before the
+    /// terminate, the card is left with both PINs blocked and its keys in place —
+    /// it can neither sign nor be provisioned until the reset is finished.
+    /// Finishing needs no PIN either (PW3 is blocked, which is exactly what
+    /// `TERMINATE DF` wants), so tapping again recovers; saying so is the caller's
+    /// job (`CeremonyStep.reset`'s interruption warning does).
+    ///
+    /// An earlier version verified the caller's Admin PIN here instead. That could
+    /// not reset a card whose Admin PIN was blocked — the one state in which the
+    /// applet deliberately drops the requirement — and asked the operator for a
+    /// credential the reset is about to destroy (amendment 30).
+    public func reset() async throws {
+        try await blockPINRetryCounters()
         try await terminateDF()
         try await activateFile()
         selected = false
         try await select()
+    }
+
+    /// The first half of a reset: send wrong PINs until PW1 and PW3 are blocked.
+    ///
+    /// Every APDU here is *meant* to fail, so the answers are discarded — `63Cx`
+    /// is the applet counting down, `6983` means that password is blocked already.
+    /// A transport failure is **not** discarded: a broken session is not a
+    /// rejected PIN, and it has to reach the caller.
+    ///
+    /// The counters are read first, so exactly as many attempts are burnt as the
+    /// card says are left, and read *back* afterwards. Without the read-back, a
+    /// rejection the applet declined to count would surface as `6982` on
+    /// `TERMINATE DF` — a status word that says nothing about what the card now
+    /// is. Same reasoning as the `SET PIN RETRIES` read-back (amendment 27).
+    func blockPINRetryCounters() async throws {
+        let before = try await retryCounters()
+        for (reference, remaining) in [
+            (OpenPGPPinReference.user, before.user),
+            (OpenPGPPinReference.admin, before.admin),
+        ] {
+            for _ in 0..<Int(remaining) {
+                let apdu = CommandAPDU(
+                    cla: 0x00, ins: 0x20, p1: 0x00, p2: reference.rawValue,
+                    data: Self.invalidPIN, expectedLength: 0
+                )
+                _ = try await transport.exchange(apdu)
+            }
+        }
+        let after = try await retryCounters()
+        guard after.user == 0, after.admin == 0 else {
+            throw CardError.pinBlockingIncomplete(user: after.user, admin: after.admin)
+        }
+    }
+
+    /// Remaining attempts per password, from DO `0xC4`.
+    private func retryCounters() async throws -> RetryCounters {
+        let bytes = try await getDataObject(OpenPGPDataObject.pwStatusBytes)
+        guard let counters = PWStatusBytes.retryCounters(bytes) else {
+            throw CardError.malformedResponse("DO 0xC4 did not report the PIN retry counters")
+        }
+        return counters
     }
 
     public func setPINs(userPIN: [UInt8], adminPIN: [UInt8]) async throws {

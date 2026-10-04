@@ -41,8 +41,12 @@ step completed rather than trusting the flow.
 - [ ] **Posture + rules** acknowledged
 - [ ] **Card inventory** read
       - Serial recorded: `________________`   Applet: `__________`
-- [ ] **Reset** (Admin PIN: factory default `12345678`)
-      - [ ] Warning about irreversible Admin-PIN lockout understood
+- [ ] **Reset** — **no PIN is asked for.** The app blocks both PINs and then terminates the
+      applet, exactly as `ykman openpgp reset` does, so neither the factory default nor your own
+      Admin PIN is relevant here
+      - [ ] Warning understood: this erases every key on the applet, and the tap must **not** be
+            interrupted — if it is, the card is left with both PINs blocked and the old keys still
+            in place, and tapping reset again (still no PIN) is what finishes it
 - [ ] **PINs set** — both recorded in the password manager ✔
 - [ ] **Policy applied**
       - [ ] Touch policy reads **Fixed**
@@ -148,6 +152,7 @@ Choose it deliberately:
 - Either way, the consequence of using them up is the same: a blocked **User PIN** stops every
   signature (unblocking needs the Admin PIN and a command this app does not implement yet, so plan
   on re-provisioning from the 24 words), and a blocked **Admin PIN** ends provisioning and
-  re-pairing for that card. Both paths end with the keys erased from the card and rebuilt from the
-  mnemonic, so the 24 words are the only thing that has to survive.
+  re-pairing for that card — though the app's reset step can still clear it, without a PIN. Both
+  paths end with the keys erased from the card and rebuilt from the mnemonic, so the 24 words are
+  the only thing that has to survive.
 

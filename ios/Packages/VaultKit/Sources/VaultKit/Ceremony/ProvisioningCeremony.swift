@@ -471,9 +471,14 @@ public final class ProvisioningCeremony {
     /// `withMutatingStep`, because nothing was written.
     public func noteInterruption() {
         guard let inFlight = mutatingStepInFlight else { return }
-        report.warnings.append(
-            "Session interrupted during \(inFlight.title). The card state is unknown; re-inspect the YubiKey before continuing."
-        )
+        // A reset that stopped between blocking the PINs and terminating the
+        // applet leaves a card that can neither sign nor be provisioned — but one
+        // that a second tap fixes without any PIN, so the warning says which state
+        // the operator is looking at rather than leaving it at "unknown".
+        let warn = inFlight == .reset
+            ? "Session interrupted during \(inFlight.title). The card state is unknown: a reset that stopped after blocking the PINs leaves them blocked, with the keys still in place. So re-inspect the YubiKey, then tap reset again to finish it — that needs no PIN."
+            : "Session interrupted during \(inFlight.title). The card state is unknown; re-inspect the YubiKey before continuing."
+        report.warnings.append(warn)
         mutatingStepInFlight = nil
         step = .cardInventory
     }
@@ -483,9 +488,11 @@ public final class ProvisioningCeremony {
     /// pending for `noteInterruption()` exactly when the card's state is
     /// genuinely unknown.
     ///
-    /// Without the second half, a mistyped Admin PIN at the reset step would send
+    /// Without the second half, a mistyped PIN at the PIN-setting step would send
     /// the operator back to the inventory screen even though nothing was written;
-    /// with it, only a transport failure (or an unrecognised one) rewinds.
+    /// with it, only a transport failure (or an unrecognised one) rewinds. The
+    /// reset does not use this helper at all: its very first act is to block the
+    /// PINs, so *any* failure in it may already have changed the card.
     private func withMutatingStep<T>(_ step: CeremonyStep, _ body: () async throws -> T) async throws -> T {
         mutatingStepInFlight = step
         do {
@@ -580,14 +587,28 @@ public final class ProvisioningCeremony {
     /// slot, so a card that already held a key requires an explicit
     /// acknowledgement. This is the hard gate that prevents a stray tap from
     /// destroying a working signer.
-    public func resetCard(adminPIN: [UInt8], acknowledgingDestruction: Bool = false) async throws {
+    ///
+    /// The Admin PIN is deliberately **not** asked for. The applet accepts
+    /// `TERMINATE DF` without one only while PW3 is blocked, so the card layer
+    /// blocks PW1 and PW3 first — the same sequence `ykman openpgp reset` runs —
+    /// and terminates afterwards. Nothing is verified, so an operator who never
+    /// knew the Admin PIN can still reset the card, and a card whose Admin PIN is
+    /// blocked is no longer a dead end (amendment 30).
+    ///
+    /// This is the one mutating step that does **not** use `withMutatingStep`: the
+    /// PIN burn is the first thing the card does, so a failure anywhere in the
+    /// reset may already have changed it (PINs blocked, keys intact) even though
+    /// the applet answered "no". Leaving the marker in flight forces the operator
+    /// to re-read the card, which is the conservative reading the ceremony wants,
+    /// and the way out — tap reset again — needs no PIN either.
+    public func resetCard(acknowledgingDestruction: Bool = false) async throws {
         try requireCurrent(.reset)
         if cardHeldExistingKey, !acknowledgingDestruction {
             throw CeremonyError.destructiveResetNotAcknowledged
         }
-        try await withMutatingStep(.reset) {
-            try await card.reset(adminPIN: adminPIN)
-        }
+        mutatingStepInFlight = .reset
+        try await card.reset()
+        mutatingStepInFlight = nil
         // Re-inventory after a destructive operation: never trust that the card
         // is in the expected state just because the APDU returned 9000.
         let after = try await card.inventory()

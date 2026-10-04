@@ -250,8 +250,9 @@ extension XCTestCase {
                       "inventory output must stay on screen", file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
 
-        // Reset with the factory default Admin PIN.
-        typeSecret("12345678", into: "Admin PIN (PW3)", in: app, file: file, line: line)
+        // Reset: no PIN. The app blocks both PINs itself and then terminates the
+        // applet, which is `ykman openpgp reset`'s sequence, so the button is live
+        // as soon as the inventory has been acknowledged.
         tapWhenVisible(app.buttons["Reset applet"], in: app, file: file, line: line)
         let confirmReset = app.buttons["Reset and erase"]
         XCTAssertTrue(confirmReset.waitForExistence(timeout: 5), "reset confirmation missing", file: file, line: line)

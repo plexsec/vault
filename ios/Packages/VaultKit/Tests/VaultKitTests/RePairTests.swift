@@ -36,10 +36,7 @@ final class RePairTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(
-            adminPIN: Array("12345678".utf8),
-            acknowledgingDestruction: true
-        )
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
@@ -194,7 +191,7 @@ final class RePairTests: XCTestCase {
         // `TERMINATE DF` erases the data file. If it did not, a reset card would
         // still hand out codes for keys it no longer holds — the one failure this
         // design must not have.
-        try await card.reset(adminPIN: Array("87654321".utf8))
+        try await card.reset()
         XCTAssertNil(card.pairingManifestBytes)
 
         let ceremony = try await startedRePair(card)
@@ -278,7 +275,7 @@ final class RePairTests: XCTestCase {
         let ceremony = try await rePair(card)
 
         await assertStepOutOfOrder {
-            try await ceremony.resetCard(adminPIN: Array("87654321".utf8), acknowledgingDestruction: true)
+            try await ceremony.resetCard(acknowledgingDestruction: true)
         }
         await assertStepOutOfOrder {
             try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))

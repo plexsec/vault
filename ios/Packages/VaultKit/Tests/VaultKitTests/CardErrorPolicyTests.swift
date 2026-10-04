@@ -30,6 +30,10 @@ final class CardErrorPolicyTests: XCTestCase {
         .malformedResponse("response chaining did not terminate"),
         .unexpectedStatusWord(sw1: 0x6A, sw2: 0x80),
         .signatureFailed,
+        // The card answered, but the answer was "the counters would not reach
+        // zero" — and blocking those counters is the first thing a reset does, so
+        // the card has already changed even though nothing was erased.
+        .pinBlockingIncomplete(user: 2, admin: 0),
     ]
 
     func testDefinitiveRejectionsDoNotForceReinspection() {

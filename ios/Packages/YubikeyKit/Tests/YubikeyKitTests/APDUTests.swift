@@ -337,6 +337,94 @@ final class APDUTests: XCTestCase {
 
     // MARK: Card operations against the simulated card
 
+    /// The reset's contract is `ykman openpgp reset`'s *sequence*, so it is pinned
+    /// as APDUs rather than inferred from the effect.
+    ///
+    /// This is the part a future edit is most likely to "simplify" into a single
+    /// `VERIFY PW3` and a terminate. That form is refused with `6982` by every card
+    /// whose Admin PIN is not already blocked — i.e. by every factory-fresh card,
+    /// which is exactly the card the ceremony's reset step exists for.
+    func testResetBurnsBothPINCountersThenTerminates() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        let beforeReset = transport.receivedAPDUs.count
+
+        try await card.reset()
+
+        let sequence = Array(transport.receivedAPDUs.dropFirst(beforeReset))
+        XCTAssertEqual(sequence.map { String($0.prefix(4)) }, [
+            "00ca",                             // GET DATA 0xC4: how many are left
+            "0020", "0020", "0020",           // PW1 burnt to zero (factory: 3)
+            "0020", "0020", "0020",           // PW3 burnt to zero (factory: 3)
+            "00ca",                             // read back, because 6982 explains nothing
+            "00e6",                             // TERMINATE DF
+            "0044",                             // ACTIVATE FILE
+            "00a4",                             // re-SELECT
+        ])
+        // P2 is the reference: PW1 first, then PW3.
+        XCTAssertEqual(sequence.prefix(7).map { String($0.prefix(8)) }, [
+            "00ca00c4",
+            "00200081", "00200081", "00200081",
+            "00200083", "00200083", "00200083",
+        ])
+        // Every one of those VERIFYs is a *failure by design*: none of them carries
+        // a PIN that could be accepted, so no successful verification can be what
+        // makes the terminate possible.
+        for apdu in sequence where apdu.hasPrefix("002000") {
+            XCTAssertTrue(
+                apdu.contains("0000000000000000"),
+                "a reset VERIFY must burn an attempt, not verify a PIN: \(apdu)"
+            )
+        }
+    }
+
+    /// The state that used to need a desktop tool: PW3 already blocked.
+    ///
+    /// `TERMINATE DF` is permitted without any verification in exactly that state
+    /// (spec 3.4.1), so the reset must still work — with no PIN, and without the
+    /// operator having to know anything about the card's history.
+    func testResetWorksWhenTheAdminPINIsAlreadyBlocked() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+
+        // Three wrong Admin PIN entries block PW3: the state the retry-limit step
+        // warns about, reached without the app's help.
+        for _ in 0..<3 {
+            try? await card.verify(
+                pin: Array("00000000".utf8), reference: .admin, operation: .verifyAdminPIN
+            )
+        }
+        let blocked = try await card.inventory()
+        XCTAssertEqual(blocked.retryCounters?.admin, 0, "PW3 must be blocked for this test to mean anything")
+
+        try await card.reset()
+
+        XCTAssertFalse(transport.appletIsTerminated)
+        let after = try await card.inventory()
+        XCTAssertEqual(after.retryCounters, RetryCounters(user: 3, reset: 0, admin: 3))
+    }
+
+    /// A reset that cannot get the counters to zero must say so, and must say it
+    /// *before* the terminate — the alternative is a `6982` from `TERMINATE DF`,
+    /// which describes the applet's mood rather than the state of the card.
+    func testResetReportsCountersThatWouldNotBlock() async throws {
+        let transport = MockYubikeyTransport()
+        let card = OpenPGPCard(transport: transport)
+        try await card.open()
+        transport.refuseToCountFailedAttempts = true
+
+        await XCTAssertThrowsErrorAsync { try await card.reset() } verify: { error in
+            XCTAssertEqual(
+                error as? CardError,
+                .pinBlockingIncomplete(user: 3, admin: 3),
+                "the applet's own count has to reach the caller"
+            )
+        }
+        XCTAssertFalse(transport.appletIsTerminated, "nothing may be erased by a reset that could not start")
+    }
+
     func testFullImportFlowAndPinErrors() async throws {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
@@ -345,14 +433,8 @@ final class APDUTests: XCTestCase {
         var inventory = try await card.inventory()
         XCTAssertFalse(inventory.holdsKey(in: .signature))
 
-        // Wrong Admin PIN reports the remaining attempts.
-        await XCTAssertThrowsErrorAsync {
-            try await card.reset(adminPIN: Array("00000000".utf8))
-        } verify: { error in
-            XCTAssertEqual(error as? CardError, .pinIncorrect(retriesRemaining: 2))
-        }
-
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        // The reset takes no Admin PIN at all (amendment 30).
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await card.applyPolicy(adminPIN: Array("87654321".utf8))
 
@@ -404,7 +486,7 @@ final class APDUTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         // Factory default first: three attempts each, and none for the resetting
@@ -433,7 +515,7 @@ final class APDUTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         let before = transport.currentPWStatus
 
@@ -463,7 +545,7 @@ final class APDUTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         await XCTAssertThrowsErrorAsync {
@@ -499,7 +581,7 @@ final class APDUTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         transport.refuseAlgorithmAttributes = true
 
@@ -528,7 +610,7 @@ final class APDUTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await card.applyPolicy(adminPIN: Array("87654321".utf8))
 
@@ -583,7 +665,7 @@ final class APDUTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let card = OpenPGPCard(transport: transport)
         try await card.open()
-        try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+        try await card.reset()
         try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         // Write the EdDSA attributes into the signature slot directly.
@@ -623,7 +705,7 @@ final class APDUTests: XCTestCase {
         func trace(_ transport: YubikeyTransport) async throws -> [String] {
             let card = OpenPGPCard(transport: transport)
             try await card.open()
-            try await card.reset(adminPIN: OpenPGPPinDefaults.admin)
+            try await card.reset()
             try await card.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
             try await card.applyPolicy(adminPIN: Array("87654321".utf8))
             let scalar = SensitiveBytes(copying: [UInt8](repeating: 0x33, count: 32))

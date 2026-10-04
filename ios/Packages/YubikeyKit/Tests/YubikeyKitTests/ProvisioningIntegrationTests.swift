@@ -60,7 +60,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+        try await ceremony.resetCard()
         try await ceremony.setPINs(
             userPIN: Array(Self.userPIN.utf8),
             adminPIN: Array(Self.adminPIN.utf8)
@@ -111,7 +111,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertFalse(inventory.holdsKey(in: .authentication))
         XCTAssertTrue(inventory.isFactoryFresh)
 
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+        try await ceremony.resetCard()
         try await ceremony.setPINs(
             userPIN: Array(Self.userPIN.utf8),
             adminPIN: Array(Self.adminPIN.utf8)
@@ -241,7 +241,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+        try await ceremony.resetCard()
         try await ceremony.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
         try await ceremony.setPINRetries(4)
 
@@ -267,7 +267,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let card = TransportSessionCard(makeTransport: { transport })
         let adminPIN = Array(Self.adminPIN.utf8)
 
-        try await card.reset(adminPIN: Array("12345678".utf8))
+        try await card.reset()
         try await card.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: adminPIN)
         try await card.applyPolicy(adminPIN: adminPIN)
         XCTAssertEqual(transport.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
@@ -358,22 +358,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
             XCTAssertEqual(error as? CeremonyError, .stepOutOfOrder(expected: .reset, actual: .pinProvisioning))
         }
         // And the destructive reset itself needs an explicit acknowledgement,
-        // because this card holds a key that may still secure funds.
+        // because this card holds a key that may still secure funds — and now that
+        // the reset takes no Admin PIN (amendment 30), this acknowledgement is the
+        // *only* thing standing between a stray tap and that key.
         await XCTAssertThrowsErrorAsync {
-            try await second.resetCard(adminPIN: Array(Self.adminPIN.utf8))
+            try await second.resetCard()
         } verify: { error in
             XCTAssertEqual(error as? CeremonyError, .destructiveResetNotAcknowledged)
         }
-        // The factory default no longer works: the first ceremony changed it.
-        await XCTAssertThrowsErrorAsync {
-            try await second.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
-        } verify: { error in
-            XCTAssertEqual(error as? CardError, .pinIncorrect(retriesRemaining: 2))
-        }
         XCTAssertEqual(transport.currentFingerprint(.signature), firstFingerprint, "the old key must be untouched")
 
-        // Only after acknowledging the destruction do the slots clear.
-        try await second.resetCard(adminPIN: Array(Self.adminPIN.utf8), acknowledgingDestruction: true)
+        // Only after acknowledging the destruction do the slots clear. No PIN is
+        // involved: the applet's Admin PIN is the one the first ceremony set, and
+        // this call does not ask for it — it blocks it instead.
+        try await second.resetCard(acknowledgingDestruction: true)
         XCTAssertFalse(transport.hasKey(in: .signature))
         XCTAssertFalse(transport.hasKey(in: .authentication))
     }

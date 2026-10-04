@@ -33,7 +33,8 @@ final class MockSignerCard: SignerCard {
     enum FailurePoint: Equatable {
         case none
         case inventory
-        /// The card answered with a definitive rejection (a wrong PIN).
+        /// The reset could not block the PIN counters it needs blocked: the card
+        /// answered, but it is changed (attempts burnt) rather than erased.
         case reset
         /// The card never answered: the session dropped mid-reset, so the
         /// card's state is unknown.
@@ -214,9 +215,13 @@ final class MockSignerCard: SignerCard {
         return result
     }
 
-    func reset(adminPIN: [UInt8]) async throws {
+    func reset() async throws {
         calls.append(.reset)
-        if failurePoint == .reset { throw CardError.pinIncorrect(retriesRemaining: 2) }
+        // The PIN burn is the reset's first act, so "the card refused" is not a
+        // failure mode this step has any more: the representative failure is that
+        // the counters did not reach zero, which leaves the card changed but not
+        // erased (and is classified as an unknown outcome for that reason).
+        if failurePoint == .reset { throw CardError.pinBlockingIncomplete(user: 2, admin: 0) }
         if failurePoint == .resetTransport {
             throw CardError.transportUnavailable("the NFC session ended unexpectedly, so this operation did not complete")
         }

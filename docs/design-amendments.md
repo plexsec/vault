@@ -1144,6 +1144,13 @@ now is only the wording:
   keys rather than recovering them;
 * the retry-limit step says the same thing in the operator's words before they choose a number.
 
+**Fixed later.** Amendment 30 (§4.2 step 2) closes this gap by adopting the reference
+implementation's route — block PW1 and PW3, then terminate — so the blocked-PW3 state is no longer
+the state the app cannot use. The reasoning above about *where* a no-PIN reset belongs turned out to
+be half right: it belongs with the PIN-unblock feature only if it is offered as a *recovery* for a
+blocked PIN. As the reset step's own implementation it needs nothing else, because that step
+already erases the keys and re-provisioning is what follows it.
+
 **Also measured, and now recorded so nobody re-derives it:** a fresh applet reports
 `01 7F 7F 7F 03 00 03`; `SET PIN RETRIES 5 5 5` reads back `05 00 05` and survives the key import;
 importing a key clears that slot's touch policy (reproduced four times); and the EC private-key
@@ -1223,4 +1230,56 @@ have their own tests (`testARefusedAttributesObjectNamesTheAlgorithmAndSlot`,
 operator can now do after resetting the applet. If `0xC3` is refused *again* with the GnuPG OID, then
 the OID is not the whole story on this firmware and the next step is a read-back-verified probe of
 the candidate forms (item 20), not another edit.
+
+## 30. v0.2: the reset needs no Admin PIN, because the applet already offers that route
+
+**Sections:** §4.2 (step 2), §6.5, §8.4. Supersedes the "not fixed, deliberately" half of amendment
+28; the card behaviour behind it is recorded in docs/m0-hardware-verification.md item 20.
+
+**What changed.** `SignerCard.reset(adminPIN:)` became `reset()`. The step no longer asks for the
+Admin PIN; it mirrors `ykman openpgp reset` command for command — `GET DATA 0xC4`, then wrong
+`VERIFY`s until PW1 and PW3 are blocked, `GET DATA 0xC4` again to confirm, `TERMINATE DF`,
+`ACTIVATE FILE`, re-SELECT — and it refuses to continue if the counters read back non-zero rather
+than terminating anyway. The sequence is pinned by `testResetBurnsBothPINCountersThenTerminates`,
+`testResetWorksWhenTheAdminPINIsAlreadyBlocked` and `testResetReportsCountersThatWouldNotBlock`; the
+mock now refuses `TERMINATE DF` unless PW3 is verified *or* its counter is spent, so the rule the
+real card enforces is enforced in the tests too, and `CardError.pinBlockingIncomplete` names the
+case where the burn silently did nothing.
+
+**Why the PIN had to go.** The old step verified PW3 and then terminated. Because the applet's
+access condition is "VERIFY of PW3, **or Always if PW3 is blocked**", that call could not reset the
+one card that most needs resetting — the card whose Admin PIN is blocked or unknown — and the
+operator holding the app was told `pinBlocked` and sent to a desktop tool. It also asked for a
+credential the reset was about to destroy, which teaches the wrong thing: the Admin PIN is not what
+authorises the erasure, and collecting it implies the erasure depends on it.
+
+**What was rejected.** "Try `TERMINATE DF` first, fall back to the burn only on `6982`." It is fewer
+APDUs on a card whose PW3 is already blocked, and it is the reading the spec's wording invites. It
+was rejected because it splits one operation into two paths that differ in *what the card is left
+in* when the session dies: the bare-terminate path can strand a terminated-but-unactivated applet
+without having told the operator why the card is unusable, and the fallback's trigger (`6982`) is
+the same status word an unverified *write* returns, so misreading it would turn a refusal into a
+wipe. One path, the one the reference implementation uses on real cards, is the one that can be
+reasoned about.
+
+**What it costs, and where that is said.** The reset now *begins* by making the card unusable:
+after the burn and before the terminate, both PINs are blocked and the keys are still there. A drop
+in that window is recoverable — finishing needs no PIN, because a blocked PW3 is exactly what
+`TERMINATE DF` wants — but it needs another tap, and the ceremony therefore returns to inspection on
+**any** reset failure instead of treating one as impossible (`resetCard` no longer rewinds through
+`withMutatingStep`). The reset step states the cost before the tap, the destructive-acknowledgement
+toggle is unchanged, and the PIN step's warning now says what the consequence actually is: a blocked
+Admin PIN no longer ends the card's life, it ends *this* provisioning run.
+
+**What this does not fix.** A blocked **User PIN** is still unblockable only by re-provisioning from
+the mnemonic: `RESET RETRY COUNTER` (INS `0x2C`) remains unimplemented, and it is the other half of
+the repair story in m0 item 19. And the burn is only *safe* because the applet restricts a
+no-VERIFY `TERMINATE DF` to the blocked-PW3 state; the app relies on that restriction rather than
+re-checking it, which is why the `0xC4` read-back is part of the sequence and not a nicety.
+
+**Verified off-hardware.** The APDU order, the blocked-PW3 path, the read-back failure and the
+ceremony's reaction to a reset that fails are all tested; VaultKit 255 (unchanged), YubikeyKit
+85 → 88. **Owed to hardware:** the four checks added to m0 item 20 — a reset on a card whose Admin
+PIN works, one on a card whose Admin PIN is blocked, a reset interrupted between the burn and the
+terminate and finished by a second tap, and the factory PINs and empty slots afterwards.
 

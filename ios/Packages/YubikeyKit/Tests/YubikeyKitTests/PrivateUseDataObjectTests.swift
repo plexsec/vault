@@ -193,7 +193,7 @@ final class PrivateUseDataObjectTests: XCTestCase {
         let beforeReset = try await card.readPairingManifest()
         XCTAssertNotNil(beforeReset)
 
-        try await card.reset(adminPIN: adminPIN)
+        try await card.reset()
 
         let afterReset = try await card.readPairingManifest()
         XCTAssertNil(afterReset)

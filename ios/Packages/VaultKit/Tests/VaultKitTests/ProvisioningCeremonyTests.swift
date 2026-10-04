@@ -53,7 +53,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         if let restoredWords {
@@ -263,7 +263,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         XCTAssertThrowsError(try ceremony.restoreMnemonic(words: Array(repeating: "abandon", count: 12))) { error in
@@ -320,7 +320,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         XCTAssertEqual(ceremony.step, .pinRetries)
 
@@ -338,7 +338,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         for value in [2, 11, 0, 100] {
@@ -362,7 +362,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
 
         card.retryWritesAreIgnored = true
@@ -385,7 +385,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries(8)
         try await ceremony.generateEntropy()
@@ -484,7 +484,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         await XCTAssertThrowsErrorAsync {
-            try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+            try await ceremony.resetCard(acknowledgingDestruction: true)
         }
         await XCTAssertThrowsErrorAsync { try await ceremony.generateEntropy() }
         // The mnemonic cannot be reached without generating entropy first.
@@ -506,7 +506,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
@@ -530,7 +530,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
@@ -565,14 +565,14 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
         // Refuses to erase a working signer without an explicit acknowledgement.
         await XCTAssertThrowsErrorAsync {
-            try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+            try await ceremony.resetCard()
         } verify: { error in
             XCTAssertEqual(error as? CeremonyError, .destructiveResetNotAcknowledged)
         }
         XCTAssertEqual(card.resetCount, 0, "the card must not be touched without acknowledgement")
 
         // With acknowledgement the reset proceeds.
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         XCTAssertEqual(card.resetCount, 1)
         XCTAssertEqual(ceremony.step, .pinProvisioning)
     }
@@ -591,7 +591,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         await XCTAssertThrowsErrorAsync {
-            try await ceremony.resetCard(adminPIN: Array("12345678".utf8))
+            try await ceremony.resetCard()
         } verify: { error in
             XCTAssertEqual(error as? CeremonyError, .destructiveResetNotAcknowledged)
         }
@@ -711,7 +711,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         await XCTAssertThrowsErrorAsync {
             try await ceremony.setPINs(userPIN: Array("1234".utf8), adminPIN: Array("87654321".utf8))
         }
@@ -886,16 +886,20 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
         // The NFC session drops mid-reset: the card state is now unknown.
         card.failurePoint = .resetTransport
-        await XCTAssertThrowsErrorAsync { try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true) }
+        await XCTAssertThrowsErrorAsync { try await ceremony.resetCard(acknowledgingDestruction: true) }
         ceremony.noteInterruption()
         XCTAssertEqual(ceremony.step, .cardInventory, "must re-inspect before retrying a mutating step")
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("re-inspect") })
     }
 
-    /// The complement of the test above: a card that *answered* with a refusal
-    /// wrote nothing, so the operator stays where they are. Rewinding here would
-    /// send them back to the inventory screen over a mistyped Admin PIN.
-    func testDefinitiveCardRejectionDuringMutatingStepDoesNotRewind() async throws {
+    /// The complement of the test above, for the step that no longer has a
+    /// definitive failure mode at all.
+    ///
+    /// The reset's first act is to block the PINs, so a card that *answered* has
+    /// still changed: the attempts that were burnt are gone. There is no "nothing
+    /// was written, stay where you are" case here, which is why the reset does not
+    /// use `withMutatingStep` — not even for a failure the applet itself reported.
+    func testAResetThatCouldNotBlockThePINsStillForcesReinspection() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
@@ -903,16 +907,17 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.advance()
         XCTAssertEqual(ceremony.step, .reset)
 
-        // A wrong Admin PIN: the card refused, and nothing was written.
+        // The card answered, and what it said was that the counters would not
+        // reach zero — a state it is now in, with the keys untouched.
         card.failurePoint = .reset
         await XCTAssertThrowsErrorAsync {
-            try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+            try await ceremony.resetCard(acknowledgingDestruction: true)
         } verify: { error in
-            XCTAssertEqual(error as? CardError, .pinIncorrect(retriesRemaining: 2))
+            XCTAssertEqual(error as? CardError, .pinBlockingIncomplete(user: 2, admin: 0))
         }
         ceremony.noteInterruption()
-        XCTAssertEqual(ceremony.step, .reset, "a refused PIN must not force a card re-read")
-        XCTAssertFalse(ceremony.report.warnings.contains { $0.contains("re-inspect") })
+        XCTAssertEqual(ceremony.step, .cardInventory, "the card changed, so it has to be re-read")
+        XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("tap reset again") })
     }
 
     /// A rejected key import is likewise definitive: `PUT DATA 3F FF` answered
@@ -952,7 +957,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         let commitment = try await ceremony.generateEntropy()
@@ -976,7 +981,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
 
@@ -991,7 +996,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         try ceremony.recordDiceRolls([1, 6, 3, 4])
@@ -1015,7 +1020,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
-        try await ceremony.resetCard(adminPIN: Array("12345678".utf8), acknowledgingDestruction: true)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
         try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
         try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
