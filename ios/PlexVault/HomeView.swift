@@ -54,6 +54,17 @@ struct HomeView: View {
         let needsChoice = !deviceChoice.hasChosen
         _route = State(initialValue: needsChoice ? .device : .home)
         _deviceIsFirstRun = State(initialValue: needsChoice)
+        #if DEBUG
+        // `-open-scanner` opens the signing flow straight away. It exists for the one thing
+        // the UI tests cannot check: a physical device's camera. XCUITest's runner takes the
+        // foreground while a test runs, which stops the app's capture session, so a live
+        // preview can only be looked at in an app nobody is driving — this argument is how
+        // that app is reached with no taps (README, m0 item 15).
+        if ProcessInfo.processInfo.arguments.contains("-open-scanner") {
+            _route = State(initialValue: .signing)
+            _deviceIsFirstRun = State(initialValue: false)
+        }
+        #endif
     }
 
     var body: some View {

@@ -88,6 +88,20 @@ simulator), and either a YubiKey 5 NFC (contactless) or a YubiKey 5C NFC
 (iPhone 15+ for the wired path). A DEBUG-only simulated card lets the whole
 ceremony be exercised with no hardware present.
 
+**Running the UI tests on a phone** is the same command with a device destination —
+the test target carries the personal team and a generated `Info.plist` for exactly
+that. What a phone adds is the camera and CoreNFC, and the camera is the one thing
+the UI suite cannot drive: XCUITest's runner takes the foreground while the test
+executes, which stops the app's capture session (the preview freezes on its last
+frame — measured, not assumed). To look at the live preview, build for the device and
+launch with the DEBUG-only `-open-scanner` argument, which opens the signing flow on
+the scanner with no taps needed:
+
+```bash
+xcrun devicectl device process launch --device <device id> --console \
+    com.plexsec.vault -open-scanner
+```
+
 ## Where the confidence comes from
 
 1. **Published test vectors.** BIP32 vectors 1–5 (including the invalid-key

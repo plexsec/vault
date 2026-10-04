@@ -170,18 +170,17 @@ public final class SigningViewModel {
 
     // MARK: Step 1 — take the request
 
-    /// Starts the flow on the scanner, with no card access at all: the request is what
-    /// names the key, so nothing has to be read or decided before it (amendment 33).
+    /// Opens the flow on the scanner, with no card access at all: the request is what names
+    /// the key, so nothing has to be read or decided before it (amendment 33).
     ///
-    /// Called as the flow appears — there is no screen between the home screen and the
-    /// camera — and safe to call again after the camera was stopped and restarted
-    /// (`applicationDidForeground`).
+    /// The camera itself is started by the preview view, once its layer is on screen
+    /// (`QRScanModel.previewDidAppear`): starting a session before the layer can display it
+    /// leaves the preview frozen on its first frame.
     public func beginScanning() async {
         let session = self.session
         await run { _ in
             guard session == self.session else { return }
             self.screen = .scan
-            await self.scan.start()
         }
     }
 

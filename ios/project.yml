@@ -127,6 +127,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.plexsec.vault.uitests
         TEST_TARGET_NAME: PlexVault
         CODE_SIGN_STYLE: Automatic
+        # Device signing needs an Info.plist for the test runner too; the simulator does not
+        # ask for one, which is why this only came up when the tests were first run on a
+        # phone.
+        GENERATE_INFOPLIST_FILE: YES
+        # The same personal team as the app: without it the test runner cannot be installed
+        # on a device, and these tests are the only place the camera is exercised at all
+        # (a simulator has none).
+        DEVELOPMENT_TEAM: "WSL242UF2M"
 
 schemes:
   PlexVault:

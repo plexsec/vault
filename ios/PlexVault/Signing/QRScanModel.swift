@@ -59,6 +59,19 @@ final class QRScanModel: NSObject {
     /// nothing in the log to explain it.
     private var sessionWork: Task<Void, Never>?
 
+    /// The preview layer is on screen with a real size: the camera is started from here.
+    ///
+    /// See `QRScannerView.onPreviewReady` for why the start waits for this instead of running
+    /// as soon as the flow asks for a scanner.
+    func previewDidAppear() {
+        Task { await start() }
+    }
+
+    /// The preview left the screen (the flow moved on, or was left): the camera goes with it.
+    func previewDidDisappear() {
+        stop()
+    }
+
     /// Starts the camera, requesting permission the first time.
     ///
     /// Whether a start is even meaningful is `QRScanSession.begin()`'s decision, and it is
@@ -85,7 +98,7 @@ final class QRScanModel: NSObject {
         partsSeen = 0
         announcedType = nil
         guard configureIfNeeded() else { return }
-        // The camera is started **only while the app is active**.
+        // And the session is started **only while the app is active**.
         //
         // A session started while the app is inactive reports `isRunning` and delivers no
         // frames: the preview freezes on its last frame (or stays empty), and nothing in a

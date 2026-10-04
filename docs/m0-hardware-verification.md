@@ -488,16 +488,43 @@ A simulator has no camera, so every path below needs the phone. The logic is uni
 (`QRScanSessionTests`); what a device adds is that `AVCaptureSession` really starts again,
 which is the part no test can hold.
 
+**Measured on the iPhone 17 in hand (iOS 26.5, 2026-10-04)**, with a temporary in-app probe
+that counted the frames a second `AVCaptureVideoDataOutput` received and logged the session's
+notifications, launched with `devicectl … -open-scanner` (no taps):
+
+* **The preview is live after a normal launch**: 23 → 606 frames in 20 seconds (~30 fps), with
+  `running=true` throughout, and **the picture moving** (checked by eye on the device — a render
+  readback cannot see the camera surface, so a frame count alone would not have proven that the
+  *display* was live). The first `start()` of a launch happens while the app is still *inactive*
+  (`appState=1`), which is one of the two cases amendment 35 fixes: it defers, the foreground edge
+  starts the session (`appState=0`), and `didStart` follows. Before that fix the same moment
+  started the session anyway, and the count stopped at **1**.
+* **Entering the flow from the home screen** was the second case, and the one the operator reported
+  after the first fix: the session was started from the flow's `.task`, before the preview layer
+  inside the `ScrollView` existed, which left one frame on screen until a background/foreground trip
+  restarted the session. The fix starts it from the preview's own readiness instead; verified on the
+  device with the app opened by `-open-scanner` and a frame counter on screen: live picture, count
+  climbing.
+* **Background → foreground restarts it**: launching another app stops the session
+  (`VM.didBackground`, `stop()`, `didStop`, `running=false`, frame count frozen) and coming back
+  starts it again (`VM.didForeground`, `start()`, `didStart`, frames climbing from 296).
+* **A UI test on a phone cannot see the camera.** Under XCUITest the runner takes the foreground
+  while the test executes, so the app's session is stopped by the system a fraction of a second
+  after it starts — the same probe showed `frames=1`, `didStart` and `didStop` in the same
+  second, with the session never restarted because the app's own state still claimed `scanning`.
+  That is a property of the harness, not of the app; the live-preview checks below therefore need
+  the app launched by hand (or with `-open-scanner`), not by the test runner.
+
+- [x] **First use after a fresh install / on launch**: a *live* preview, not one frozen frame.
+      Verified above: the app is inactive when the first start is issued, the start defers, and the
+      foreground edge starts a session that then delivers ~30 fps.
+- [x] **Entering the flow from the home screen** (the reported "static cached image"): live, with the
+      frame count climbing. Verified above; the session is now started by the preview layer's own
+      readiness rather than by the flow.
+- [x] **Background → foreground**: the preview restarts on its own. Verified above.
 - [ ] Tap *Sign a transaction*: the camera opens. Tap **Cancel**, then *Sign a transaction*
-      again: the preview must come back. Repeat four or five times — this is the reported bug, and
-      it was a state that outlived the camera rather than a one-off.
-- [ ] **First use after a fresh install**: the permission prompt appears, and answering it must
-      leave a *live* preview, not one frozen frame. The app asks for the camera while the app is
-      inactive (the prompt does that), so a start issued at that moment reports `isRunning` and
-      delivers nothing; the fix starts it only while the app is active and lets the foreground
-      edge do it otherwise (amendment 35). This is the reported "static cached image".
-- [ ] While scanning (no code in view yet), send the app to the background and bring it back:
-      the preview must restart on its own.
+      again: the preview must come back. Repeat four or five times — the state machine's own
+      regression (a `scanning` claim that outlived the camera), and still only checkable by hand.
 - [ ] Deny camera access, then re-enter the scanner: the reason must be shown again rather
       than a dark rectangle. Enable it in Settings, cancel out of the flow, come back: the
       camera must work.
