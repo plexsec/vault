@@ -114,6 +114,25 @@ public final class SmartCardTransport: YubikeyTransport {
 
     /// Diagnostic used by the UI when nothing is found, so the operator gets an
     /// actionable message instead of a bare failure.
+    /// Whether a card is in any USB-C smart-card slot **right now**.
+    ///
+    /// Polled rather than observed, for the same reason `open()` polls: `TKSmartCardSlot`
+    /// state observation is not available on every OS version. This only colours an icon
+    /// on the home screen, so a two-second-stale answer is the right trade — and it never
+    /// opens a session, so it cannot interfere with one the operator is about to start.
+    ///
+    /// A slot that reports `.validCard` is treated as "the YubiKey is plugged in". It
+    /// cannot be known to be a *YubiKey* without talking to it, and the icon does not
+    /// claim that: the label says "no YubiKey detected" only when nothing is there.
+    public static func isCardPresent() async -> Bool {
+        guard let slotManager = TKSmartCardSlotManager.default else { return false }
+        for name in slotManager.slotNames {
+            guard let slot = await slotManager.getSlot(withName: name) else { continue }
+            if slot.state == .validCard { return true }
+        }
+        return false
+    }
+
     public func describeAvailableSlots() async -> [String] {
         guard let slotManager = TKSmartCardSlotManager.default else { return [] }
         var out: [String] = []

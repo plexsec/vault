@@ -7,6 +7,9 @@ struct PlexVaultApp: App {
     /// The one thing the app remembers between launches, created here so both flows and
     /// the home screen read the same value (`DeviceChoiceStore`).
     @State private var device: DeviceChoiceStore
+    /// Watches the chosen connection's reader, for the one connection whose presence the app
+    /// can actually tell (USB-C); see `CardPresence`.
+    @State private var presence = CardPresence()
     @State private var viewModel: CeremonyViewModel
     @State private var signingViewModel: SigningViewModel
     @Environment(\.scenePhase) private var scenePhase
@@ -23,7 +26,8 @@ struct PlexVaultApp: App {
             HomeView(
                 ceremonyViewModel: viewModel,
                 signingViewModel: signingViewModel,
-                deviceChoice: device
+                deviceChoice: device,
+                presence: presence
             )
                 .onChange(of: scenePhase) { _, phase in
                     viewModel.screenIsCaptured = Self.activeScreen?.isCaptured ?? false

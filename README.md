@@ -23,11 +23,12 @@ written to the card, and the mnemonic is never needed. Bitcoin PSBTs, EIP-712 an
 `personal_sign` are refused with an explanation (§3.2, §10 item 9).
 
 **One setting is remembered.** The app asks how the YubiKey is connected (NFC, USB-C, or the
-Debug-only simulated card) on first launch, stores that answer, and shows it at the bottom of the
-home screen with a way to change it. It is the only thing the app persists between launches: the
-connection is a property of the phone's reader rather than of a ceremony, so it is asked once and
-not re-litigated on every screen (§5.2 rule 7, amendment 31, and check 3 of
-`tools/audit-release.sh`).
+Debug-only simulated card) on first launch, stores that answer, and puts it behind a YubiKey button
+in the home screen's top-right corner — tap it to change the choice. On USB-C the button also turns
+green when the key is in the slot, so "is my key plugged in?" is answered without leaving the home
+screen. It is the only thing the app persists between launches: the connection is a property of the
+phone's reader rather than of a ceremony, so it is asked once and not re-litigated on every screen
+(§5.2 rule 7, amendment 31, and check 3 of `tools/audit-release.sh`).
 
 ## What is here
 
@@ -73,7 +74,7 @@ cd ios/Packages/VaultKit  && swift test      # 255 tests: crypto, BIP39/BIP32 in
 cd ios/Packages/YubikeyKit && swift test     # 88 tests: APDU codec, both OpenPGP slots, private-use data objects, PSO:CDS,
                                              #            transports, NFC session policy, end-to-end signing, and the
                                              #            applet behaviours that broke provisioning (amendments 26, 30)
-cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 13 UI tests (~3 min each for the three that walk a whole flow)
+cd ios && xcodebuild test -scheme PlexVault -destination 'platform=iOS Simulator,name=iPhone 17'  # 14 UI tests (~3 min each for the three that walk a whole flow)
 cd tools/derive && python3 -m venv .venv && .venv/bin/pip install pycryptodome
 cd tools/derive && .venv/bin/python derive.py selftest
 

@@ -10,10 +10,9 @@ import XCTest
 /// screen both shows it and provides the only way to change it.
 final class DeviceChoiceUITests: XCTestCase {
 
-    /// Counts the static texts whose label is exactly `label`: `app.staticTexts[x]` is a
-    /// single element, and a negative assertion needs "none on screen".
-    private func staticTextCount(_ label: String, in app: XCUIApplication) -> Int {
-        app.staticTexts.matching(NSPredicate(format: "label == %@", label)).count
+    /// The home screen's YubiKey button, which is the only place the connection is shown.
+    private func deviceButton(in app: XCUIApplication) -> XCUIElement {
+        app.buttons["device-button"]
     }
 
     /// On a first run the device screen is the way in, it cannot be left without an
@@ -52,13 +51,38 @@ final class DeviceChoiceUITests: XCTestCase {
 
         tapPinnedPrimaryAction(app, identifier: "device-done")
 
-        // Home, showing the connection it was given.
+        // Home, showing the connection it was given: the top-right button names it, and that
+        // label is the only place the choice is visible.
         XCTAssertTrue(
             app.buttons["route-signing"].waitForExistence(timeout: 15),
             "Continue must reach the home screen:\n\(app.debugDescription)"
         )
-        XCTAssertTrue(app.staticTexts["Card connection"].exists, "the home screen must summarise it")
-        XCTAssertTrue(app.staticTexts["USB-C"].exists, "and show which one was chosen")
+        let device = deviceButton(in: app)
+        XCTAssertTrue(device.waitForExistence(timeout: 10), "the home screen must show the connection")
+        XCTAssertTrue(
+            device.label.hasPrefix("Card connection: USB-C"),
+            "the button must name the connection in use, got '\(device.label)'"
+        )
+    }
+
+    /// On USB-C the app can tell whether the key is plugged in, and says so: the icon turns
+    /// green when it is and grey when it is not.
+    ///
+    /// A simulator has no smart-card slot to ask, so the assertion is that the presence
+    /// *clause* arrives — either reading is a passed check that the poll reached the reader
+    /// and reported something, which is the part that can break.
+    func testTheUsbCConnectionReportsWhetherTheKeyIsPluggedIn() {
+        let app = launchApp(firstRun: true)
+        tapWhenVisible(app.buttons["device-choice-USB-C"], in: app)
+        tapPinnedPrimaryAction(app, identifier: "device-done")
+
+        let device = deviceButton(in: app)
+        XCTAssertTrue(device.waitForExistence(timeout: 10), app.debugDescription)
+        let reported = NSPredicate(
+            format: "label CONTAINS 'YubiKey inserted' OR label CONTAINS 'no YubiKey detected'"
+        )
+        expectation(for: reported, evaluatedWith: device)
+        waitForExpectations(timeout: 15)
     }
 
     /// The choice is remembered across launches, and the home screen's button is how it
@@ -82,10 +106,17 @@ final class DeviceChoiceUITests: XCTestCase {
             app.buttons.matching(identifier: "device-choice-NFC").count, 0,
             "the device screen must not reappear once a choice is stored"
         )
-        XCTAssertTrue(app.staticTexts["USB-C"].exists, "the stored choice must be what comes back")
+        XCTAssertTrue(
+            deviceButton(in: app).label.hasPrefix("Card connection: USB-C"),
+            "the stored choice must be what comes back, got '\(deviceButton(in: app).label)'"
+        )
 
-        // Change it, from the home screen only.
-        tapWhenVisible(app.buttons["change-device"], in: app)
+        // Change it, from the top-right button only. Tapped directly rather than with
+        // `tapWhenVisible`: that helper scrolls into `visibleBand`, which deliberately starts
+        // below the navigation bar, so a toolbar button can never be brought into it.
+        let device = deviceButton(in: app)
+        XCTAssertTrue(device.isHittable, "the device button must be tappable")
+        device.tap()
         let nfc = app.buttons["device-choice-NFC"]
         XCTAssertTrue(nfc.waitForExistence(timeout: 15), app.debugDescription)
         XCTAssertTrue(
@@ -104,9 +135,9 @@ final class DeviceChoiceUITests: XCTestCase {
             app.buttons["route-signing"].waitForExistence(timeout: 15),
             "Done must return to the home screen:\n\(app.debugDescription)"
         )
-        XCTAssertTrue(app.staticTexts["NFC"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(deviceButton(in: app).waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertEqual(
-            staticTextCount("USB-C", in: app), 0,
+            deviceButton(in: app).label, "Card connection: NFC",
             "the new choice must replace the stored one, not sit beside it"
         )
 
@@ -114,8 +145,8 @@ final class DeviceChoiceUITests: XCTestCase {
         app.terminate()
         app.launch()
         XCTAssertTrue(app.buttons["route-signing"].waitForExistence(timeout: 15), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["NFC"].exists, "the change must survive a relaunch")
-        XCTAssertEqual(staticTextCount("USB-C", in: app), 0)
+        XCTAssertEqual(deviceButton(in: app).label, "Card connection: NFC",
+                       "the change must survive a relaunch")
     }
 
     /// What the device screen stores is what the ceremony then uses.
@@ -129,8 +160,8 @@ final class DeviceChoiceUITests: XCTestCase {
 
         tapWhenVisible(app.buttons["device-choice-Simulated (debug)"], in: app)
         tapPinnedPrimaryAction(app, identifier: "device-done")
-        XCTAssertTrue(
-            app.staticTexts["Simulated (debug)"].waitForExistence(timeout: 10),
+        XCTAssertEqual(
+            deviceButton(in: app).label, "Card connection: Simulated (debug)",
             "the home screen must show the choice just made:\n\(app.debugDescription)"
         )
 

@@ -1292,8 +1292,20 @@ persistence row of `docs/v1-threat-notes.md`.
 section on the provisioning setup screen, a "Card connection" section on the signing one — with the
 value held by each view model. Both pickers are gone, and nothing inside either flow echoes the
 choice: the connection is asked once, on a device screen that now stands in front of the app on
-first launch, stored, summarised at the bottom of the home screen, and changed only from there.
-Picking a row stores it immediately, so there is no save step that can disagree with the row.
+first launch, stored, and changed from a single place — a drawn YubiKey button in the home screen's
+top-right corner, whose badge names the connection and whose colour reports whether the key is
+plugged in. Picking a row on the device screen stores it immediately, so there is no save step that
+can disagree with the row.
+
+**The button says more than the old summary did.** Its body is the key (a rounded rectangle with
+the touch button on it — there is no YubiKey symbol to borrow) and its corner badge is the
+connection, so the app's reader is one glance away rather than one screen down. On USB-C the colour
+becomes the presence signal: `TKSmartCardSlot.state == .validCard` means the key is in the slot, and
+the icon goes green; `null` (NFC cannot be sensed passively, and the simulated card is always there)
+leaves it in the normal tint rather than claiming to know. The poll is two seconds, opens no session,
+and runs only while USB-C is the chosen connection and the home screen is in front — the same
+polling, for the same reason, as the transport's own discovery (m0 item 4 now carries the hardware
+check for it).
 
 **Why the pickers had to go.** The connection is a property of the phone and its reader, not of a
 ceremony: it does not change between provisioning and signing, or between two signatures. Two
@@ -1327,11 +1339,11 @@ a chain id, and nothing about any ceremony. `-deterministic-entropy`, the simula
 other test hook remain DEBUG-only, and the app is still stateless in the sense §4.3 and §5.2 rule 8
 mean: a fresh install can re-pair from the card alone.
 
-**Verified.** `DeviceChoiceUITests` (3 tests): a first run asks and cannot be got past without an
-answer, the choice survives a relaunch and a change *replaces* it, and a choice made on that screen
-is the one the ceremony then reads (behavioural proof, since no screen inside the flow echoes it).
-Every other UI test now seeds the connection at launch (`launchApp(deviceChoice:)`) instead of
-tapping a picker, so the count went 9 → 13 and the walk helpers no longer tap a transport at all.
-Packages unchanged (VaultKit 255, YubikeyKit 88). Release build and `tools/audit-release.sh` pass
-with the narrowed check.
+**Verified.** `DeviceChoiceUITests` (4 tests): a first run asks and cannot be got past without an
+answer, the choice survives a relaunch and a change *replaces* it, a choice made on that screen is
+the one the ceremony then reads (behavioural proof, since no screen inside the flow echoes it), and
+the USB-C button reports the plug-in state. Every other UI test now seeds the connection at launch
+(`launchApp(deviceChoice:)`) instead of tapping a picker, so the count went 9 → 14 and the walk
+helpers no longer tap a transport at all. Packages unchanged (VaultKit 255, YubikeyKit 88). Release
+build and `tools/audit-release.sh` pass with the narrowed check.
 

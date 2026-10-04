@@ -15,15 +15,17 @@ import VaultKit
 /// stack three near-identical cards under the title. Each entry picks the
 /// ceremony's mode before the provisioning flow opens.
 ///
-/// The device choice is above both routes: on first launch this screen is not shown
-/// at all until the operator has said how the YubiKey is connected, because the
-/// connection is the one thing the app cannot work out for itself. Afterwards it is
-/// summarised at the bottom, with a way to change it.
+/// The device choice is above both routes: on first launch this screen is not shown at
+/// all until the operator has said how the YubiKey is connected, because the connection is
+/// the one thing the app cannot work out for itself. Afterwards it lives behind the YubiKey
+/// button in the top-right corner, which shows the key it will use, how it is connected, and
+/// — on USB-C — whether the key is plugged in.
 struct HomeView: View {
     /// Owned by the app so a scene-phase change can reach both flows.
     let ceremonyViewModel: CeremonyViewModel
     let signingViewModel: SigningViewModel
     let deviceChoice: DeviceChoiceStore
+    let presence: CardPresence
     @State private var route: Route
     /// True while the device screen is the way *into* the app, so it cannot be left
     /// without an answer. Set when the route was decided at construction, and cleared
@@ -42,11 +44,13 @@ struct HomeView: View {
     init(
         ceremonyViewModel: CeremonyViewModel,
         signingViewModel: SigningViewModel,
-        deviceChoice: DeviceChoiceStore
+        deviceChoice: DeviceChoiceStore,
+        presence: CardPresence
     ) {
         self.ceremonyViewModel = ceremonyViewModel
         self.signingViewModel = signingViewModel
         self.deviceChoice = deviceChoice
+        self.presence = presence
         let needsChoice = !deviceChoice.hasChosen
         _route = State(initialValue: needsChoice ? .device : .home)
         _deviceIsFirstRun = State(initialValue: needsChoice)
@@ -71,15 +75,6 @@ struct HomeView: View {
                 deviceIsFirstRun = false
                 route = .home
             }
-        }
-    }
-
-    /// The connection, shown at the bottom of the home screen: one line to confirm the
-    /// app is about to talk to the right reader, and the button that changes it.
-    private var deviceSummary: some View {
-        DeviceSummary(choice: deviceChoice.choice) {
-            deviceIsFirstRun = false
-            route = .device
         }
     }
 
@@ -111,44 +106,37 @@ struct HomeView: View {
                     Text("Signing never writes to the card — every signature needs the PIN and a touch.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-
-                    deviceSummary
                 }
                 .padding()
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-}
-
-/// The connection the app will use, and the way to change it.
-private struct DeviceSummary: View {
-    let choice: CardTransportChoice
-    let change: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Card connection").font(.footnote).foregroundStyle(.secondary)
-                Spacer(minLength: 12)
-                Button("Change", action: change)
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("change-device")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        deviceIsFirstRun = false
+                        route = .device
+                    } label: {
+                        YubiKeyGlyph(choice: deviceChoice.choice, isPresent: presence.presence)
+                    }
+                    .accessibilityLabel(presenceLabel)
+                    .accessibilityHint("Change how the YubiKey is connected")
+                    .accessibilityIdentifier("device-button")
+                }
             }
-            Text(choice.title).font(.callout.weight(.medium))
-            Text(choice.detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // Polls the USB-C slot while that is the chosen connection, and stops the
+            // moment the choice changes or this screen goes away — the card's presence is
+            // only interesting here.
+            .task(id: deviceChoice.choice) {
+                await presence.watch(deviceChoice.choice)
+            }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.25)))
+    }
+
+    private var presenceLabel: String {
+        deviceChoice.choice.connectionLabel(isPresent: presence.presence)
     }
 }
-
 private struct RouteCard: View {
     let title: String
     let detail: String

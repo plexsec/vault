@@ -131,6 +131,14 @@ is unavailable, so the transport polls `slotNames`.
    record it — it becomes part of the operator procedure. If `slotNames` never
    updates on plug-in, the existing polling loop is already the fallback and only
    the interval needs tuning.
+6. **The home screen's plug-in colour.** The YubiKey button in the top-right corner
+   turns green when `TKSmartCardSlot.state` reports `.validCard` and grey otherwise
+   (`SmartCardTransport.isCardPresent()`, polled every two seconds — the same polling
+   the transport does, and for the same reason). Confirm on hardware that plugging the
+   key in and pulling it out flips that colour within a couple of seconds, and that it
+   stays grey while no reader is attached. If a slot exists but never reports
+   `.validCard`, the indicator is wrong in the safe direction (grey while inserted);
+   nothing else depends on it.
 
 **Why it is safe to be wrong.** This is a transport-discovery question, not a
 cryptographic one. Failure to find the key is a visible error, and NFC remains a
