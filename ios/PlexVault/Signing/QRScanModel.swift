@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 import VaultKit
 
 /// Receives an animated UR over the camera.
@@ -84,6 +85,26 @@ final class QRScanModel: NSObject {
         partsSeen = 0
         announcedType = nil
         guard configureIfNeeded() else { return }
+        // The camera is started **only while the app is active**.
+        //
+        // A session started while the app is inactive reports `isRunning` and delivers no
+        // frames: the preview freezes on its last frame (or stays empty), and nothing in a
+        // log says why. The permission prompt is exactly that case — asking for the camera
+        // takes the app out of the foreground, `applicationDidBackground` suspends the
+        // scanner, and this function resumes after the operator answers with the app still
+        // on its way back. Starting there left the session "running" for good: the
+        // foreground edge asked to start it, the `isRunning` guard below skipped it, and
+        // the preview never came alive. That is the reported "static cached image"
+        // (amendment 35).
+        //
+        // Deferring is safe because the foreground edge starts the scanner whenever it is
+        // the screen on show (`SigningViewModel.applicationDidForeground`), and `suspend()`
+        // below keeps the state honest in the meantime: `scanning` means the camera was
+        // started while the app could actually show it.
+        guard UIApplication.shared.applicationState == .active else {
+            scanSession.suspend()
+            return
+        }
         await performSessionWork { session in
             guard !session.isRunning else { return }
             session.startRunning()

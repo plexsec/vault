@@ -1520,3 +1520,49 @@ screen (it replaced the test that asserted the same property on the setup screen
 longer exists). The signing walk in `SigningFlowUITests` no longer taps anything before the
 sample request, and still asserts the card's address is absent from the screen until the
 card has been read. VaultKit 256, YubikeyKit 89, UI 15.
+
+## 35. v0.2: the camera is started only while the app is active
+
+**Sections:** §5.1 (the scanner), `QRScanModel`.
+
+**What was reported.** The camera preview was frozen: it showed one static frame, as if cached.
+
+**What it was.** A capture session started while the app is **inactive** reports `isRunning` and
+delivers nothing. The preview then holds its last frame — or stays empty — and no log line says
+why. The permission prompt is exactly that situation, and it is the first thing that happens on a
+device that has not been asked for the camera before:
+
+1. the flow opens on the scanner, which calls `start()`;
+2. `QRScanSession` claims `scanning` and the app asks for permission — which takes the app out of
+   the foreground;
+3. `applicationDidBackground` suspends the scanner (the claim goes back to `idle`) and stops a
+   session that never started;
+4. the operator answers the prompt, and `start()` resumes with the app still on its way back to
+   active. It configured the session and called `startRunning()` **there**;
+5. the app became active, the foreground edge asked the scanner to start — and `performSessionWork`
+   skipped it, because the session already reported `isRunning`.
+
+The result was a session that was "running" for good, delivering nothing, with the state machine
+saying `idle` all along. (The same shape in reverse is the bug `QRScanSession` documents: a state
+that claims more than the camera is doing. This time the claim was AVFoundation's, not ours.)
+
+**The fix.** `start()` configures, then starts **only if
+`UIApplication.shared.applicationState == .active`**; otherwise it withdraws the claim
+(`suspend()`) and returns. The foreground edge already starts the scanner whenever it is the screen
+on show, and it now does so for real, because the session was never started in the background. This
+is one guard, one `import UIKit`, and no new state: the invariant is "`scanning` means the camera
+was started while the app could actually show it".
+
+**What this does not fix.** A session that the *system* stops while the app is active — an incoming
+call, another app taking the camera — leaves the claim saying `scanning`, and the foreground edge
+then declines to restart it. That case needs a frame watchdog rather than a flag, and it is recorded
+in `docs/m0-hardware-verification.md` item 15 rather than guessed at: a simulator has no camera, so
+neither case can be reproduced off-hardware, and the reported symptom is the one above (it happens
+on first use, before anything could stop a running session).
+
+**Not verifiable here, deliberately stated.** The simulator has no camera: it answers
+`AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)` with `nil`, and the
+app shows its own reason — "No camera is available on this device." A probe (a throwaway UI test
+that screenshotted twice) confirmed exactly that, so nothing about the live preview can be tested
+in CI. The unit-testable half of the scanner (`QRScanSession`) is unchanged, and the UI walk still
+drives the sample request through the same decoder.

@@ -488,16 +488,25 @@ A simulator has no camera, so every path below needs the phone. The logic is uni
 (`QRScanSessionTests`); what a device adds is that `AVCaptureSession` really starts again,
 which is the part no test can hold.
 
-- [ ] Signing flow → *Read the YubiKey* → the camera opens. Tap **Cancel**, then *Read the
-      YubiKey* again: the preview must come back. Repeat four or five times — this is the
-      reported bug, and it was a state that outlived the camera rather than a one-off.
+- [ ] Tap *Sign a transaction*: the camera opens. Tap **Cancel**, then *Sign a transaction*
+      again: the preview must come back. Repeat four or five times — this is the reported bug, and
+      it was a state that outlived the camera rather than a one-off.
+- [ ] **First use after a fresh install**: the permission prompt appears, and answering it must
+      leave a *live* preview, not one frozen frame. The app asks for the camera while the app is
+      inactive (the prompt does that), so a start issued at that moment reports `isRunning` and
+      delivers nothing; the fix starts it only while the app is active and lets the foreground
+      edge do it otherwise (amendment 35). This is the reported "static cached image".
 - [ ] While scanning (no code in view yet), send the app to the background and bring it back:
       the preview must restart on its own.
 - [ ] Deny camera access, then re-enter the scanner: the reason must be shown again rather
       than a dark rectangle. Enable it in Settings, cancel out of the flow, come back: the
       camera must work.
 - [ ] Interrupt mid-scan with an incoming call (or the Control Centre), then return: the
-      preview must be live again, with no partial progress from before.
+      preview must be live again, with no partial progress from before. (A session that the
+      system stops while the app is *active* is the one case the state machine cannot see: the
+      claim still says `scanning`, and the foreground edge declines to restart it. Leaving the
+      flow and re-entering resets it — worth confirming, because if it happens the scanner needs
+      a watchdog rather than a flag.)
 - [ ] Confirm that a request decoded in one visit is *not* still on screen after leaving the
       flow and coming back with a different (or no) request.
 
