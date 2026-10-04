@@ -4,16 +4,22 @@ import Foundation
 /// decide whether it may be produced at all.
 ///
 /// The gates live here rather than in the view layer (design.md §5.2 rule 1):
-/// a screen can be skipped, an error thrown by the state machine cannot. The
-/// order is deliberate — the card is read *first*, so the address that will sign
-/// is on screen while the transaction is being read, not after.
+/// a screen can be skipped, an error thrown by the state machine cannot.
+///
+/// The order is deliberate: **the request is read first**, so the card is asked for
+/// the one key the wallet named and nothing else. The previous order read the card
+/// first, which meant reading *both* slots — an inventory probes each slot's public
+/// key to report occupancy — plus the manifest and the counter in four separate
+/// sessions, before knowing whether the request was one this app could serve at all
+/// (amendment 33).
 public enum SigningStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case notStarted = 0
-    /// Read-only: the card's serial, its pairing manifest and the signature
-    /// slot's public key, from which the signing address is derived.
-    case cardRead
-    /// The request arrived and its transaction was parsed.
+    /// The request arrived, its transaction was parsed, and it names a key this app
+    /// signs with. Nothing has been read from the card yet.
     case requestDecoded
+    /// Read-only: the serial, the pairing manifest and that one slot's public key —
+    /// the slot the request named — from which the signing address is derived.
+    case cardRead
     /// The request was bound to this card: path, master fingerprint and, when the
     /// wallet sends one, address.
     case requestVerified
@@ -49,6 +55,11 @@ public enum SigningStep: Int, CaseIterable, Comparable, Codable, Sendable {
 
 public enum SigningError: Swift.Error, Equatable {
     case wrongStep(expected: SigningStep, actual: SigningStep)
+    /// A request was needed and none had been read. Only reachable by a caller that
+    /// skipped the scan: the step gate refuses that first.
+    case noRequestYet
+    /// The card was needed and had not been read in this session.
+    case cardNotReadYet
     case noPairingManifest
     case requestPathNotPinned(requested: String, pinned: String)
     case requestFingerprintMismatch(requested: String, expected: String)
@@ -56,6 +67,14 @@ public enum SigningError: Swift.Error, Equatable {
     case chainNotConfirmed(chainID: String)
     case chainIDMissing
     case unsupportedDataType(String)
+    /// The request names a key this app cannot sign with — either this app's Ed25519
+    /// key (which it reads and pairs but does not sign with in this version) or a path
+    /// it does not provision at all.
+    ///
+    /// Distinct from `requestPathNotPinned`, which is about the *card*: this one is
+    /// about what the app is able to do, and it is raised **before** the card is read,
+    /// so a request the app cannot serve costs no card operation (amendment 33).
+    case requestPathNotSignable(requested: String, signable: String)
     /// The request could not be read at all. Carries the parser's own explanation, because the
     /// parser knows what is wrong: reporting a malformed request as a *policy* refusal ("this
     /// app does not sign messages") sends the operator looking in the wrong place — which is
@@ -77,6 +96,12 @@ public enum SigningError: Swift.Error, Equatable {
         case .wrongStep(let expected, let actual):
             return "This step is out of order: expected “\(expected.title)”, but the ceremony is at "
                 + "“\(actual.title)”."
+        case .noRequestYet:
+            return "No request has been read yet, so there is no key to ask the YubiKey for. "
+                + "Scan the wallet's request first."
+        case .cardNotReadYet:
+            return "The YubiKey has not been read in this session yet, so nothing can be checked "
+                + "against the request."
         case .noPairingManifest:
             return "This YubiKey carries no pairing manifest, so the app cannot tell which account it "
                 + "was paired with. Provision the card with this app (or provision it again) before "
@@ -101,6 +126,11 @@ public enum SigningError: Swift.Error, Equatable {
         case .unsupportedDataType(let dataType):
             return "The request asks for \(dataType). This app signs transactions only; it does not "
                 + "sign messages or EIP-712 typed data."
+        case .requestPathNotSignable(let requested, let signable):
+            return "The wallet asked for the key at \(requested). This app signs with \(signable), "
+                + "and it decides that before it reads the card — so nothing was read from the "
+                + "YubiKey for this request. Choose the account this card signs for in the wallet "
+                + "and scan again."
         case .requestNotReadable(let reason):
             return reason
         case .chainIDMismatch(let request, let transaction):
@@ -135,6 +165,9 @@ public final class SigningCeremony {
     public private(set) var step: SigningStep = .notStarted
     public private(set) var card: CardSnapshot?
     public private(set) var request: EthSignRequest?
+    /// The slot the request named, decided when the request was accepted and before the
+    /// card is touched. This is what keeps `readCard()` to one key (amendment 33).
+    public private(set) var signingSlot: KeySlot?
     public private(set) var transaction: EVMTransaction?
     public private(set) var summary: TransactionSummary?
     public private(set) var signature: EthSignature?
@@ -182,25 +215,32 @@ public final class SigningCeremony {
         public let manifestVerified: Bool
     }
 
-    // MARK: - Step 1: read the card
+    // MARK: - Step 2: read the card
 
-    /// Reads the card and derives the address that will sign.
+    /// Reads the card **for the slot the request named**, and derives the identity that
+    /// will sign.
     ///
-    /// Read-only: no PIN, no writes, no reset. The pairing manifest is required,
-    /// and it has to agree with the key the card reports — that check is what
-    /// makes "this card signs for this account" a fact rather than a hope.
+    /// Read-only: no PIN, no writes, no reset. The pairing manifest is required, and it
+    /// has to agree with the key the card reports — that check is what makes "this card
+    /// signs for this account" a fact rather than a hope.
+    ///
+    /// One session, one key. `inventory()` is what the provisioning ceremony uses to
+    /// ask "what does this card hold", and answering that costs a public-key read per
+    /// slot; this flow knows which slot it needs, so it reads that one (amendment 33).
     public func readCard() async throws {
-        try require(.notStarted)
-        let inventory = try await transport.inventory()
-        report.cardSerial = inventory.serial
-
-        let storedManifest: [UInt8]?
-        do {
-            storedManifest = try await transport.readPairingManifest()
-        } catch is CardError {
-            throw SigningError.noPairingManifest
+        try require(.requestDecoded)
+        guard let request else { throw SigningError.noRequestYet }
+        guard let slot = signingSlot else {
+            throw SigningError.requestPathNotSignable(
+                requested: request.path.description,
+                signable: "the secp256k1 key at \(DerivationPath.secp256k1Default) only"
+            )
         }
-        guard let encoded = storedManifest, !encoded.isEmpty else {
+
+        let identity = try await transport.readSigningIdentity(slot: slot)
+        report.cardSerial = identity.serial
+
+        guard let encoded = identity.pairingManifest, !encoded.isEmpty else {
             throw SigningError.noPairingManifest
         }
         let manifest: PairingManifest
@@ -210,8 +250,16 @@ public final class SigningCeremony {
             throw SigningError.noPairingManifest
         }
 
-        let publicKey = try await transport.readPublicKey(slot: .signature)
-        guard let entry = manifest.entry(for: .secp256k1) else { throw SigningError.noPairingManifest }
+        let algorithm: KeyAlgorithm = slot == .signature ? .secp256k1 : .ed25519
+        guard let entry = manifest.entry(for: algorithm) else { throw SigningError.noPairingManifest }
+        // Only reachable when a manifest exists without a key, which this app's own
+        // provisioning cannot produce: it writes the manifest after verifying both
+        // keys. A card in that state has been written to by something else.
+        guard let publicKey = identity.publicKey else {
+            throw SigningError.signatureVerificationFailed(
+                "the card reports no key in the \(slot.displayName) slot"
+            )
+        }
 
         // The key the card reports must be the key the manifest describes:
         // otherwise the manifest is stale, and the address this screen shows would
@@ -219,8 +267,8 @@ public final class SigningCeremony {
         do {
             try manifest.verify(
                 against: CardKeyReport(
-                    cardSerial: inventory.serial.flatMap { try? Hex.decode($0) },
-                    publicKeys: [.secp256k1: publicKey]
+                    cardSerial: identity.serial.flatMap { try? Hex.decode($0) },
+                    publicKeys: [algorithm: publicKey]
                 )
             )
         } catch {
@@ -241,7 +289,7 @@ public final class SigningCeremony {
         } ?? entry.originPath
 
         let snapshot = CardSnapshot(
-            serial: inventory.serial,
+            serial: identity.serial,
             address: address,
             addressHex: EVMAddress.checksummed(addressBytes: address),
             publicKey: normalized,
@@ -252,21 +300,27 @@ public final class SigningCeremony {
         card = snapshot
         report.cardAddress = snapshot.addressHex
         report.pinnedPath = pinnedPath.description
-        report.cardSerial = inventory.serial
-        report.counterBeforeSigning = try? await transport.signatureCounter()
+        report.cardSerial = identity.serial
+        report.counterBeforeSigning = identity.signatureCounter
         step = .cardRead
     }
 
-    // MARK: - Step 2: accept the request
+    // MARK: - Step 1: accept the request
 
-    /// Takes the scanned request, parses its transaction and builds the summary.
+    /// Takes the scanned request, parses its transaction, and works out which key it
+    /// names.
     ///
     /// Nothing here trusts the request's own `data-type`: the payload has to match
     /// it, the `chain-id` field has to agree with the chain id inside the
     /// transaction, and a request that fails either check is refused before any
     /// screen shows a number from it.
+    ///
+    /// The request is taken **before** the card is read, which is what lets the card
+    /// read ask for the one slot this request needs (amendment 33). A request that
+    /// names a key this app cannot sign with is refused here — a card read would
+    /// otherwise buy a public key nobody could use.
     public func accept(requestUR: UR) throws {
-        try require(.cardRead)
+        try require(.notStarted)
         let request: EthSignRequest
         do {
             request = try EthSignRequest(ur: requestUR)
@@ -298,6 +352,28 @@ public final class SigningCeremony {
         }
         guard let chainID = transaction.chainId else { throw SigningError.chainIDMissing }
 
+        // Which key the request names. This app provisions exactly two fixed paths, so
+        // the request's own path decides — and it decides *before* any card access,
+        // which is the point of taking the request first. Only the secp256k1 key is
+        // signable in this version: the Ed25519 key is read and paired (design.md
+        // §4.3) but no Ed25519 signature is produced, so a request for it is refused
+        // rather than answered with a key this app would not use.
+        switch request.path {
+        case DerivationPath.secp256k1Default:
+            signingSlot = .signature
+        case DerivationPath.ed25519Default:
+            throw SigningError.requestPathNotSignable(
+                requested: request.path.description,
+                signable: "the secp256k1 key at \(DerivationPath.secp256k1Default) only — this "
+                    + "version reads and pairs the Ed25519 key, but does not sign with it yet"
+            )
+        default:
+            throw SigningError.requestPathNotSignable(
+                requested: request.path.description,
+                signable: "the secp256k1 key at \(DerivationPath.secp256k1Default) only"
+            )
+        }
+
         self.request = request
         self.transaction = transaction
         self.summary = TransactionSummary(transaction: transaction)
@@ -313,14 +389,14 @@ public final class SigningCeremony {
         report.requestOrigin = request.origin
         step = .requestDecoded
     }
-
     // MARK: - Step 3: bind the request to the card
 
     /// Checks that this request is for *this* card, and that the operator has
     /// confirmed the chain.
     public func verifyRequest() throws {
-        try require(.requestDecoded)
-        guard let card, let request, let transaction else { throw SigningError.noPairingManifest }
+        try require(.cardRead)
+        guard let card else { throw SigningError.cardNotReadYet }
+        guard let request, let transaction else { throw SigningError.noRequestYet }
 
         guard request.path == card.pinnedPath else {
             throw SigningError.requestPathNotPinned(

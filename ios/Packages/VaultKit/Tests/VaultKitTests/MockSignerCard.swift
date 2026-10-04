@@ -12,6 +12,8 @@ final class MockSignerCard: SignerCard {
 
     enum Call: Equatable {
         case inventory
+        /// One slot's key and the reads around it, in one session.
+        case readSigningIdentity(slot: KeySlot)
         case reset
         case setPINs
         case applyPolicy(adminPIN: [UInt8])
@@ -213,6 +215,38 @@ final class MockSignerCard: SignerCard {
         result.occupiedSlots.formUnion(storedPrivateKeys.keys)
         result.signatureCounter = counterValue
         return result
+    }
+
+    /// One session and **one** key read, mirroring `OpenPGPCard.readSigningIdentity`.
+    ///
+    /// Recorded as its own call so a test can assert what the signing flow *did not*
+    /// do: no `.inventory` (which probes both slots), and a `.readPublicKey` for one
+    /// slot only. Reading both keys is the defect this models (amendment 33).
+    func readSigningIdentity(slot: KeySlot) async throws -> SigningCardIdentity {
+        calls.append(.readSigningIdentity(slot: slot))
+        // A card that refuses the manifest, or has no such object, reports none — the
+        // caller has one actionable message for both cases — and reports it **without**
+        // a key read, as the real card does: nothing can be done with a key that has no
+        // manifest to check it against.
+        var manifest: [UInt8]?
+        if supportsPairingManifest, failurePoint != .pairingManifest {
+            manifest = pairingManifestReadBackOverride ?? pairingManifestBytes
+        }
+        guard let manifest else {
+            return SigningCardIdentity(
+                serial: inventoryResult.serial,
+                publicKey: nil,
+                pairingManifest: nil,
+                signatureCounter: nil
+            )
+        }
+        let publicKey = try await readPublicKey(slot: slot)
+        return SigningCardIdentity(
+            serial: inventoryResult.serial,
+            publicKey: publicKey,
+            pairingManifest: manifest,
+            signatureCounter: slot == .signature ? counterValue : nil
+        )
     }
 
     func reset() async throws {

@@ -153,40 +153,47 @@ holds the only copy of the key.
 ```
  Wallet                            iPhone app                        YubiKey
  ──────                            ──────────                        ───────
-                                                                     1. Read: manifest +
-                                                                        signature-slot public key
-                                                                        (no PIN, no writes)
-                                                                     2. Address derived from the
-                                                                        card's own public key
- 3. Serialize the transaction
+ 1. Serialize the transaction
     unsigned, as sign-data
- 4. Wrap as UR eth-sign-request ──▶ 5. Camera: fountain-decode the
+ 2. Wrap as UR eth-sign-request ──▶ 3. Camera: fountain-decode the
     (requestId, data-type,              animated QR, reassemble
      chain-id, derivation-path,         the CBOR
      sign-data)
-                                    6. Parse: legacy / EIP-2930 /
+                                    4. Parse: legacy / EIP-2930 /
                                        EIP-1559, re-encode and
                                        require byte equality
-                                    7. Bind to this card: path,
+                                    5. Which key this request needs:
+                                       its path picks the slot this app
+                                       signs with, and a path it cannot
+                                       sign is refused **before** the
+                                       card is touched
+                                                                     6. Read **that slot's** public
+                                                                        key, the manifest, the
+                                                                        serial and the counter — one
+                                                                        session, one key, no PIN,
+                                                                        no writes
+                                    7. Address derived from the
+                                       card's own public key
+                                    8. Bind to this card: path,
                                        master fingerprint, and the
                                        address if the wallet sent one
-                                    8. Chain id: must be agreed by the
+                                    9. Chain id: must be agreed by the
                                        request's field and the payload,
                                        and confirmed by the operator
-                                    9. Summary on screen: recipient,
+                                   10. Summary on screen: recipient,
                                        value, function (ERC-20 etc.),
                                        raw hex; warnings unmissable
-                                   10. Operator approves → the digest
+                                   11. Operator approves → the digest
                                        shown is the digest to be signed
-                                   11. VERIFY PW1 (user PIN) ────────▶
-                                   12. PSO:CDS(keccak256(sign-data)) ─▶ LED blinks, awaits touch
+                                   12. VERIFY PW1 (user PIN) ────────▶
+                                   13. PSO:CDS(keccak256(sign-data)) ─▶ LED blinks, awaits touch
                                                                        User touches ──▶ σ = Sign(sk, H)
                                                                        counter +1
-                                   13. ◀────────────────────────── DER (r, s)
-                                   14. Normalise low-s (EIP-2), recover the
+                                   14. ◀────────────────────────── DER (r, s)
+                                   15. Normalise low-s (EIP-2), recover the
                                        key, require it to be this card's,
                                        and compute the recovery value
-                                   15. Wrap as UR eth-signature
+                                   16. Wrap as UR eth-signature
                                        (requestId echoed, r‖s‖v), show QR
  16. Scan ◀─────────────────────────
  16.5 **Independent verification** (the wallet, not this app):
@@ -196,9 +203,15 @@ holds the only copy of the key.
  18. Assemble the signed transaction, broadcast
 ```
 
-The app reads the card **before** it reads the request, so the account that will sign is
-on screen while the transaction is being checked rather than after. Steps 6–11 are
-gates in `SigningCeremony`; the view layer only renders them.
+The request is read **before** the card, because the request is what names the key: the app
+takes the request, decides from its path which single slot it needs, and then reads that
+slot. That is one key read and one session, where the previous order ran an inventory on the
+way in — which probes *both* slots, because that is what an inventory is for — plus the
+manifest and the counter, in four sessions, before it knew whether the request was one this
+app could serve at all (amendment 33). The address that will sign is therefore derived one
+step later than it used to be, and it is compared with the wallet where it always had to be
+compared: on the summary screen, before approval. Steps 4–11 are gates in `SigningCeremony`;
+the view layer only renders them.
 
 What the app verifies itself, and why it is not optional:
 

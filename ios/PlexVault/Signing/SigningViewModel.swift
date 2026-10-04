@@ -20,9 +20,13 @@ public final class SigningViewModel {
     /// Which screen of the signing flow is showing. This is presentation only: the
     /// ceremony's own step is the authority, and every action below asks the
     /// ceremony to advance rather than assuming it did.
+    ///
+    /// The order is the flow's order: the wallet's request is scanned **first**, because
+    /// it names the key the card will be asked for — so the card read that follows asks
+    /// for that one slot instead of inventorying both (amendment 33).
     public enum Screen: Equatable {
-        case readCard
         case scan
+        case readCard
         case review
         case pin
         /// Waiting for the card: PIN verified, `PSO:CDS` in flight, touch pending.
@@ -36,7 +40,7 @@ public final class SigningViewModel {
 
     private let device: DeviceChoiceStore
     public private(set) var phase: Phase = .setup
-    public private(set) var screen: Screen = .readCard
+    public private(set) var screen: Screen = .scan
     public private(set) var busy = false
     public private(set) var errorMessage: String?
     public private(set) var sessionActive = false
@@ -52,6 +56,12 @@ public final class SigningViewModel {
     /// The digest the operator must have seen. Shown, and required back from the
     /// approval, so an approval cannot drift onto a different payload.
     public private(set) var digestHex: String = ""
+    /// What the wallet's request *says* it wants: the derivation path and the master
+    /// fingerprint it names. Shown while the card is read, because it is the wallet's own
+    /// statement about which key is being asked for — and the card read either confirms
+    /// it or refuses it.
+    public private(set) var requestedPath = ""
+    public private(set) var requestedFingerprint = ""
     public var acknowledgeTouchRule = false
     public var userPIN = ""
 
@@ -119,6 +129,8 @@ public final class SigningViewModel {
         scan.reset()
         ceremony = nil
         scannedUR = nil
+        requestedPath = ""
+        requestedFingerprint = ""
         card = nil
         summary = nil
         approvalWarnings = []
@@ -129,7 +141,7 @@ public final class SigningViewModel {
         acknowledgeTouchRule = false
         userPIN = ""
         phase = .setup
-        screen = .readCard
+        screen = .scan
         errorMessage = nil
     }
 
@@ -150,9 +162,24 @@ public final class SigningViewModel {
         await scan.start()
     }
 
-    // MARK: Step 1 — read the card
+    // MARK: Step 1 — take the request
 
-    /// Reads the card's manifest and key. Read-only: no PIN, no writes.
+    /// Starts the flow on the scanner, with no card access at all: the request is what
+    /// names the key, so the YubiKey can stay where it is until the request has been read
+    /// (amendment 33).
+    public func beginScanning() async {
+        let session = self.session
+        await run { _ in
+            guard session == self.session else { return }
+            self.screen = .scan
+            await self.scan.start()
+        }
+    }
+
+    // MARK: Step 2 — read the card
+
+    /// Reads the card's manifest and **the one key the request named**. Read-only: no PIN,
+    /// no writes, and no probing of the other slot.
     public func readCard() async {
         let session = self.session
         await run { ceremony in
@@ -160,12 +187,18 @@ public final class SigningViewModel {
             guard session == self.session else { return }
             self.card = ceremony.card
             self.counterBefore = ceremony.report.counterBeforeSigning
-            self.screen = .scan
-            await self.scan.start()
+
+            // The binding check needs the chain id confirmed first, and the
+            // confirmation is the operator's, so ask for it rather than assuming.
+            do {
+                try ceremony.verifyRequest()
+                self.screen = .review
+            } catch SigningError.chainNotConfirmed(let chainID) {
+                self.chainConfirmationNeeded = chainID
+                self.screen = .review
+            }
         }
     }
-
-    // MARK: Step 2 — take the request
 
     /// The only way a request reaches the ceremony, from the camera or from a debug sample.
     public func accept(_ ur: UR) async {
@@ -193,17 +226,13 @@ public final class SigningViewModel {
             self.summary = ceremony.summary
             self.digestHex = ceremony.transaction?.signingDigest.hexString ?? ""
             self.approvalWarnings = ceremony.approvalWarnings
+            self.requestedPath = ceremony.request?.path.description ?? ""
+            self.requestedFingerprint = ceremony.request?.sourceFingerprintHex ?? ""
             self.scan.stop()
 
-            // The binding check needs the chain id confirmed first, and the
-            // confirmation is the operator's, so ask for it rather than assuming.
-            do {
-                try ceremony.verifyRequest()
-                self.screen = .review
-            } catch SigningError.chainNotConfirmed(let chainID) {
-                self.chainConfirmationNeeded = chainID
-                self.screen = .review
-            }
+            // Nothing has been read from the card yet: the next screen asks for the one
+            // key the request named, and the binding can only be checked after that.
+            self.screen = .readCard
         }
     }
 

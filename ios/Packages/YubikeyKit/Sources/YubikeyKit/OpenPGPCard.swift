@@ -341,6 +341,50 @@ public final class OpenPGPCard: SignerCard {
 
     // MARK: SignerCard conformance
 
+    /// The serial number from the application data, without `inventory()`'s work.
+    ///
+    /// `inventory()` probes both key slots to report occupancy, which is what an
+    /// inventory is for and what a flow that only needs the card's identity must not
+    /// pay for (amendment 33).
+    func cardSerial() async throws -> String? {
+        let parsed = try OpenPGPApplicationData.parse(
+            applicationData: try await applicationData(),
+            securitySupportTemplate: nil
+        )
+        return parsed.serial.map { String(format: "%08X", $0) }
+    }
+
+    /// One slot's key and everything the signing flow reads around it, from **one**
+    /// session and **one** key read: see `SignerCard.readSigningIdentity(slot:)`.
+    ///
+    /// A card with no pairing manifest is reported without a key read: this app cannot
+    /// use a key without the manifest that describes it, so reading one would spend the
+    /// operator's tap on an answer nobody acts on. (The serial is read with `try?` for
+    /// the same reason — a card that does not report one is recorded as a weaker
+    /// signature, not as a failure — and a dead transport is caught by the key read
+    /// rather than being reported as a missing manifest.)
+    public func readSigningIdentity(slot: KeySlot) async throws -> SigningCardIdentity {
+        let serial = (try? await cardSerial()) ?? nil
+        guard let manifest = (try? await readPairingManifest()) ?? nil else {
+            return SigningCardIdentity(
+                serial: serial,
+                publicKey: nil,
+                pairingManifest: nil,
+                signatureCounter: nil
+            )
+        }
+        let publicKey = try await readPublicKey(slot: slot)
+        // Only the signature slot has a hardware counter; asking the other slot for one
+        // would be a card operation with a known-empty answer.
+        let counter = slot == .signature ? ((try? await signatureCounter()) ?? nil) : nil
+        return SigningCardIdentity(
+            serial: serial,
+            publicKey: publicKey,
+            pairingManifest: manifest,
+            signatureCounter: counter
+        )
+    }
+
     public func inventory() async throws -> CardInventory {
         let applicationData = try await applicationData()
         // The security support template is optional: a card that refuses it

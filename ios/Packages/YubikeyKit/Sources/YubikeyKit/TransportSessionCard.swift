@@ -61,6 +61,12 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.inventory() }
     }
 
+    /// One session, **one** key read: the card's identity for the single slot the
+    /// wallet's request named. See `SignerCard.readSigningIdentity(slot:)`.
+    public func readSigningIdentity(slot: KeySlot) async throws -> SigningCardIdentity {
+        try await withSession { try await $0.readSigningIdentity(slot: slot) }
+    }
+
     /// The whole reset — blocking both PINs, `TERMINATE DF`, `ACTIVATE FILE` and
     /// the re-SELECT — inside **one** session, like `ykman`.
     ///

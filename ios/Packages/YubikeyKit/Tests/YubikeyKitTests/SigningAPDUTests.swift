@@ -168,6 +168,65 @@ final class SigningAPDUTests: XCTestCase {
         let counter = try await card.signatureCounter()
         XCTAssertEqual(counter, 2)
     }
+
+    // MARK: - One key, one session (amendment 33)
+
+    /// The signing flow reads the key the request named, and **nothing else**.
+    ///
+    /// `inventory()` answers "what does this card hold?" by reading the public key of
+    /// *each* slot, which is what an inventory is for. Signing asks a narrower question,
+    /// and the APDUs are where that is visible: one `GENERATE ASYMMETRIC KEY PAIR`
+    /// (`00 47 81 00`) carrying the signature slot's control reference (`0xB6`), and none
+    /// carrying the authentication slot's (`0xA4`). Reading a second key before knowing
+    /// which one the transaction needs is the defect this pins.
+    func testTheSigningIdentityReadTouchesOneSlotOnly() async throws {
+        let transport = MockYubikeyTransport()
+        let card = TransportSessionCard(makeTransport: { transport })
+        let adminPIN = OpenPGPPinDefaults.admin
+        try await card.reset()
+        try await card.setPINs(userPIN: userPIN, adminPIN: adminPIN)
+        // Both slots hold a key, as a provisioned card's do — so a read of the other
+        // slot would succeed and leave no other trace than the APDU.
+        for (slot, algorithm, seed, fingerprint) in [
+            (KeySlot.signature, KeyAlgorithm.secp256k1, UInt8(0x11), UInt8(0x22)),
+            (KeySlot.authentication, KeyAlgorithm.ed25519, UInt8(0x33), UInt8(0x44)),
+        ] {
+            try await card.importKey(
+                slot: slot,
+                algorithm: algorithm,
+                privateKey: SensitiveBytes(copying: [UInt8](repeating: seed, count: 32)),
+                fingerprint: [UInt8](repeating: fingerprint, count: 20),
+                creationTime: Date(timeIntervalSince1970: 1_700_000_000),
+                adminPIN: adminPIN
+            )
+        }
+        try await card.writePairingManifest([0x01, 0x02, 0x03], adminPIN: adminPIN)
+
+        // `receivedAPDUs` is read-only on the mock: the slice after the provisioning
+        // above is what the signing read itself sent.
+        let before = transport.receivedAPDUs.count
+        let identity = try await card.readSigningIdentity(slot: .signature)
+        let sent = Array(transport.receivedAPDUs.dropFirst(before))
+        XCTAssertEqual(identity.publicKey?.count, 33, "the signature slot's key, normalised to compressed")
+        XCTAssertEqual(identity.pairingManifest, [0x01, 0x02, 0x03])
+        XCTAssertNotNil(identity.signatureCounter, "the counter comes from the same session")
+        XCTAssertNotNil(identity.serial)
+
+        let keyReads = sent.filter { $0.hasPrefix("00478100") }
+        XCTAssertEqual(keyReads.count, 1, "exactly one key read: \(keyReads)")
+        XCTAssertTrue(keyReads[0].contains("b600"), "and it is the signature slot's: \(keyReads[0])")
+        XCTAssertFalse(
+            sent.contains { $0.hasPrefix("00478100") && $0.contains("a400") },
+            "the authentication slot's key must not be read: \(sent)"
+        )
+        // One session, too: a second SELECT would be a second reader session, and on NFC
+        // that is a second tap. (The counter read is `GET DATA 0x7A`, which an inventory
+        // also reads — what makes this not an inventory is the single key probe above.)
+        XCTAssertEqual(
+            sent.filter { $0.hasPrefix("00a40400") }.count, 1,
+            "the whole pre-signing read must be one session: \(sent)"
+        )
+    }
 }
 
 /// `XCTAssertThrowsError` has no async form, so the session-boundary tests need

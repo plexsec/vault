@@ -75,8 +75,6 @@ final class SigningEndToEndTests: XCTestCase {
 
         let card = TransportSessionCard(makeTransport: { transport })
         let ceremony = SigningCeremony(card: card, transportDescription: "mock", appVersion: "test")
-        try await ceremony.readCard()
-        XCTAssertEqual(ceremony.card?.addressHex, SimulatedSigningVectors.address)
 
         let request = EthSignRequest(
             requestID: try Hex.decode("00112233445566778899aabbccddeeff"),
@@ -90,7 +88,11 @@ final class SigningEndToEndTests: XCTestCase {
             address: nil,
             origin: "test"
         )
+        // The request is taken first: it names the key, so the card read that follows can
+        // ask for that one slot (amendment 33).
         try ceremony.accept(requestUR: try request.ur())
+        try await ceremony.readCard()
+        XCTAssertEqual(ceremony.card?.addressHex, SimulatedSigningVectors.address)
         ceremony.confirmChainID("1")
         try ceremony.verifyRequest()
         try ceremony.approve(acknowledgingDigestHex: ceremony.transaction!.signingDigest.hexString)

@@ -51,17 +51,24 @@ final class SigningFlowUITests: XCTestCase {
         XCTAssertTrue(signingRoute.waitForExistence(timeout: 10), "the app must return to the home screen")
         tapWhenVisible(signingRoute, in: app)
 
-        // 3. Read the card (read-only; no PIN).
-        tapWhenVisible(app.buttons["read-card"], in: app)
+        // 3. Scan the request **first**: the DEBUG sample stands in for the camera. No
+        //    card has been touched at this point, which is the point of the order — the
+        //    request names the one key the card will be asked for.
+        tapWhenVisible(app.buttons["scan-request"], in: app)
+        XCTAssertFalse(
+            app.staticTexts["signing-address"].exists,
+            "the card's address cannot be on screen before the card has been read"
+        )
+        tapScrolling(app.buttons["use-sample-request"], named: "sample request", in: app)
+
+        // 4. Now the card is read (read-only; no PIN), for the key the request named.
+        tapScrolling(app.buttons["read-card"], named: "read the card", in: app)
 
         // The address on screen is derived from the card's own key, and must be the
         // account the provisioning ceremony exported.
         let address = app.staticTexts["signing-address"]
         XCTAssertTrue(address.waitForExistence(timeout: 15), "the signing address must be shown")
         XCTAssertEqual(address.label, expectedAddress)
-
-        // 4. Take the request. The DEBUG sample stands in for the camera.
-        tapScrolling(app.buttons["use-sample-request"], named: "sample request", in: app)
 
         // 5. The summary: this is the screen the defect report was about.
         let headline = app.staticTexts["summary-headline"]

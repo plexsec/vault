@@ -128,7 +128,6 @@ final class SigningCeremonyTests: XCTestCase {
         address: [UInt8]? = nil,
         confirmChain: Bool = true
     ) async throws -> SigningCeremony {
-        try await ceremony.readCard()
         try ceremony.accept(
             requestUR: try makeRequest(
                 payloadHex: payloadHex,
@@ -139,6 +138,7 @@ final class SigningCeremonyTests: XCTestCase {
                 address: address
             )
         )
+        try await ceremony.readCard()
         if confirmChain, let chainID {
             ceremony.confirmChainID(chainID.decimalString)
         }
@@ -271,8 +271,8 @@ final class SigningCeremonyTests: XCTestCase {
         let fixture = try EthURReferenceFixture.load()
         let card = makeCard()
         let ceremony = ceremony(card: card)
-        try await ceremony.readCard()
         try ceremony.accept(requestUR: try UR(urString: fixture.request.ur))
+        try await ceremony.readCard()
         ceremony.confirmChainID("137")
         try ceremony.verifyRequest()
 
@@ -419,7 +419,9 @@ final class SigningCeremonyTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? SigningError, .chainNotConfirmed(chainID: "1"))
         }
-        XCTAssertEqual(ceremony.step, .requestDecoded)
+        // The request and the card are both in place; what is missing is the operator's
+        // confirmation of this chain id.
+        XCTAssertEqual(ceremony.step, .cardRead)
     }
 
     /// A chain the operator has confirmed once stays confirmed for the session —
@@ -427,7 +429,6 @@ final class SigningCeremonyTests: XCTestCase {
     func testConfirmingAChainUnblocksExactlyThatChain() async throws {
         let card = makeCard()
         let ceremony = ceremony(card: card)
-        try await ceremony.readCard()
         try ceremony.accept(
             requestUR: try makeRequest(
                 payloadHex: EVMTransactionTests.eip155Unsigned,
@@ -435,6 +436,7 @@ final class SigningCeremonyTests: XCTestCase {
                 chainID: EVMQuantity(1)
             )
         )
+        try await ceremony.readCard()
         ceremony.confirmChainID("137")
         XCTAssertThrowsError(try ceremony.verifyRequest()) {
             XCTAssertEqual($0 as? SigningError, .chainNotConfirmed(chainID: "1"))
@@ -443,19 +445,62 @@ final class SigningCeremonyTests: XCTestCase {
         XCTAssertNoThrow(try ceremony.verifyRequest())
     }
 
+    /// A path this app does not provision is refused when the request is read, **before**
+    /// the card is touched: reading a key nobody can sign with costs the operator a tap.
     func testRequestForAnotherPathIsRefused() async throws {
         let card = makeCard()
         let ceremony = ceremony(card: card)
         let other = try DerivationPath("m/44'/0'/0'/0/1")
         do {
-            try await advanceToApproval(ceremony, card: card, path: other)
+            try ceremony.accept(
+                requestUR: try makeRequest(
+                    payloadHex: EVMTransactionTests.eip155Unsigned,
+                    dataType: .transaction,
+                    chainID: EVMQuantity(1),
+                    path: other
+                )
+            )
             XCTFail("a sibling path must be refused: the card holds one key")
         } catch {
             XCTAssertEqual(
                 error as? SigningError,
-                .requestPathNotPinned(requested: other.description, pinned: Self.leafPath.description)
+                .requestPathNotSignable(
+                    requested: other.description,
+                    signable: "the secp256k1 key at \(DerivationPath.secp256k1Default) only"
+                )
             )
         }
+        XCTAssertTrue(card.calls.isEmpty, "the refusal must cost no card operation")
+    }
+
+    /// The Ed25519 key is read and paired, but this version signs no Ed25519 request — so
+    /// asking for it is refused as "not signable", not as "this card has no such key".
+    func testARequestForTheEd25519KeyIsRefusedBeforeTheCardIsRead() async throws {
+        let card = makeCard()
+        let ceremony = ceremony(card: card)
+        handleEd25519Refusal(for: ceremony, card: card)
+    }
+
+    private func handleEd25519Refusal(for ceremony: SigningCeremony, card: MockSignerCard) {
+        do {
+            try ceremony.accept(
+                requestUR: try makeRequest(
+                    payloadHex: EVMTransactionTests.eip155Unsigned,
+                    dataType: .transaction,
+                    chainID: EVMQuantity(1),
+                    path: .ed25519Default
+                )
+            )
+            XCTFail("an Ed25519 request must be refused: this version signs secp256k1 only")
+        } catch {
+            guard case .requestPathNotSignable(let requested, let signable)? = error as? SigningError else {
+                return XCTFail("got \(error)")
+            }
+            XCTAssertEqual(requested, DerivationPath.ed25519Default.description)
+            XCTAssertTrue(signable.contains("Ed25519"), signable)
+            XCTAssertTrue(signable.contains("does not sign with it yet"), signable)
+        }
+        XCTAssertTrue(card.calls.isEmpty, "the refusal must cost no card operation")
     }
 
     func testRequestFromAnotherMasterIsRefused() async throws {
@@ -493,6 +538,11 @@ final class SigningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         card.pairingManifestBytes = nil
         let ceremony = ceremony(card: card)
+        try ceremony.accept(requestUR: try makeRequest(
+            payloadHex: EVMTransactionTests.eip155Unsigned,
+            dataType: .transaction,
+            chainID: EVMQuantity(1)
+        ))
         let error = await XCTAssertThrowsErrorAsync { try await ceremony.readCard() }
         XCTAssertEqual(error as? SigningError, .noPairingManifest)
     }
@@ -506,6 +556,11 @@ final class SigningCeremonyTests: XCTestCase {
             publicKey: try Secp256k1.publicKey(fromPrivateKey: [UInt8](repeating: 0x33, count: 32))
         ).encoded()
         let ceremony = ceremony(card: card)
+        try ceremony.accept(requestUR: try makeRequest(
+            payloadHex: EVMTransactionTests.eip155Unsigned,
+            dataType: .transaction,
+            chainID: EVMQuantity(1)
+        ))
         let error = await XCTAssertThrowsErrorAsync { try await ceremony.readCard() }
         guard case .signatureVerificationFailed = (error as? SigningError) else {
             return XCTFail("got \(String(describing: error))")
@@ -517,6 +572,11 @@ final class SigningCeremonyTests: XCTestCase {
         card.loadSigningFixtureKey()
         card.pairingManifestBytes = makeManifestBytes(serial: try Hex.decode("deadbeef")).encoded()
         let ceremony = ceremony(card: card)
+        try ceremony.accept(requestUR: try makeRequest(
+            payloadHex: EVMTransactionTests.eip155Unsigned,
+            dataType: .transaction,
+            chainID: EVMQuantity(1)
+        ))
         let error = await XCTAssertThrowsErrorAsync { try await ceremony.readCard() }
         guard case .signatureVerificationFailed = (error as? SigningError) else {
             return XCTFail("got \(String(describing: error))")
@@ -529,7 +589,6 @@ final class SigningCeremonyTests: XCTestCase {
         for dataType: EVMSignDataType in [.typedData, .personalMessage] {
             let card = makeCard()
             let ceremony = ceremony(card: card)
-            try await ceremony.readCard()
             let request = EthSignRequest(
                 requestID: [UInt8](repeating: 0, count: 16),
                 signData: try Hex.decode(EVMTransactionTests.eip155Unsigned),
@@ -552,7 +611,6 @@ final class SigningCeremonyTests: XCTestCase {
     func testChainIDMismatchBetweenFieldAndPayloadIsRefused() async throws {
         let card = makeCard()
         let ceremony = ceremony(card: card)
-        try await ceremony.readCard()
         let request = EthSignRequest(
             requestID: [UInt8](repeating: 0, count: 16),
             signData: try Hex.decode(EVMTransactionTests.eip155Unsigned),
@@ -570,7 +628,6 @@ final class SigningCeremonyTests: XCTestCase {
     func testTypedRequestWithALegacyPayloadIsRefused() async throws {
         let card = makeCard()
         let ceremony = ceremony(card: card)
-        try await ceremony.readCard()
         XCTAssertThrowsError(
             try ceremony.accept(
                 requestUR: try makeRequest(
@@ -585,7 +642,6 @@ final class SigningCeremonyTests: XCTestCase {
     func testWrongURTypeIsRefused() async throws {
         let card = makeCard()
         let ceremony = ceremony(card: card)
-        try await ceremony.readCard()
         XCTAssertThrowsError(
             try ceremony.accept(
                 requestUR: try UR(type: "eth-signature", cbor: .tagged(402, .map([])))
@@ -596,8 +652,19 @@ final class SigningCeremonyTests: XCTestCase {
     func testStepsMustBeTakenInOrder() async throws {
         let card = makeCard()
         let ceremony = ceremony(card: card)
-        // accept before readCard
-        let error = await XCTAssertThrowsErrorAsync {
+        // The card cannot be read before a request names the key to read.
+        let error = await XCTAssertThrowsErrorAsync { try await ceremony.readCard() }
+        XCTAssertEqual(error as? SigningError, .wrongStep(expected: .requestDecoded, actual: .notStarted))
+
+        // And a request cannot be accepted twice.
+        try ceremony.accept(
+            requestUR: try makeRequest(
+                payloadHex: EVMTransactionTests.eip155Unsigned,
+                dataType: .transaction,
+                chainID: EVMQuantity(1)
+            )
+        )
+        let second = await XCTAssertThrowsErrorAsync {
             try ceremony.accept(
                 requestUR: try makeRequest(
                     payloadHex: EVMTransactionTests.eip155Unsigned,
@@ -606,7 +673,12 @@ final class SigningCeremonyTests: XCTestCase {
                 )
             )
         }
-        XCTAssertEqual(error as? SigningError, .wrongStep(expected: .cardRead, actual: .notStarted))
+        XCTAssertEqual(second as? SigningError, .wrongStep(expected: .notStarted, actual: .requestDecoded))
+
+        // The binding check needs the card, and the card read needs the request.
+        let early = await XCTAssertThrowsErrorAsync { try ceremony.verifyRequest() }
+        XCTAssertEqual(early as? SigningError, .wrongStep(expected: .cardRead, actual: .requestDecoded))
+        _ = card
     }
 
     // MARK: - Card failures

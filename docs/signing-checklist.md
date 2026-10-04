@@ -23,14 +23,17 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
 
 ## The procedure
 
-1. **Read the YubiKey.** Card connection: NFC (hold the iPhone against the key when asked) or
-   USB-C (plug it in and leave it). The connection was chosen once, on first launch, and is shown
-   by the YubiKey button in the home screen's top-right corner — tap it if the card is not found.
-   No PIN is needed to read, and nothing is written.
-2. **Check the address on screen** against the account in your wallet.
-3. **Build the transaction in the wallet** (as small a value as you can make it the first
+1. **Build the transaction in the wallet** (as small a value as you can make it the first
    time), confirm it there, and choose the QR signing option. The wallet shows an animated QR.
-4. **Point the camera at it.** The app shows progress as it reassembles the request.
+2. **Scan the request.** In the app, *Sign a transaction* → *Scan the request*. No card is needed
+   for this step, and nothing has been read from the YubiKey yet.
+3. **Read the YubiKey.** The request names the key it wants; the app reads **that one slot** and
+   says so on screen. Card connection: NFC (hold the iPhone against the key when asked) or USB-C
+   (plug it in and leave it). The connection was chosen once, on first launch, and is shown by the
+   YubiKey button in the home screen's top-right corner — tap it if the card is not found. No PIN
+   is needed to read, and nothing is written.
+4. **Check the address on screen** against the account in your wallet. If a request names a key
+   this app does not sign with, it is refused before the card is touched.
 5. **Read the summary.** This is the screen that matters:
    - **To** — the recipient. If the transaction is a token call, the *Function* row names it
      (`transfer`, `approve`, …) and the amount.

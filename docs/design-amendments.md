@@ -1435,3 +1435,52 @@ reworked, not added to), YubikeyKit 88 → 88, UI 15. Release build and `tools/a
 and its single number is now two.** Amendment 26's ordering rule is unchanged; where it used to say
 "the policy step sits after the key import", it is now expressed by the import step itself writing
 the policy last.
+
+## 33. v0.2: the signing flow takes the request first, so it reads one key instead of two
+
+**Sections:** §5.1 (sequence), `SigningStep`, `SignerCard`.
+
+**What changed.** The signing flow's first step used to be reading the card, and the request was
+scanned afterwards. It is now the other way round: the request is decoded first, and the card is read
+second — **for the one slot the request names**.
+
+**Why.** The old order read the card through `inventory()`, and an inventory probes *both* key slots:
+detecting an occupied slot reliably means attempting a public-key read, because a fingerprint object
+can be present and zero (that is the rule `OpenPGPCard.inventory()` documents, and the reason the
+destructive reset is gated on its answer). So every signing session — for a transaction that can only
+ever use one key — read both keys, plus the application data, the manifest and the counter, as four
+separate `withSession` calls. On NFC each of those is a tap the operator pays for.
+
+Scanning first removes the need. The request carries a derivation path, and this app provisions exactly
+two fixed paths (`m/44'/0'/0'/0/0` → the signature slot, `m/44'/501'/0'/0'` → the authentication slot),
+so the path says which key to read without asking the card anything:
+
+* `SignerCard.readSigningIdentity(slot:)` is the new primitive: the serial, the manifest, **that slot's**
+  public key and the signature counter, in **one** session. `inventory()` is untouched — it is the right
+  answer to "what does this card hold", which is what provisioning and the destructive gate need.
+* `SigningStep` is reordered to `requestDecoded → cardRead → requestVerified`, and the constructor
+  `accept(requestUR:)` now runs before `readCard()`. The binding check (`verifyRequest`) still compares
+  the request's path, master fingerprint and optional address against the card, and now runs after the
+  card is read, which is where it always belonged.
+* A request whose path is neither of the two this app provisions is refused **before the card is
+  touched** (`SigningError.requestPathNotSignable`), so a request the app cannot serve costs no card
+  operation at all. That includes this app's own Ed25519 path: the app reads and pairs that key but
+  signs no Ed25519 request in this version, and the refusal now says so instead of reporting the card
+  as lacking a key it actually holds.
+
+**What was traded.** The account that will sign is no longer on screen *while* the request is decoded;
+it appears one screen later, at the summary, which is where the operator has to compare it with the
+wallet anyway. In exchange the read is one key and one session, and a request the app cannot serve is
+refused without touching the card. The gates themselves are unchanged: the request is parsed and
+re-encoded before any screen shows a number from it, the manifest must match the key the card reports,
+and the binding check still runs before approval.
+
+**Evidence.** `testTheSigningIdentityReadTouchesOneSlotOnly` (YubikeyKit, APDU-level) asserts the whole
+pre-signing read is one session, with exactly one `GENERATE ASYMMETRIC KEY PAIR` and that it carries the
+signature slot's control reference (`0xB6`) — with a key in the *other* slot, so a read of it would
+succeed and leave no other trace. `testRequestForAnotherPathIsRefused` and
+`testARequestForTheEd25519KeyIsRefusedBeforeTheCardIsRead` assert the refusals happen with
+`card.calls.isEmpty`. The ceremony tests were reordered with the flow (`advanceToApproval` now accepts
+before it reads), and the signing UI walk drives the real screens in the new order, asserting the card's
+address is **not** on screen before the card read. VaultKit 255 → 256, YubikeyKit 88 → 89, UI 15
+(the signing walk is one of them).

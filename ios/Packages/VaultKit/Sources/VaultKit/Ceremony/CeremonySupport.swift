@@ -69,8 +69,30 @@ public enum KeySlot: String, CaseIterable, Codable, Sendable, Hashable {
 /// ceremony state machine is testable with no hardware, no radio and no
 /// CryptoTokenKit.
 public protocol SignerCard: AnyObject {
-    /// Reads application data (0x6E) and the security support template (0x7A).
+    /// Reads application data (0x6E) and the security support template (0x7A), and
+    /// **probes both key slots** by reading each slot's public key, which is the only
+    /// reliable signal for whether a slot is occupied.
+    ///
+    /// That probing is what an inventory is for — the destructive reset is gated on
+    /// it — and it is also why the signing flow does not use it: signing knows which
+    /// single slot the wallet's request names, and reads only that one
+    /// (`readSigningIdentity(slot:)`).
     func inventory() async throws -> CardInventory
+
+    /// The card's identity for **one** slot, for a flow that already knows which key
+    /// it is dealing with: the serial, the stored pairing manifest, that slot's public
+    /// key, and the signature counter.
+    ///
+    /// One session and one key, deliberately. `inventory()` would probe the other slot
+    /// as well, and on NFC each session is a tap the operator pays for: the signing
+    /// flow used to spend four sessions (inventory, manifest, key, counter) and read a
+    /// key it had no use for (amendment 33). Implementations must do all four reads in
+    /// one session so the tap is paid once.
+    ///
+    /// A card that refuses the manifest read, or answers with an empty object, reports
+    /// `pairingManifest == nil`: both mean "this card was not paired by this app",
+    /// which is the only thing the caller can act on.
+    func readSigningIdentity(slot: KeySlot) async throws -> SigningCardIdentity
 
     /// Reads `count` random bytes from the card's hardware random-number
     /// generator (`GET CHALLENGE`, INS 0x84). This is the entropy source for
@@ -93,7 +115,8 @@ public protocol SignerCard: AnyObject {
     /// is blocked. The Admin PIN must be verified in the same session.
     ///
     /// The applet applies one maximum per password (PW1, the resetting code, PW3);
-    /// this app sets the same limit on all three and verifies the two it owns.
+    /// this app sets the limit the operator chose for each of the two it owns, in the
+    /// one command the applet accepts (amendment 32).
     func setPINRetries(user: Int, reset: Int, admin: Int, adminPIN: [UInt8]) async throws
 
     /// Applies the mandatory policy: UIF = Fixed on both signing-capable slots
@@ -168,6 +191,41 @@ public protocol SignerCard: AnyObject {
     /// retry internally under any circumstances, because a lost response may still
     /// have produced a signature.
     func sign(digest: [UInt8], userPIN: [UInt8]) async throws -> [UInt8]
+}
+
+/// What the signing flow needs from one slot, read in one session.
+///
+/// Deliberately not `CardInventory`: an inventory answers "what does this card hold,
+/// and is anything here worth destroying", which costs a public-key read per slot.
+/// This answers "what is the key I am about to sign with, and what does the card say
+/// it was paired for", and costs one.
+public struct SigningCardIdentity: Equatable, Sendable {
+    /// The card's serial, formatted as the card reports it, or `nil` when it reports
+    /// none (which the report records as a weaker signature, not as a failure).
+    public let serial: String?
+    /// The slot's public key, normalised to the compressed form for secp256k1, or
+    /// `nil` when the card reported no key — which happens when it has no pairing
+    /// manifest, in which case no key is read at all (there is nothing to compare one
+    /// against, and the caller's next move is the same either way).
+    public let publicKey: [UInt8]?
+    /// The stored pairing manifest, or `nil` when the card has none or refused to
+    /// report one — both mean the card was not paired by this app.
+    public let pairingManifest: [UInt8]?
+    /// The **signature** slot's hardware counter. `nil` for the authentication slot
+    /// (it has no counter) and when the card refuses to report it.
+    public let signatureCounter: UInt32?
+
+    public init(
+        serial: String?,
+        publicKey: [UInt8]?,
+        pairingManifest: [UInt8]?,
+        signatureCounter: UInt32?
+    ) {
+        self.serial = serial
+        self.publicKey = publicKey
+        self.pairingManifest = pairingManifest
+        self.signatureCounter = signatureCounter
+    }
 }
 
 public enum CardError: Swift.Error, Equatable {

@@ -84,8 +84,8 @@ struct SigningRootView: View {
         case .setup: return "Sign a transaction"
         case .running:
             switch viewModel.screen {
-            case .readCard: return "Read the YubiKey"
             case .scan: return "Scan the request"
+            case .readCard: return "Read the YubiKey"
             case .review: return "Check the transaction"
             case .pin: return "Approve and sign"
             case .signing: return "Signing"
@@ -97,8 +97,8 @@ struct SigningRootView: View {
 
     private var progressLabel: String {
         switch viewModel.screen {
-        case .readCard: return "1/5"
-        case .scan: return "2/5"
+        case .scan: return "1/5"
+        case .readCard: return "2/5"
         case .review: return "3/5"
         case .pin, .signing: return "4/5"
         case .signature: return "5/5"
@@ -114,11 +114,11 @@ struct SigningRootView: View {
     private var setupView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Read the YubiKey first")
+                Text("Scan the wallet's request first")
                     .font(.title3.bold())
                 Text(
-                    "This app reads the key inside the YubiKey and shows you the account it signs for. "
-                    + "Nothing is written to the card, and no PIN is needed to read it."
+                    "The request names the key it needs, so the card is read afterwards — one key, "
+                    + "not both. Nothing is written to the card, and no PIN is needed to read it."
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -128,17 +128,17 @@ struct SigningRootView: View {
                 }
 
                 Button {
-                    Task { await viewModel.readCard() }
+                    Task { await viewModel.beginScanning() }
                 } label: {
                     if viewModel.busy {
                         ProgressView()
                     } else {
-                        Text("Read the YubiKey")
+                        Text("Scan the request")
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.busy)
-                .accessibilityIdentifier("read-card")
+                .accessibilityIdentifier("scan-request")
             }
             .padding()
         }
@@ -148,9 +148,14 @@ struct SigningRootView: View {
 
     @ViewBuilder
     private var runningContent: some View {
-        cardSummary
+        // The card summary appears only once the card has been read: before that there is
+        // no address to show, and showing a placeholder would invite the operator to read
+        // it as one.
+        if viewModel.card != nil {
+            cardSummary
+        }
         switch viewModel.screen {
-        case .readCard, .scan:
+        case .scan:
             ScanningView(
                 model: viewModel.scan,
                 headline: "Scan the wallet's request",
@@ -166,6 +171,8 @@ struct SigningRootView: View {
                 viewModel.scan.receive(payload)
             }
             #endif
+        case .readCard:
+            readCardView
         case .review:
             reviewView
         case .pin, .signing:
@@ -173,6 +180,36 @@ struct SigningRootView: View {
         case .signature:
             signatureView
         }
+    }
+
+    /// The request is in hand and names one key; now the card is read for that key.
+    private var readCardView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Request read", systemImage: "checkmark.seal.fill")
+                .font(.headline)
+                .foregroundStyle(.green)
+            Text("The request names the key it wants signed with. Reading the YubiKey now derives the address from the key inside the card, and checks the pairing manifest that records which account it was set up for.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            KeyValueRows(rows: [
+                ("Requested path", viewModel.requestedPath.isEmpty ? "—" : viewModel.requestedPath),
+                ("Requested master", viewModel.requestedFingerprint.isEmpty ? "—" : viewModel.requestedFingerprint),
+                ("Key to read", "the signature slot only (secp256k1)"),
+            ])
+            Button {
+                Task { await viewModel.readCard() }
+            } label: {
+                if viewModel.busy {
+                    ProgressView()
+                } else {
+                    Text("Read the YubiKey")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.busy)
+            .accessibilityIdentifier("read-card")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var cardSummary: some View {
