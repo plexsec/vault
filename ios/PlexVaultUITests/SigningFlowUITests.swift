@@ -51,10 +51,10 @@ final class SigningFlowUITests: XCTestCase {
         XCTAssertTrue(signingRoute.waitForExistence(timeout: 10), "the app must return to the home screen")
         tapWhenVisible(signingRoute, in: app)
 
-        // 3. Scan the request **first**: the DEBUG sample stands in for the camera. No
-        //    card has been touched at this point, which is the point of the order — the
-        //    request names the one key the card will be asked for.
-        tapWhenVisible(app.buttons["scan-request"], in: app)
+        // 3. The flow opens on the scanner — there is no screen between the home screen and
+        //    the camera — and the DEBUG sample stands in for the camera. No card has been
+        //    touched at this point, which is the point of the order: the request names the
+        //    one key the card will be asked for.
         XCTAssertFalse(
             app.staticTexts["signing-address"].exists,
             "the card's address cannot be on screen before the card has been read"

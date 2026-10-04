@@ -14,9 +14,10 @@ import XCTest
 /// 2. The primary action must be reachable without scrolling and must say why it
 ///    is disabled, instead of appearing to ignore taps.
 /// 3. A Cancel button must leave the flow it is on. The signing flow's toolbar
-///    button called the view model's `abort()` in every phase, which on the setup
-///    screen reset state that was already empty: the button did nothing, and the
-///    screen was a one-way door.
+///    button called the view model's `abort()` in every phase, which on its old
+///    setup screen reset state that was already empty: the button did nothing, and
+///    the screen was a one-way door. The signing flow now opens on the scanner and
+///    cancels from there.
 ///
 /// Scrolling to a control is done with `tapWhenVisible`, from `UITestSupport`.
 final class SetupFlowUITests: XCTestCase {
@@ -100,12 +101,21 @@ final class SetupFlowUITests: XCTestCase {
     /// phase, and on this screen that only reset state which was already empty, so
     /// the only way out was to kill the app. The provisioning flow's Cancel already
     /// exits — the two now behave the same, down to the identifier.
-    func testSigningSetupCancelReturnsToTheHomeScreen() {
-        let app = XCUIApplication()
-        app.launch()
+    /// The signing flow opens on the scanner, and its Cancel leaves the flow.
+    ///
+    /// There is no setup screen any more: tapping the home screen's entry opens the camera,
+    /// because the request is what names the key and nothing has to be decided first. The
+    /// button being a real way out is the part worth locking in — it once called `abort()`
+    /// in every phase, which on the setup screen reset state that was already empty.
+    func testTheSigningFlowOpensOnTheScannerAndCancelsHome() {
+        let app = launchApp()
 
         tapWhenVisible(app.buttons["route-signing"], in: app)
-        let cancel = app.buttons["cancel-setup"]
+        XCTAssertTrue(
+            app.buttons["use-sample-request"].waitForExistence(timeout: 10),
+            "the signing flow must open on the scanner:\(app.debugDescription)"
+        )
+        let cancel = app.buttons["cancel-scanning"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10), app.debugDescription)
         // Tapped directly rather than with `tapWhenVisible`: the helper scrolls until
         // an element lands in `visibleBand`, which deliberately starts below the
@@ -115,15 +125,14 @@ final class SetupFlowUITests: XCTestCase {
 
         XCTAssertTrue(
             app.buttons["route-signing"].waitForExistence(timeout: 10),
-            "cancelling the signing setup must return to the home screen:\(app.debugDescription)"
+            "cancelling the scanner must return to the home screen:\(app.debugDescription)"
         )
     }
 
     /// Choosing a mode must actually reach the ceremony: restore mode is
     /// observable because it is recorded in the step flow.
     func testRestoreModeReachesTheCeremony() {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchApp(deviceChoice: "simulated")
         openProvisioningFlow(app, mode: "Restore from a mnemonic")
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)

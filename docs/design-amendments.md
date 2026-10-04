@@ -1484,3 +1484,39 @@ succeed and leave no other trace. `testRequestForAnotherPathIsRefused` and
 before it reads), and the signing UI walk drives the real screens in the new order, asserting the card's
 address is **not** on screen before the card read. VaultKit 255 → 256, YubikeyKit 88 → 89, UI 15
 (the signing walk is one of them).
+
+## 34. v0.2: the signing flow opens on the scanner
+
+**Sections:** §5.1, `SigningViewModel.Phase`.
+
+**What changed.** Tapping *Sign a transaction* on the home screen used to open a setup
+screen whose only content was an explanation and a *Scan the request* button; the camera
+started when that button was tapped. The setup screen is gone: entering the flow opens the
+scanner.
+
+**Why it was there, and why it is not needed.** The screen existed because the old flow
+read the card first — the setup screen was where the operator acknowledged "this app reads
+the key inside the YubiKey" before the card was touched. Once the request is taken first
+(amendment 33), nothing has been read from the card at that point and nothing has to be
+decided: the request is what names the key. A page whose only action opens the camera is a
+button of ceremony between the operator and the work.
+
+**What the flow looks like now.** Home screen → camera (toolbar: *Cancel*, because nothing
+has been read and leaving drops nothing) → the request is decoded → *Read the YubiKey* for
+the one slot the request named (toolbar: *Abort*, because a request is now in hand and
+leaving abandons it) → summary → chain confirmation → PIN → signature → record. The camera
+is tied to the view's lifetime: it starts from the view's `.task`, stops when the view goes
+away, and `applicationDidForeground` still restarts it after a background trip.
+
+**What was kept.** The explanation did not disappear with the screen: the scanner's own
+copy now says that nothing is read from the YubiKey until the request is in, and that the
+request names the one key that will be asked for. The toolbar's two words are the app's
+statement about what leaving costs, and they follow the same rule as the rest of the app:
+a cancel before anything is in hand, an abort afterwards.
+
+**Evidence.** `SetupFlowUITests.testTheSigningFlowOpensOnTheScannerAndCancelsHome` asserts
+the flow opens with the scanner's own control on screen and that Cancel returns to the home
+screen (it replaced the test that asserted the same property on the setup screen, which no
+longer exists). The signing walk in `SigningFlowUITests` no longer taps anything before the
+sample request, and still asserts the card's address is absent from the screen until the
+card has been read. VaultKit 256, YubikeyKit 89, UI 15.

@@ -205,9 +205,11 @@ phase. On the setup screen `abort()` only reset state that was already empty, so
 "Cancel" had no visible effect and the screen was a one-way door — the operator
 had to kill the app to get back to the home screen. The provisioning flow had
 already been fixed the same way (Cancel exits; a session that is already running
-gets a destructive "Abort" instead), and the signing flow now matches it, with
-`cancel-setup` carrying the same identifier in both flows, and a UI test
-asserting that cancelling the signing setup returns home.
+gets a destructive "Abort" instead), and the signing flow now matches it: both flows
+leave the same way from their first screen. (The signing flow has since lost its setup
+screen altogether — it opens on the scanner — so its first screen's Cancel is
+`cancel-scanning`; the property under test is the same one, and a UI test still asserts
+that cancelling there returns home.)
 
 Abandoning a session also no longer lets a result from it land in the flow that
 was left. A card operation can be in flight when the operator leaves — reading

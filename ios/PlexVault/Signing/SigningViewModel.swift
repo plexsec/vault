@@ -98,6 +98,12 @@ public final class SigningViewModel {
 
     public var cardAddress: String { card?.addressHex ?? "—" }
 
+    /// True while the flow holds nothing but a camera: no request has been read, so leaving
+    /// drops nothing and is a cancel rather than an abandonment. Once a request is in hand
+    /// it has been given to a ceremony that may already be part-way through, and leaving is
+    /// an abort (the toolbar says which).
+    public var holdsNoRequest: Bool { scannedUR == nil }
+
     public var cardSerial: String { card?.serial ?? "not reported" }
 
     public var pinnedPath: String { card?.pinnedPath.description ?? "—" }
@@ -165,8 +171,11 @@ public final class SigningViewModel {
     // MARK: Step 1 — take the request
 
     /// Starts the flow on the scanner, with no card access at all: the request is what
-    /// names the key, so the YubiKey can stay where it is until the request has been read
-    /// (amendment 33).
+    /// names the key, so nothing has to be read or decided before it (amendment 33).
+    ///
+    /// Called as the flow appears — there is no screen between the home screen and the
+    /// camera — and safe to call again after the camera was stopped and restarted
+    /// (`applicationDidForeground`).
     public func beginScanning() async {
         let session = self.session
         await run { _ in

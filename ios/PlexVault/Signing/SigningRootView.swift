@@ -16,9 +16,13 @@ struct SigningRootView: View {
         NavigationStack {
             Group {
                 switch viewModel.phase {
-                case .setup:
-                    setupView
-                case .running:
+                case .setup, .running:
+                    // There is no setup screen: entering this flow **is** opening the
+                    // scanner. Nothing has to be decided before the request is read — the
+                    // request is what names the key — so a page whose only content was a
+                    // button that opened the camera was one button of ceremony before the
+                    // work. `beginScanning()` runs from the `.task` below, which also ties
+                    // the camera to the lifetime of this view.
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             if let message = viewModel.errorMessage {
@@ -40,21 +44,21 @@ struct SigningRootView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    if viewModel.phase == .setup {
-                        // Leaving the flow, exactly as the provisioning flow's Cancel
-                        // does. This used to call `abort()` in every phase, and on
-                        // this screen that only reset state which was already empty:
-                        // the button did nothing and the screen had no way out.
+                    if viewModel.phase == .finished {
+                        Button("Done") { onExit() }
+                    } else if viewModel.holdsNoRequest {
+                        // The scanner is open and nothing has been read: leaving drops
+                        // nothing, so it is a cancel rather than an abandonment. (This
+                        // used to be the setup screen's button, on a screen that no
+                        // longer exists.)
                         Button("Cancel") {
                             viewModel.abort()
                             onExit()
                         }
-                        .accessibilityIdentifier("cancel-setup")
-                    } else if viewModel.phase == .finished {
-                        Button("Done") { onExit() }
+                        .accessibilityIdentifier("cancel-scanning")
                     } else {
-                        // A session that is already talking to the card is abandoned
-                        // rather than "left": the request is dropped, and a touch that
+                        // A session that already holds a request is abandoned rather
+                        // than "left": the request is dropped, and a touch that
                         // completed cannot be shown afterwards.
                         Button("Abort", role: .destructive) { viewModel.abort() }
                             .accessibilityIdentifier("abort-signing")
@@ -67,7 +71,7 @@ struct SigningRootView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if viewModel.phase == .running { PrivacyFooter() }
+                if viewModel.phase != .finished { PrivacyFooter() }
             }
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -76,13 +80,17 @@ struct SigningRootView: View {
                         .accessibilityIdentifier("dismiss-keyboard")
                 }
             }
+            // Entering the flow opens the scanner. There is no screen before it: the
+            // request names the key, so there is nothing to decide first, and the camera
+            // belongs to this view's lifetime (it is stopped when the view goes away, and
+            // restarted by `applicationDidForeground` when the app comes back).
+            .task { await viewModel.beginScanning() }
         }
     }
 
     private var title: String {
         switch viewModel.phase {
-        case .setup: return "Sign a transaction"
-        case .running:
+        case .setup, .running:
             switch viewModel.screen {
             case .scan: return "Scan the request"
             case .readCard: return "Read the YubiKey"
@@ -105,45 +113,6 @@ struct SigningRootView: View {
         }
     }
 
-    // MARK: Setup
-
-    /// No connection picker here, and no connection summary either: it is one setting for
-    /// the phone, chosen on the device screen (`DeviceChoiceView`) and changed from the
-    /// home screen. A picker on this screen was a second source of truth for the same
-    /// value, and the one place it could be switched between the read and the signature.
-    private var setupView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Scan the wallet's request first")
-                    .font(.title3.bold())
-                Text(
-                    "The request names the key it needs, so the card is read afterwards — one key, "
-                    + "not both. Nothing is written to the card, and no PIN is needed to read it."
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-                if let message = viewModel.errorMessage {
-                    SigningErrorBanner(message: message)
-                }
-
-                Button {
-                    Task { await viewModel.beginScanning() }
-                } label: {
-                    if viewModel.busy {
-                        ProgressView()
-                    } else {
-                        Text("Scan the request")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.busy)
-                .accessibilityIdentifier("scan-request")
-            }
-            .padding()
-        }
-    }
-
     // MARK: Running
 
     @ViewBuilder
@@ -160,7 +129,8 @@ struct SigningRootView: View {
                 model: viewModel.scan,
                 headline: "Scan the wallet's request",
                 detail: "In MetaMask, choose your QR hardware account and confirm the transaction, then "
-                    + "point this camera at the animated code."
+                    + "point this camera at the animated code. Nothing is read from the YubiKey until "
+                    + "the request is in — it names the one key that will be asked for."
             )
             #if DEBUG
             DebugSampleRequestButton { payload in
