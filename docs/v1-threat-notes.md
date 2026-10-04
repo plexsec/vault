@@ -273,6 +273,32 @@ something the operator does not recognise. That is why the summary leads with th
 the value and the decoded function, and why an unparsable call is labelled rather than
 summarised.
 
+### The scanner does not show what it sees
+
+The preview is frosted (amendment 36). A viewfinder is a live, legible picture of the scene in
+front of the phone, displayed where a bystander, a second camera, or a screen recording can take
+it — and the app cannot tell any of those from the operator looking at it. The request is decoded
+from the session's sample buffers and never from the screen, so the display is there only to aim
+with: it shows shapes and light and no detail, and the app-switcher snapshot is redacted
+(`privacySensitive()`) instead of holding the last camera frame for whoever swipes through.
+
+What is accepted:
+
+* **A screen recording still contains the frosted image.** No public API excludes an arbitrary
+  view from capture, so the blur *is* the control: a recording holds what the operator saw. That
+  is the intent, but it does mean the property is "nothing legible reaches the screen", not
+  "nothing reaches the recorder".
+* **This does not hide the request.** The QR code is displayed in full, as parsed text, on the
+  summary screen — deliberately, because that is the screen the operator has to check. The frost
+  protects the scene around the operator, not the transaction.
+* **Aiming is through frosted glass, and the strength is not a dial.** What is left to see is
+  shapes and light, which is what framing a code needs — but the system materials differ in
+  thickness, not in blur radius, so there is no setting between "frosted" and "clear" short of not
+  frosting at all (diluting the frost with opacity was tried and reverted: alpha below 1 on a
+  visual effect is documented to leave the effect not showing up, and it did). If a code cannot be
+  seen through the frost, the answer is more light on the code, or a clear aiming aperture in the
+  middle of the frost — not a weaker frost.
+
 ### The display is still not trustworthy, and now it matters more
 
 v0.1's threat model treats the phone as a possibly tampered display terminal, and that was

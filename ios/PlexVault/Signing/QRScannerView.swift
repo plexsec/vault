@@ -2,6 +2,27 @@ import Foundation
 import SwiftUI
 import AVFoundation
 
+/// The scanner's rounded corners. The frost over the preview has to match the preview's own
+/// radius, so the number lives in one place.
+private let previewCornerRadius: CGFloat = 12
+
+/// What does the blurring: the frost's one control, and it sits at full strength.
+///
+/// The five system materials differ in thickness — how much of the background shows through — and
+/// not in blur radius, so this is not a dial between "blurry" and "clear": `.ultraThinMaterial`
+/// is already the most translucent of them, and every other choice only makes the picture greyer
+/// while hiding no more detail. A numerically tunable radius would mean blurring the *frames*
+/// (a Core Image pipeline in place of the preview layer) rather than the display, which is a
+/// different piece of work with a real cost (amendment 36).
+///
+/// Diluting the frost with `.opacity` was tried and reverted. Apple's `UIVisualEffectView`
+/// documentation — the machinery under a SwiftUI material — says to avoid alpha values below 1 on
+/// a visual effect view *or any of its superviews*, because "many effects look incorrect or not
+/// show up at all". The device bore the suspicion out: with an opacity over it, changing this
+/// material appeared to change nothing. Full strength, then, and the aiming trade-off is paid
+/// where it belongs instead of by weakening the frost.
+private let previewFrost: Material = .ultraThinMaterial
+
 /// The camera preview behind the scanner, plus the reading of it.
 ///
 /// A `UIViewRepresentable` rather than SwiftUI's own preview because the session
@@ -69,6 +90,34 @@ struct QRScannerView: UIViewRepresentable {
     }
 }
 
+/// Frosted glass over the camera image: the scanner's display is for aiming, not for reading.
+///
+/// Nothing about scanning needs to be *seen*: the request is decoded from the session's sample
+/// buffers, not from the screen, so the display can be obscured without costing anything. That
+/// is worth doing, because the preview is a live picture of whatever is in front of the phone —
+/// and on a phone that picture sits on a screen someone else can look at, photograph, or record
+/// (amendment 36). Through this the camera shows shapes and light, which is enough to centre a
+/// QR code in the frame, and no detail at all.
+///
+/// A sibling *on top of* `QRScannerView`, deliberately, rather than a `blur` on the preview's own
+/// view: how that view renders has already gone wrong once, in a way a simulator cannot show
+/// (amendment 35), so it stays untouched. The reverse is not true — the frost's own appearance is
+/// only checkable by eye, which is exactly why it is a plain view over a plain view.
+struct ScannerFrost: View {
+    var body: some View {
+        Rectangle()
+            .foregroundStyle(previewFrost)
+            .clipShape(RoundedRectangle(cornerRadius: previewCornerRadius))
+            // The redaction applies to the snapshot iOS takes for the app switcher, which would
+            // otherwise be the last camera frame — the one place the preview is shown while
+            // nobody is looking at the scanner. It does not apply to a screen recording; no
+            // public API spans that, and the blur is what covers it.
+            .privacySensitive()
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("scanner-frost")
+    }
+}
+
 /// The scanning screen: preview, progress, and what the stream says it is.
 struct ScanningView: View {
     @Bindable var model: QRScanModel
@@ -88,8 +137,10 @@ struct ScanningView: View {
                     onPreviewReady: { model.previewDidAppear() },
                     onPreviewGone: { model.previewDidDisappear() }
                 )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: previewCornerRadius))
                     .accessibilityIdentifier("scanner-preview")
+                // Above the preview, below everything that is there to be read.
+                ScannerFrost()
                 if case .failed(let message) = model.state {
                     VStack(spacing: 8) {
                         Image(systemName: "video.slash")

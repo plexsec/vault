@@ -29,6 +29,40 @@ final class SigningFlowUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// The scanning screen must never show the camera image itself: the frost covers the preview.
+    ///
+    /// A simulator has no camera, so geometry is the part of this that it can check — the frost is
+    /// present, and it spans the preview's box exactly, so whatever the preview draws is drawn
+    /// under it. That it really is *on top* is the `ZStack`'s source order (`ScannerFrost` is
+    /// declared after the preview), and what it looks like, plus that a real QR code still decodes
+    /// behind it, is a device check (m0 item 15) — no test in a simulator can see a camera.
+    func testTheScannerFrostCoversThePreview() {
+        let app = launchApp()
+        tapWhenVisible(app.buttons["route-signing"], in: app)
+
+        let frost = app.otherElements["scanner-frost"]
+        XCTAssertTrue(
+            frost.waitForExistence(timeout: 10),
+            "the scanner must be frosted:\(app.debugDescription)"
+        )
+        let preview = app.otherElements["scanner-preview"]
+        XCTAssertTrue(
+            preview.exists,
+            "the preview must be in the tree beside the frost:\(app.debugDescription)"
+        )
+        for (edge, covered, shown) in [
+            ("top", frost.frame.minY, preview.frame.minY),
+            ("bottom", frost.frame.maxY, preview.frame.maxY),
+            ("left", frost.frame.minX, preview.frame.minX),
+            ("right", frost.frame.maxX, preview.frame.maxX),
+        ] {
+            XCTAssertEqual(
+                covered, shown, accuracy: 1,
+                "the frost must cover the preview's \(edge) edge: frost \(frost.frame), preview \(preview.frame)"
+            )
+        }
+    }
+
     func testSigningAProvisionedCardProducesAScannableSignature() throws {
         let expectedAddress = try Self.expectedAddress()
         // The simulated card, seeded as the connection: a simulator cannot do NFC, and the

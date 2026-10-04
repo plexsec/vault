@@ -252,6 +252,15 @@ failure, since restarting over either would hide what the operator has to read. 
 means the camera is on and nothing else — a state that outlives its camera is how a second
 visit to the scanner came to show no picture at all (amendment 23).
 
+**The display is frosted, and nothing depends on seeing it.** The request is decoded from the
+session's sample buffers rather than from the screen, so the preview exists only to aim with — and
+it can therefore be obscured at no cost: a frosted-glass layer covers it (amendment 36). What is
+left visible is shapes and light, enough to centre a QR code. Without that layer the app is a
+viewfinder: it holds a legible live picture of the scene in front of the phone on a screen that
+other people can see, photograph, or record, and the app cannot tell any of those from the operator
+looking at it. The one moment the preview is on screen with nobody watching it — the snapshot iOS
+takes for the app switcher — is redacted rather than left holding the last camera frame.
+
 ### 5.2 Rules
 
 1. **One transaction = one `PSO:CDS`.** At the specification level, the app is forbidden from retrying a signature for the same request. If the YubiKey returns any error (wrong PIN, touch timeout, NFC disconnect), the entire flow terminates and restarts from the Desktop (which generates a new `requestId`).

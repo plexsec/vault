@@ -26,7 +26,9 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
 1. **Build the transaction in the wallet** (as small a value as you can make it the first
    time), confirm it there, and choose the QR signing option. The wallet shows an animated QR.
 2. **Scan the request.** Tap *Sign a transaction*: the camera opens directly. No card is needed
-   for this step, and nothing has been read from the YubiKey yet.
+   for this step, and nothing has been read from the YubiKey yet. The preview is **frosted on
+   purpose** — you frame the code by its shape, and the request is read from the camera stream,
+   not from the screen — so a blurred picture is not a fault.
 3. **Read the YubiKey.** The request names the key it wants; the app reads **that one slot** and
    says so on screen. Card connection: NFC (hold the iPhone against the key when asked) or USB-C
    (plug it in and leave it). The connection was chosen once, on first launch, and is shown by the

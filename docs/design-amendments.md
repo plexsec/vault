@@ -1578,3 +1578,63 @@ reads a frozen preview in a device test run as a regression.
 another app taking the camera — leaves the claim saying `scanning`, and the foreground edge then
 declines to restart it. That case needs a frame watchdog rather than a flag, and it stays an m0 item
 rather than a guess.
+
+## 36. v0.2: the scanner's display is frosted
+
+**Sections:** §5.1 (the scanner), `ScannerFrost` in `QRScannerView.swift`,
+`docs/signing-checklist.md`.
+
+**What changed.** A frosted-glass layer covers the camera preview. Through it the scanner shows
+shapes and light — enough to centre a QR code in the frame — and no detail.
+
+**Why it costs nothing.** Scanning does not read the screen. The request arrives as sample buffers
+from the session's metadata output, so the display is not in the decoding path and can be obscured
+without touching it. The same property is what makes the DEBUG sample equivalent to a real scan
+(§5.1), and it leaves the preview exactly one job: aiming. Aiming needs edges, not detail.
+
+**Why it is worth doing.** Without it the app is a viewfinder. It puts a live, legible picture of
+whatever is in front of the phone onto a screen that other people can see, photograph, or record,
+and the app cannot distinguish any of those from the operator looking at it. Two consequences are
+covered: a bystander or a second camera gets the blur, and iOS's snapshot for the app switcher —
+the one moment the preview is on screen while nobody is looking at the scanner — is redacted
+(`privacySensitive()`) rather than left holding the last camera frame.
+
+**Deliberately not a `blur` on the preview's own view.** The frost is a sibling drawn after the
+preview in the same `ZStack`, and the preview's own modifiers are untouched: how that view renders
+has already gone wrong once, in a way a simulator cannot show (amendment 35), and frosting it does
+not require touching it.
+
+**The strength is the material, and there is nothing below it.** The first version picked the
+thinnest material, and the operator's verdict from the device was that it was too blurry to aim
+through — so the next version diluted the material with `.opacity`, and that was wrong for a
+documented reason. Apple's `UIVisualEffectView` documentation — the machinery under a SwiftUI
+material — says to avoid alpha values below 1 on a visual effect view *or any of its superviews*,
+because "many effects look incorrect or not show up at all". The operator then asked the question
+that behaviour predicts: was the material doing anything at all? It was being flattened by the
+opacity over it. Reverted to the material alone, at full strength, and the question is now the
+documented one rather than an empirical puzzle.
+
+That leaves a limitation worth stating rather than papering over: **the materials are not a dial
+between blurry and clear.** They differ in thickness — how much of the background shows through —
+and share the blur radius, so `.ultraThinMaterial` (already the most translucent of the five) is the
+clearest this construction gets; every other choice only makes the picture greyer. A numerically
+tunable radius would mean blurring the *frames* rather than the display: a `CIFilter` pipeline fed
+by a video-data output, in place of the preview layer that took two rounds to stabilise (amendment
+35). That is a different piece of work, and it has not been done. What the frost costs is therefore
+paid in aiming: the code is framed by its shape, with the decode progress as feedback, and a clear
+aperture in the middle of the frost is the obvious next step if that proves too coarse on a real
+wallet.
+
+**What it cannot do.** There is no public API to exclude an arbitrary view from a screen
+recording, so a recording of the scanner holds the frosted image. That is the intent — what a
+recording gets is what the operator saw — but it does mean the property is "nothing legible
+reaches the screen", not "nothing reaches the recorder". And the frost is not a control on the
+*request*: the QR code is shown in full, as parsed text, on the summary screen, deliberately,
+because that is the screen the operator has to check. The frost protects the scene around the
+operator, not the transaction.
+
+**What is checked where.** A UI test asserts the part a simulator can see: the frost exists and
+covers the preview's box exactly, with the stacking left to the `ZStack`'s source order. Whether the
+picture is really obscured, and whether a real QR code still decodes behind it, needs the phone
+(m0 items 15 and 16) — the display cannot be measured from inside the app (a render readback does
+not include the camera surface), and the UI test harness stops the camera.

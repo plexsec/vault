@@ -536,6 +536,9 @@ notifications, launched with `devicectl … -open-scanner` (no taps):
       a watchdog rather than a flag.)
 - [ ] Confirm that a request decoded in one visit is *not* still on screen after leaving the
       flow and coming back with a different (or no) request.
+- [ ] Swipe up to the app switcher while the scanner is open: the preview area must be
+      **redacted**, not the last camera frame (`ScannerFrost`'s `privacySensitive()`,
+      amendment 36).
 
 ## 16. A scanned request reaches the ceremony (real camera)
 
@@ -546,6 +549,9 @@ a device: the metadata-output delegate firing, the hop to the main actor, and th
 - [ ] Read the YubiKey, build a real transaction in the wallet, and scan it: the screen must go
       from "Read a eth-sign-request" to the review screen on its own, with the recipient and
       value populated.
+- [ ] Look at the scanner: the camera image is **frosted** — shapes and light, no detail — and a QR
+      code can still be centred in the frame by its shape. Then scan it: the frost is over the
+      *display* only, so decoding must behave exactly as it did before it (amendment 36).
 - [ ] Scan a request for a **sibling account** (select a different index in the wallet's account
       picker): the app must refuse it *and* leave the camera live so the next code can be
       scanned, with the reason still on screen.
