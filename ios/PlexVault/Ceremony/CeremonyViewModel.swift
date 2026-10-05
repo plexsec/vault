@@ -276,6 +276,7 @@ public final class CeremonyViewModel {
         derivedKeys = nil
         readBack = [:]
         pairingManifestStored = nil
+        secretsWiped = false
         repairedKeys = [:]
         repairedFromSerial = nil
         pairingURStrings = [:]
@@ -384,8 +385,8 @@ public final class CeremonyViewModel {
 
     /// Completes the current step. Steps that produce output call this only once
     /// the operator has read that output, which is what keeps the entropy
-    /// commitment, the derived addresses, the read-back results, the pairing codes
-    /// and the counter on screen.
+    /// commitment, the derived addresses, the read-back results and the pairing codes
+    /// on screen.
     public func advance() {
         guard let ceremony else { return }
         errorMessage = nil
@@ -435,6 +436,7 @@ public final class CeremonyViewModel {
         }
         readBack = ceremony.readBackResults
         pairingManifestStored = ceremony.pairingManifest != nil
+        secretsWiped = ceremony.secretsWiped
         if step == .mnemonic {
             mnemonic = (try? ceremony.mnemonicForDisplay()) ?? []
             transcriptionChallenge = (try? ceremony.transcriptionChallenge()) ?? []
@@ -541,6 +543,38 @@ public final class CeremonyViewModel {
         }
     }
 
+    /// Wipes the mnemonic, the seed and both private keys out of the app's memory, **before**
+    /// the pairing codes are produced. The pairing step needs no secret, so the window in
+    /// which the private keys exist in memory ends here rather than at the end of the run
+    /// (amendment 42).
+    ///
+    /// The keys are on the cards by now, and the pairing codes stay reproducible from the
+    /// card's manifest, so nothing is lost: what the app keeps is the public material the
+    /// wallet is about to be given.
+    ///
+    /// The flag is the screens' copy, re-read from the ceremony rather than kept as the truth:
+    /// the ceremony's answer is derived from the secrets themselves, and it is cleared again
+    /// when the ceremony wipes everything (amendments 41, 42).
+    public private(set) var secretsWiped = false
+
+    public func wipeSecrets() {
+        runSync { ceremony in
+            try ceremony.wipeSecrets()
+        }
+        secretsWiped = ceremony?.secretsWiped ?? false
+        guard secretsWiped else { return }
+        // The view model holds its own copies of the words, the transcription answer and the
+        // PIN fields; the ceremony cannot clear those for it.
+        mnemonic = []
+        transcriptionChallenge = []
+        backfillEntries = [:]
+        hideMnemonic()
+        userPIN = ""
+        userPINConfirmation = ""
+        adminPIN = ""
+        adminPINConfirmation = ""
+    }
+
     public func buildPairingURs() {
         runSync { ceremony in
             let urs = try ceremony.buildPairingURs(
@@ -609,8 +643,12 @@ public final class CeremonyViewModel {
 
     private func fail(_ error: Error) {
         errorMessage = Self.describe(error)
-        // A voided procedure wipes the ceremony's secrets; keep the UI consistent.
-        if ceremony?.derivedKeys == nil {
+        // A voided procedure wipes the ceremony's secrets; keep the UI consistent. Public
+        // material is cleared with them rather than left behind, because the screens decide
+        // what to show from it. `secretsWiped` counts the same way as `derivedKeys == nil`:
+        // once the pre-pairing wipe has run, no private key is in the ceremony either
+        // (amendment 42).
+        if ceremony?.derivedKeys == nil || ceremony?.secretsWiped == true {
             derivedKeys = nil
             readBack = [:]
         }

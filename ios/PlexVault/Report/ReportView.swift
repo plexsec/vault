@@ -171,6 +171,10 @@ struct ChecklistView: View {
                 report?.userPINRetryLimit != nil && report?.adminPINRetryLimit != nil
             ),
             ("Mnemonic checked against the written copy, or the backup declined", report?.mnemonicBackedUp != nil),
+            (
+                "Secrets wiped from memory before the pairing codes were produced",
+                report?.secretsWipedBeforePairing == true
+            ),
             ("Entropy commitment recorded", report?.entropyCommitmentHex != nil),
             ("Mnemonic transcribed and back-fill check passed", !(report?.keys.isEmpty ?? true)),
             ("Both public keys read back from YubiKey match the derived keys", report?.readBackVerified == true),

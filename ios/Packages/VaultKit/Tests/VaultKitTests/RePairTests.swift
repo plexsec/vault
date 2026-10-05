@@ -49,6 +49,11 @@ final class RePairTests: XCTestCase {
         try await ceremony.setPINRetries()
         _ = try await ceremony.importAndVerify()
         try ceremony.advance()
+        // The keys are in the card, so they leave memory before the pairing codes are
+        // produced rather than after them (amendment 42).
+        XCTAssertEqual(ceremony.step, .wipeSecrets)
+        try ceremony.wipeSecrets()
+        try ceremony.advance()
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -309,10 +314,15 @@ final class RePairTests: XCTestCase {
 
     // MARK: The route itself
 
-    func testTheModePathsSayWhatEachCeremonyDoes() {
+    func testTheModePathsSayWhatEachCeremonyDoes() throws {
         for mode in [CeremonyMode.freshGeneration, .restoreFromMnemonic] {
             XCTAssertTrue(mode.path.contains(.reset))
             XCTAssertTrue(mode.path.contains(.keyImport))
+            // Provisioning holds the keys while it writes them, so its route has the wipe
+            // between the last card and the codes (amendment 42).
+            let wipe = try XCTUnwrap(mode.path.firstIndex(of: .wipeSecrets))
+            let export = try XCTUnwrap(mode.path.firstIndex(of: .pairingExport))
+            XCTAssertEqual(export, wipe + 1, "the wipe is the step before the codes")
         }
         // The read-only route, as data: not one step in it mutates the card, and
         // the destructive ones are absent rather than merely unused.
@@ -323,6 +333,10 @@ final class RePairTests: XCTestCase {
         XCTAssertTrue(rePair.contains(.rePairRead), "the read step must be on the route")
         XCTAssertFalse(rePair.contains(.reset))
         XCTAssertFalse(rePair.contains(.keyImport), "re-pair reads the manifest, it never writes one")
+        XCTAssertFalse(
+            rePair.contains(.wipeSecrets),
+            "re-pair never holds a secret to wipe: no mnemonic is entered and no private key exists"
+        )
 
         // Every mode starts at its own first step, and the progress indicator counts the
         // mode's own route rather than every step that exists. Provisioning starts with the

@@ -781,6 +781,53 @@ struct PairingStepView: View {
     }
 }
 
+// MARK: - The wipe before the pairing codes (design.md §4.2, the paragraph before step 8)
+
+/// The wipe runs here rather than at the very end, so that the pairing step — which shows
+/// public material and takes as long as the operator needs to scan two codes — is not run
+/// with the private keys in memory (amendment 42).
+///
+/// Two taps, like every step whose work produces something to read: the first wipes, the
+/// second continues, and the screen in between is the app saying that it happened.
+struct WipeSecretsStepView: View {
+    @Bindable var viewModel: CeremonyViewModel
+
+    private var cards: String { viewModel.cardCount > 1 ? "The YubiKeys you just wrote hold" : "The YubiKey you just wrote holds" }
+
+    var body: some View {
+        StepScaffold(
+            why: "Clears the mnemonic, the seed and both private keys out of this app's memory — before the pairing codes are produced, so that the app is not holding key material while it shows them. What stays is public material only: the public keys, the chain codes and addresses the wallet is given, and the record.",
+            caution: viewModel.secretsWiped
+                ? nil
+                : "This is one-way: the app cannot show the words or the keys again. \(cards) the only copy of both keys unless you wrote the mnemonic down. Pairing can be repeated later without them — the codes are read back out of the card by Re-pair.",
+            actionTitle: viewModel.secretsWiped ? "Continue" : "Wipe secrets",
+            action: {
+                if viewModel.secretsWiped {
+                    viewModel.advance()
+                } else {
+                    viewModel.wipeSecrets()
+                }
+            }
+        ) {
+            if viewModel.secretsWiped {
+                Label(
+                    "The mnemonic, the seed and both private keys are no longer in memory.",
+                    systemImage: "checkmark.seal.fill"
+                )
+                .font(.callout)
+                .foregroundStyle(.green)
+                Text("Nothing was written to or erased from the card. The card's own pairing manifest is what makes the codes reproducible if you have to pair the wallet again.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Nothing is sent to the card here, and nothing is deleted from it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 // MARK: - Step 12: teardown
 
 struct TeardownStepView: View {
@@ -788,8 +835,8 @@ struct TeardownStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Clears the mnemonic, seed and private keys from memory and produces the provisioning record you keep with the steel plate. The app requires a restart before another ceremony.",
-            actionTitle: "Wipe secrets and finish",
+            why: "Produces the provisioning record you keep with the steel plate. The mnemonic, the seed and both private keys were wiped before the pairing codes were produced, so the app has held no secrets since. An app restart is required before another ceremony.",
+            actionTitle: "Finish and show the record",
             action: { viewModel.finish() }
         ) {
             Text("Nothing secret is written to disk at any point in this app. The record below contains only public data.")

@@ -378,7 +378,7 @@ extension XCTestCase {
 
     /// One YubiKey, end to end: read it, reset it, set its PINs and the retry limits, then write
     /// it and read it back. Returns with the ceremony on the next card's inventory, or on the
-    /// pairing step when that was the last card (amendment 40).
+    /// wipe step when that was the last card (amendments 40, 42).
     func provisionTheCard(
         _ app: XCUIApplication,
         userPIN: String,
@@ -484,8 +484,8 @@ extension XCTestCase {
         tapWhenVisible(confirm, in: app, file: file, line: line)
     }
 
-    /// Everything after the mnemonic: derivation, the card, the pairing codes
-    /// and the teardown. Returns once the record is on screen.
+    /// Everything after the mnemonic: derivation, the card, the wipe, the pairing
+    /// codes and the teardown. Returns once the record is on screen.
     ///
     /// `expectedEVMAddress` is asserted against the address the pairing screen
     /// shows, so the codes are checked against the address derived independently
@@ -518,14 +518,26 @@ extension XCTestCase {
         pairAndFinish(app, expectedEVMAddress: expectedEVMAddress, file: file, line: line)
     }
 
-    /// The pairing codes, the address comparison, the teardown and the record — everything after
-    /// the last card has been written.
+    /// The last card's Continue, then the wipe that has to precede the pairing codes, then the
+    /// codes, the address comparison, the teardown and the record.
     func pairAndFinish(
         _ app: XCUIApplication,
         expectedEVMAddress: String,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
+        // The keys are on the card, so they leave memory before the wallet is shown
+        // anything: the wipe step is the one before the codes (amendment 42). Its first tap
+        // wipes and its second continues, and the assertion in between is the app saying
+        // that it happened.
+        tapStepAction("Wipe secrets", in: app, file: file, line: line)
+        XCTAssertTrue(
+            app.staticTexts["The mnemonic, the seed and both private keys are no longer in memory."]
+                .waitForExistence(timeout: 10),
+            "the wipe must report what it cleared before the step closes", file: file, line: line
+        )
+        tapStepAction("Continue", in: app, file: file, line: line)
+
         // Pairing: acknowledge the chain code, build the codes, check the address,
         // then continue.
         let acknowledge = app.switches["I understand that only the address shown here can be signed for"]
@@ -543,8 +555,8 @@ extension XCTestCase {
         tapWhenVisible(confirmed, in: app, file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
 
-        // Teardown.
-        tapStepAction("Wipe secrets and finish", in: app, file: file, line: line)
+        // Teardown: the secrets went before the pairing, so this is the record.
+        tapStepAction("Finish and show the record", in: app, file: file, line: line)
 
         XCTAssertTrue(app.buttons["Provision another wallet"].waitForExistence(timeout: 10),
                       "the record must be shown when the ceremony finishes", file: file, line: line)

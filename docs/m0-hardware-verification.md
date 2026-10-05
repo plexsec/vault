@@ -611,6 +611,10 @@ applet are now measured rather than assumed, and both had silently broken provis
       read the card back and confirm: `0xD6`/`0xD8` = `02 20`, `0xC4[0]` = `0x00`, both keys
       readable, manifest present, and both pairing codes reproduce the addresses the wallet
       shows.
+      - [ ] The wipe step appears **between** the last card's read-back and the pairing codes, says
+            what it cleared, and the pairing screen that follows still shows both addresses and
+            codes — the public material has to survive the wipe, so a wipe that takes the exports
+            with it fails here rather than at the end of the run (amendment 42)
 - [ ] Confirm a signature attempt on the provisioned card actually waits for a touch, and that
       refusing to touch produces no signature.
 

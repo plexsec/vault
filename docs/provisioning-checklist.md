@@ -91,13 +91,22 @@ YubiKey is reset, configured and written in its own pass, and the pairing codes 
                   step rather than finishing without it
             - [ ] No step asked for a second touch, and no screen was left between a write and its
                   proof
+- [ ] **Wipe the secrets** — the screen between the last card and the pairing codes. One tap clears
+      the mnemonic, the seed and both private keys out of the app's memory, and the screen then says
+      so; the second tap continues
+      - [ ] Read what it wipes: from here on the app holds public material only — the public keys,
+            the chain codes the wallet is about to be given, and the record
+      - [ ] Understood: the words cannot be shown again after this. If the notes above record that
+            you **declined** the paper backup, the YubiKey(s) just written are the only copy of both
+            keys, and pairing can still be repeated later from the card's manifest (Part 3b)
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
       - [ ] The wallet shows the same Ed25519 public key as the app ✔
       - [ ] You have acknowledged that the pairing code carries a chain code
             (required by Keystone/MetaMask) and that only the address shown can
             be signed for
-- [ ] **Teardown** — secrets wiped, provisioning record saved
+- [ ] **Finish** — the provisioning record on screen, saved (it contains public data only, and it
+      carries the "secrets wiped from app memory before pairing" line)
 - [ ] Restart the app before any further ceremony
 
 ## Part 3b — Re-pairing later (read-only, no reset)

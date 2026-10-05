@@ -135,15 +135,19 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(ceremony.step, .keyImport, "the card's write step is next", file: file, line: line)
     }
 
-    /// Every card, then the pairing codes and the record.
+    /// Every card, then the wipe that precedes the codes, then the codes and the record.
     private func completeCeremony(
         _ ceremony: ProvisioningCeremony,
         style: URTypeStyle = .keystoneLegacy,
         chainCodeAcknowledged: Bool = true
     ) async throws -> CeremonyReport {
-        while ceremony.step != .pairingExport {
+        while ceremony.step != .wipeSecrets {
             try await provisionOneCard(ceremony)
         }
+        // The keys are on the cards, so they leave memory before the pairing codes are
+        // produced rather than after them (amendment 42).
+        try ceremony.wipeSecrets()
+        try ceremony.advance()
         _ = try ceremony.buildPairingURs(style: style, chainCodeAcknowledged: chainCodeAcknowledged)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -198,6 +202,20 @@ final class ProvisioningCeremonyTests: XCTestCase {
         // The step closes on the operator's Continue rather than by itself: the card's
         // own answer has to be on screen first.
         XCTAssertEqual(ceremony.step, .keyImport)
+        try ceremony.advance()
+        // The cards hold both keys now, so the keys leave memory here — before the pairing
+        // codes are produced rather than after them (amendment 42) — and that step does not
+        // close on a bare Continue either.
+        XCTAssertEqual(ceremony.step, .wipeSecrets)
+        XCTAssertFalse(ceremony.secretsWiped, "the mnemonic and both private keys are still in memory")
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepIncomplete(step: .wipeSecrets, detail: "the mnemonic and both private keys are still in memory")
+            )
+        }
+        try ceremony.wipeSecrets()
+        XCTAssertTrue(ceremony.secretsWiped)
         try ceremony.advance()
         XCTAssertEqual(ceremony.step, .pairingExport)
 
@@ -509,8 +527,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let path = CeremonyMode.freshGeneration.path
         let importIndex = try XCTUnwrap(path.firstIndex(of: .keyImport))
         XCTAssertEqual(
-            path[importIndex + 1], .pairingExport,
-            "nothing may be advertised before the policy is verified"
+            Array(path[(importIndex + 1)...(importIndex + 2)]), [.wipeSecrets, .pairingExport],
+            "nothing may be advertised before the policy is verified, and no pairing code before the wipe"
         )
 
         // And the call order on a card, which is what the applet actually sees.
@@ -890,7 +908,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try await ceremony.importAndVerify()
         XCTAssertEqual(ceremony.report.cards.count, 2)
         try ceremony.advance()
-        XCTAssertEqual(ceremony.step, .pairingExport)
+        XCTAssertEqual(ceremony.step, .wipeSecrets)
     }
 
     // MARK: Pairing export (design.md §4.2 step 8)
@@ -933,6 +951,64 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
     // MARK: Pairing export
 
+    /// The keys leave memory when the cards have been written, not when the run ends: the
+    /// pairing step shows public material and lasts as long as two scans take, and there is no
+    /// reason for the mnemonic and both private keys to be in memory while it runs
+    /// (amendment 42).
+    func testSecretsAreWipedBeforeThePairingCodesAreProduced() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        let walk = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
+
+        // Not before the card is written: the keys have to reach it first, and the wipe
+        // cannot be reached from a card step at all.
+        XCTAssertThrowsError(try ceremony.wipeSecrets()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepOutOfOrder(expected: .keyImport, actual: .wipeSecrets)
+            )
+        }
+
+        _ = try await ceremony.importAndVerify()
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .wipeSecrets)
+        XCTAssertFalse(ceremony.secretsWiped)
+
+        // The codes cannot be produced from this side of the wipe.
+        XCTAssertThrowsError(try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: true))
+
+        try ceremony.wipeSecrets()
+        XCTAssertTrue(ceremony.secretsWiped, "the mnemonic, the seed and both private keys are gone")
+        XCTAssertEqual(ceremony.report.secretsWipedBeforePairing, true)
+
+        // What the wallet is about to be given survives, or the wipe would have destroyed the
+        // ceremony: the exports, the addresses, the read-back and the record are public data.
+        XCTAssertEqual(ceremony.pairingExports.count, 2)
+        XCTAssertNotNil(ceremony.derivedKeys)
+        XCTAssertEqual(ceremony.report.keys.count, 2)
+        XCTAssertEqual(ceremony.readBackResults.count, 2, "a read-back is the card's answer, not a secret")
+
+        // And the same codes still come out: the export is built from the public material.
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .pairingExport)
+        let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
+        XCTAssertEqual(urs.count, 2)
+        XCTAssertNotNil(try HDKey(ur: try XCTUnwrap(urs[.secp256k1])).chainCode)
+
+        ceremony.confirmPairingAddressMatches(true)
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .teardown)
+        let report = ceremony.finish()
+        XCTAssertEqual(report.key(.secp256k1)?.identity, walk.keys.secp256k1.evmAddress)
+        XCTAssertEqual(report.key(.ed25519)?.identity, walk.keys.ed25519.identity)
+        XCTAssertEqual(report.secretsWipedBeforePairing, true)
+        XCTAssertTrue(
+            report.printableLines().contains("secrets wiped from app memory before pairing: yes"),
+            "the operator's own record says when the private keys stopped existing outside the card"
+        )
+    }
+
     /// The pairing export must satisfy Keystone/MetaMask's `CryptoHDKey`:
     /// a chain code is mandatory (its absence is what makes MetaMask throw
     /// "Cannot read properties of undefined (reading 'length')"), and the
@@ -943,6 +1019,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let walk = try await runThroughDerivation(ceremony)
         try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
+        try ceremony.advance()
+        try ceremony.wipeSecrets()
         try ceremony.advance()
 
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
@@ -1000,6 +1078,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
         try ceremony.advance()
+        try ceremony.wipeSecrets()
+        try ceremony.advance()
         XCTAssertThrowsError(try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: false)) { error in
             XCTAssertEqual(error as? CeremonyError, .pairingPolicyNotAcknowledged)
         }
@@ -1011,6 +1091,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony()
         try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
+        try ceremony.advance()
+        try ceremony.wipeSecrets()
         try ceremony.advance()
 
         _ = try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: true)
@@ -1351,7 +1433,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testTheWritesAndTheirReadBackAreOneStep() async throws {
         let path = CeremonyMode.freshGeneration.path
         let index = try XCTUnwrap(path.firstIndex(of: .keyImport))
-        XCTAssertEqual(path[index + 1], .pairingExport, "the export follows the import directly")
+        XCTAssertEqual(
+            Array(path[(index + 1)...(index + 2)]), [.wipeSecrets, .pairingExport],
+            "the export follows the import, with only the wipe in between"
+        )
         XCTAssertEqual(path.filter { $0 == .keyImport }.count, 1)
 
         let ceremony = makeCeremony()

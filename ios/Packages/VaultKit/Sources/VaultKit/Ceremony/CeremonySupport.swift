@@ -595,6 +595,20 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     /// Nothing later in the ceremony writes to those slots except the private-use
     /// object, which does not disturb the UIF objects.
     case keyImport
+    /// Clears the mnemonic, the seed and both private keys out of the app's memory
+    /// **before** the pairing codes are produced.
+    ///
+    /// The pairing step shows public material — public keys, chain codes,
+    /// fingerprints — and needs no secret at all, so the window in which the private
+    /// keys exist in memory ends here rather than at the end of the run. It sits
+    /// after the last card because the keys are imported once per card, and before
+    /// the export because the operator's last look at the keys (the read-back) is
+    /// also before it. What survives is exactly what the wallet is told anyway, so
+    /// nothing is lost by wiping: the pairing codes stay reproducible from the card
+    /// alone through the manifest (`CeremonyMode.rePair`), and a run that is aborted
+    /// after this point leaves the cards as the only copy — which is what they are
+    /// from the moment they are written.
+    case wipeSecrets
     case pairingExport
     case teardown
 
@@ -616,8 +630,9 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .derivation: return "Derive the signing keys"
         case .cardCount: return "Choose how many YubiKeys"
         case .keyImport: return "Import and verify the YubiKey"
+        case .wipeSecrets: return "Wipe secrets from memory"
         case .pairingExport: return "Pair with the desktop wallet"
-        case .teardown: return "Wipe secrets and finish"
+        case .teardown: return "Finish"
         }
     }
 
@@ -662,11 +677,11 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
         let cards = Array(repeating: perCard, count: max(1, cardCount)).flatMap { $0 }
         switch self {
         case .freshGeneration:
-            return [.entropy, .mnemonic, .derivation, .cardCount] + cards + [.pairingExport, .teardown]
+            return [.entropy, .mnemonic, .derivation, .cardCount] + cards + [.wipeSecrets, .pairingExport, .teardown]
         case .restoreFromMnemonic:
             // No entropy step: the words come from the operator rather than from a generator,
             // and the mnemonic step is where they are entered and checked (amendment 40).
-            return [.mnemonic, .derivation, .cardCount] + cards + [.pairingExport, .teardown]
+            return [.mnemonic, .derivation, .cardCount] + cards + [.wipeSecrets, .pairingExport, .teardown]
         case .rePair:
             return [.cardInventory, .rePairRead, .pairingExport, .teardown]
         }

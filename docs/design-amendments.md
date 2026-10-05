@@ -1922,3 +1922,57 @@ reader grew the smallest affordance that makes one possible — `-simulated-card
 explicit "the operator swapped the card" call from the view model at the moment a card's pass ends
 (inferring the swap from what the card holds does not work: the write step reads its own manifest
 back *after* writing it, so "this card looks written" is already true before the pass is over).
+
+## 42. v0.2: the keys are wiped before the pairing codes, not after them
+
+**Sections:** §4.2 (the order paragraph, the paragraph before step 8, step 6's last sentence);
+`CeremonyStep.wipeSecrets`, `ProvisioningCeremony.wipeSecrets`/`wipeSecretMaterial`/`wipe`,
+`CeremonyReport.secretsWipedBeforePairing`, `CeremonyViewModel.wipeSecrets`,
+`WipeSecretsStepView`/`TeardownStepView`; `docs/provisioning-checklist.md` Part 3.
+
+**What changed.** The wipe used to be the last thing the ceremony did: the operator scanned the two
+pairing codes, compared the addresses with their wallet, and only then cleared the app's memory and
+produced the record. It now runs **before the pairing step**, as a step of its own with its own
+screen, its own Continue and a line in the record. The keys exist in memory until the last card has
+been written and read back, and not one step longer.
+
+**Why.** The pairing step is the worst place in the run to be holding private key material. It shows
+two QR codes and lasts as long as the operator needs to scan them — the longest stretch of the
+ceremony with the phone held up in front of a camera, and the one where the operator is looking at
+another device rather than at the screen. And it needs nothing secret: the codes carry the public
+keys, the chain codes, the paths and the fingerprints, all of which are also in the card's manifest.
+Wiping first therefore costs the ceremony nothing:
+
+* the codes stay reproducible from the card alone, which is what the manifest is for (§4.2 step 7c),
+  so "wipe, then pair" cannot lose the ability to pair again;
+* a run abandoned after the wipe has lost nothing the cards do not hold — the mnemonic is on the
+  paper the operator was asked to write, and the keys are in every card this run wrote;
+* the code that builds the codes now has no private key to reach even in principle.
+
+**The wipe is derived, not asserted.** `secretsWiped` is computed from the secrets themselves
+(`entropy == nil && seed == nil && privateKeys.isEmpty && mnemonicWords.isEmpty && sessionAdminPIN == nil`)
+rather than set by the method that wipes, so the gate at `.wipeSecrets` cannot be satisfied by a call
+that did not clear anything, and a later `wipe()` — or an abort — puts it back to false because the
+secrets are gone and the ceremony is not in a position to pair. This is the same reasoning as §5.2
+rule 5: a step is gated on what is true, not on what was asked for.
+
+**What the step does and does not clear.** `wipeSecrets()` clears the mnemonic, the seed, both derived
+private keys, the entropy and the per-card Admin PIN, and records `secretsWipedBeforePairing` in the
+report. It deliberately keeps the public material the pairing step exists to show — the exports
+(public keys and chain codes), the derived addresses, the read-back results, the inventory and the
+record. "Wipe everything" is still `finish()`/`wipe()`, which runs at the end of the run and clears
+the pairing material as well.
+
+**Consequences for the operators' documents.** The record gains the line "secrets wiped from app
+memory before pairing: yes", the teardown screen no longer wipes anything (its action is now "Finish
+and show the record"), and the provisioning checklist gains a wipe item before the pairing item and
+loses the teardown one. The app's step path for both provisioning modes gains the step; the re-pair
+mode does not, because it never holds a secret in the first place — no mnemonic is entered and no
+private key exists — and a test asserts that it stays that way.
+
+**A note on the view-model bug this exposed.** The first version exposed `secretsWiped` as a computed
+property over the ceremony, and the wipe appeared to do nothing on screen: the ceremony is a plain
+class, so mutating it does not invalidate a SwiftUI view, and nothing else on that screen changed.
+The view model now mirrors the flag and re-reads it from the ceremony on every step change — the same
+shape as `readBack` and `pairingManifestStored`, and the same lesson as amendment 41: state that the
+screens decide from is copied deliberately and re-synced, never assumed to follow along.

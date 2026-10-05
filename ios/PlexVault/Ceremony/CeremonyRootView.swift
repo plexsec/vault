@@ -125,6 +125,8 @@ struct CeremonyRootView: View {
             CardCountStepView(viewModel: viewModel)
         case .keyImport:
             ImportStepView(viewModel: viewModel)
+        case .wipeSecrets:
+            WipeSecretsStepView(viewModel: viewModel)
         case .pairingExport:
             PairingStepView(viewModel: viewModel)
         case .teardown:

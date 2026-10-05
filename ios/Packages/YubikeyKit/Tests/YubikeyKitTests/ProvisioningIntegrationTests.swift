@@ -107,6 +107,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
         return readBack
     }
 
+    /// The wipe that has to precede the pairing codes, and the operator's Continue through it
+    /// (amendment 42): the keys are in the card by now, so they leave the app's memory before
+    /// the wallet is shown anything.
+    private func wipeSecretsAndContinue(
+        _ ceremony: ProvisioningCeremony,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        XCTAssertEqual(ceremony.step, .wipeSecrets, "the wipe precedes the pairing codes", file: file, line: line)
+        try ceremony.wipeSecrets()
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .pairingExport, file: file, line: line)
+    }
+
     /// The complete §4.2 flow, with no protocol-level mocking.
     func testFullCeremonyAgainstTheAPDULayer() async throws {
         let transport = MockYubikeyTransport()
@@ -192,8 +206,10 @@ final class ProvisioningIntegrationTests: XCTestCase {
             "the manifest must reach the card as PUT DATA 0x0102"
         )
 
-        // The step closes on the operator's Continue.
+        // The step closes on the operator's Continue, and the keys leave memory before the
+        // pairing codes are built (amendment 42).
         try ceremony.advance()
+        try wipeSecretsAndContinue(ceremony)
 
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
@@ -319,6 +335,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
 
         // Everything the rest of the ceremony still does to the card.
+        try wipeSecretsAndContinue(ceremony)
         _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -449,7 +466,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
 
         current = second
         let readBack = try await finishProvisioning(ceremony)
-        XCTAssertEqual(ceremony.step, .pairingExport, "both cards are written")
+        XCTAssertEqual(ceremony.step, .wipeSecrets, "both cards are written, so the keys leave memory")
+        try wipeSecretsAndContinue(ceremony)
 
         // Both cards hold the same keys, and each carries its own manifest — the manifest
         // names the card's serial, so the two objects are deliberately different.

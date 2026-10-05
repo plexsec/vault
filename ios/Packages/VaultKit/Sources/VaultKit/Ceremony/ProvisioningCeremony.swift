@@ -92,6 +92,12 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     /// Both slots reported the touch policy the ceremony asked for. Only ever set
     /// after reading the UIF objects back off the card (amendment 26).
     public var touchPolicyVerified: Bool?
+    /// True when the mnemonic, the seed and both private keys were wiped from the app's
+    /// memory **before** the pairing codes were produced (amendment 42). Recorded rather
+    /// than assumed: it is the one line of the record that speaks about the app's own
+    /// memory rather than about the card, and the operator's file should say when the
+    /// private keys stopped existing outside the YubiKeys.
+    public var secretsWipedBeforePairing: Bool?
     /// How many wrong entries each password tolerates, recorded only after the card
     /// reported those counters back (amendment 27). Two numbers rather than one:
     /// the User PIN is typed on every signature and the Admin PIN almost never, so
@@ -166,6 +172,9 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
         // the paper record because they are what the card will enforce years from now,
         // and because the numbers are the operator's own choice (amendments 27, 32).
         lines.append("touch policy verified on both slots: \(touchPolicyVerified == true ? "yes" : "no")")
+        if secretsWipedBeforePairing == true {
+            lines.append("secrets wiped from app memory before pairing: yes")
+        }
         if let userPINRetryLimit, let adminPINRetryLimit {
             lines.append("PIN retry limits (PW1 / PW3): \(userPINRetryLimit) / \(adminPINRetryLimit)")
         }
@@ -503,6 +512,15 @@ public final class ProvisioningCeremony {
                 detail: "the number of YubiKeys has not been chosen yet"
             )
 
+        case .wipeSecrets:
+            guard secretsWiped else {
+                throw CeremonyError.stepIncomplete(
+                    step: .wipeSecrets,
+                    detail: "the mnemonic and both private keys are still in memory"
+                )
+            }
+            step = .pairingExport
+
         case .pairingExport:
             guard pairingURs.count == KeyAlgorithm.allCases.count else {
                 throw CeremonyError.stepIncomplete(step: .pairingExport, detail: "the pairing codes have not been produced yet")
@@ -542,7 +560,9 @@ public final class ProvisioningCeremony {
             beginCardPass()
             return .cardInventory
         }
-        return .pairingExport
+        // The keys leave memory here, before the pairing codes are produced rather than
+        // after them (amendment 42).
+        return .wipeSecrets
     }
 
     /// Clears every answer that belongs to one YubiKey's pass, so the next card's steps cannot
@@ -1732,11 +1752,54 @@ public final class ProvisioningCeremony {
         }
     }
 
+    // MARK: The wipe before the pairing codes (design.md §4.2, the paragraph before step 8)
+
+    /// Clears every secret out of this object and records that it happened.
+    ///
+    /// This is the wipe that runs **before** the pairing codes are produced: the mnemonic,
+    /// the seed, both derived private keys, the per-card Admin PIN and the entropy go; the
+    /// public material the pairing step has to show (public keys, chain codes, fingerprints,
+    /// addresses) and the record stay, because the wallet is about to be given it.
+    ///
+    /// It does not advance: the step closes on the operator's Continue, like every other
+    /// step that produces something for them to read (amendment 32).
+    public func wipeSecrets() throws {
+        try requireCurrent(.wipeSecrets)
+        wipeSecretMaterial()
+        report.secretsWipedBeforePairing = true
+    }
+
+    /// True when no secret of this ceremony is in memory any more: the entropy, the seed, both
+    /// private keys, the mnemonic and the Admin PIN are all gone. `advance()` at `.wipeSecrets`
+    /// requires it.
+    ///
+    /// Derived from the secrets themselves rather than set by `wipeSecrets()`, so it cannot
+    /// claim a wipe that did not happen — which is the point of gating the step on it (§5.2
+    /// rule 5, amendment 42). The public material (the exports, the addresses, the read-back
+    /// and the record) is deliberately not part of it: the wallet is about to be given all of
+    /// it.
+    public var secretsWiped: Bool {
+        entropy == nil && seed == nil && privateKeys.isEmpty && mnemonicWords.isEmpty
+            && sessionAdminPIN == nil
+    }
+
+    private func wipeSecretMaterial() {
+        entropy?.zeroize(); entropy = nil
+        seed?.zeroize(); seed = nil
+        for (_, key) in privateKeys { key.zeroize() }
+        privateKeys = [:]
+        sessionAdminPIN?.zeroize(); sessionAdminPIN = nil
+        for index in mnemonicWords.indices { mnemonicWords[index] = "" }
+        mnemonicWords = []
+        mnemonicConfirmed = false
+    }
+
     // MARK: Step 12 — teardown
 
-    /// Wipes all secrets and returns the final report. An app restart is
-    /// required before another ceremony (enforced by the UI, which is what
-    /// `hasFinished` is for).
+    /// Completes the record and wipes what is left — the public pairing material and the
+    /// mnemonic's last copies, which `wipeSecrets()` has already taken care of by now. An app
+    /// restart is required before another ceremony (enforced by the UI, which is what
+    /// `isFinished` is for).
     @discardableResult
     public func finish() -> CeremonyReport {
         report.completedAt = clock()
@@ -1748,20 +1811,13 @@ public final class ProvisioningCeremony {
 
     public var isFinished: Bool { step == .teardown && report.completedAt != nil }
 
-    /// Wipes every secret in this object. Idempotent.
+    /// Wipes every secret in this object **and** the public pairing material. Idempotent.
     ///
     /// `derivedKeys` holds only public data, but it is cleared too: after a void
     /// procedure or an abort, no stale "paired account" may remain visible.
     public func wipe() {
-        entropy?.zeroize(); entropy = nil
-        seed?.zeroize(); seed = nil
-        for (_, key) in privateKeys { key.zeroize() }
-        privateKeys = [:]
+        wipeSecretMaterial()
         chainCodes = [:]
-        sessionAdminPIN?.zeroize(); sessionAdminPIN = nil
-        for index in mnemonicWords.indices { mnemonicWords[index] = "" }
-        mnemonicWords = []
-        mnemonicConfirmed = false
         pairingURs = [:]
         pairingExports = [:]
         // The manifest is public data, but it is derived from `pairingExports`:
