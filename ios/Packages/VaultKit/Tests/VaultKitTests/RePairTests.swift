@@ -33,18 +33,20 @@ final class RePairTests: XCTestCase {
         entropy: [UInt8] = [UInt8](repeating: 0, count: 32)
     ) async throws -> (report: CeremonyReport, urs: [KeyAlgorithm: UR]) {
         let ceremony = ceremony(for: card, entropy: entropy)
+        // The keys come first, then the card (amendment 40).
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         try ceremony.advance()
         let words = try ceremony.mnemonicForDisplay()
         try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
         _ = try ceremony.deriveKeys()
         try ceremony.advance()
+        try ceremony.setCardCount(1)
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard(acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await ceremony.setPINRetries()
         _ = try await ceremony.importAndVerify()
         try ceremony.advance()
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
@@ -265,12 +267,22 @@ final class RePairTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = ceremony(for: card)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
+        // Provisioning starts with the keys (amendment 40), so the read-only entry point is
+        // refused at the first step rather than after an inventory.
+        XCTAssertEqual(ceremony.step, .entropy)
 
         await assertStepOutOfOrder { _ = try await ceremony.readPairingManifestFromCard() }
 
         // …and provisioning still routes the destructive way, which is the whole
         // difference between the two modes.
+        try await ceremony.generateEntropy()
+        try ceremony.advance()
+        let words = try ceremony.mnemonicForDisplay()
+        try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
+        _ = try ceremony.deriveKeys()
+        try ceremony.advance()
+        try ceremony.setCardCount(1)
+        _ = try await ceremony.inspectCard()
         try ceremony.advance()
         XCTAssertEqual(ceremony.step, .reset)
     }
@@ -312,10 +324,17 @@ final class RePairTests: XCTestCase {
         XCTAssertFalse(rePair.contains(.reset))
         XCTAssertFalse(rePair.contains(.keyImport), "re-pair reads the manifest, it never writes one")
 
-        // Every mode starts at the same shared first screen, and the progress
-        // indicator counts the mode's own route rather than every step that exists.
-        XCTAssertTrue(CeremonyMode.allCases.allSatisfy { $0.path.first == .cardInventory })
-        XCTAssertLessThan(CeremonyMode.rePair.path.count, CeremonyMode.freshGeneration.path.count)
+        // Every mode starts at its own first step, and the progress indicator counts the
+        // mode's own route rather than every step that exists. Provisioning starts with the
+        // keys and re-pair with the card it is about to read (amendment 40).
+        XCTAssertEqual(CeremonyMode.rePair.path.first, .cardInventory)
+        XCTAssertEqual(CeremonyMode.freshGeneration.path(cardCount: 1).first, .entropy)
+        XCTAssertLessThan(CeremonyMode.rePair.path.count, CeremonyMode.freshGeneration.path(cardCount: 1).count)
+        // The per-card block is repeated once per YubiKey the operator chose.
+        let threeCards = CeremonyMode.freshGeneration.path(cardCount: 3)
+        XCTAssertEqual(threeCards.filter { $0 == .keyImport }.count, 3)
+        XCTAssertEqual(threeCards.filter { $0 == .cardInventory }.count, 3)
+        XCTAssertEqual(threeCards.filter { $0 == .mnemonic }.count, 1, "the words are written down once")
     }
 
     // MARK: Helpers

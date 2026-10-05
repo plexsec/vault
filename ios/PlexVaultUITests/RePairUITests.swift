@@ -96,7 +96,9 @@ final class RePairUITests: XCTestCase {
         // keys and the manifest that describes them.
         advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         try revealAndConfirmMnemonic(app, entropy: entropy)
-        completeCeremonyAfterMnemonic(app, expectedEVMAddress: expectedEVM)
+        completeCeremonyAfterMnemonic(app,
+            expectedEVMAddress: expectedEVM,
+            userPIN: Self.userPIN, adminPIN: Self.adminPIN)
 
         // Back to setup for the read-only pass. The card is a process-wide mock, so
         // it is still provisioned — which is exactly the state this mode is for.

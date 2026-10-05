@@ -171,9 +171,12 @@ final class DeviceChoiceUITests: XCTestCase {
     ///
     /// The connection is not echoed on any screen inside the flow — that is the point of
     /// asking once — so the proof is behavioural: the simulated card answers. A real NFC
-    /// read in a simulator cannot, so reaching the inventory is evidence the choice
-    /// travelled from the device screen through the store into the ceremony.
-    func testTheChoiceMadeOnTheDeviceScreenReachesTheCeremony() {
+    /// read in a simulator cannot, so reaching the step that talks to the card is evidence the
+    /// choice travelled from the device screen through the store into the ceremony. That step
+    /// is the inventory now, and it comes after the keys (amendment 40), so this walk reads
+    /// the card the first time the ceremony asks for it: the entropy step's `randomBytes`
+    /// proves the transport works, and the inventory proves *which* card answered.
+    func testTheChoiceMadeOnTheDeviceScreenReachesTheCeremony() throws {
         let app = launchApp(firstRun: true)
 
         tapWhenVisible(app.buttons["device-choice-Simulated (debug)"], in: app)
@@ -187,9 +190,11 @@ final class DeviceChoiceUITests: XCTestCase {
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)
 
-        tapWhenVisible(app.buttons["Read YubiKey"], in: app)
+        // The ceremony's first step reads the card's own RNG, so the simulated card answering
+        // here is the transport proving itself.
+        tapWhenVisible(app.buttons["Generate entropy"], in: app)
         XCTAssertTrue(
-            app.staticTexts["Factory fresh"].waitForExistence(timeout: 15),
+            app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"].waitForExistence(timeout: 15),
             "the simulated card must be the one the ceremony read:\n\(app.debugDescription)"
         )
     }

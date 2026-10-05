@@ -90,8 +90,8 @@ final class SetupFlowUITests: XCTestCase {
         tapPinnedPrimaryAction(app)
 
         XCTAssertTrue(
-            app.buttons["Read YubiKey"].waitForExistence(timeout: 10),
-            "Begin ceremony must advance to the card-inventory step:\n\(app.debugDescription)"
+            app.buttons["Generate entropy"].waitForExistence(timeout: 10),
+            "Begin ceremony must advance to the entropy step — the keys come before any card:\n\(app.debugDescription)"
         )
     }
 
@@ -137,8 +137,8 @@ final class SetupFlowUITests: XCTestCase {
         acknowledgePosture(in: app)
         tapPinnedPrimaryAction(app)
         XCTAssertTrue(
-            app.buttons["Read YubiKey"].waitForExistence(timeout: 10),
-            "restore mode must also reach the ceremony:\n\(app.debugDescription)"
+            app.textViews.firstMatch.waitForExistence(timeout: 10),
+            "restore mode must open on the words themselves:\n\(app.debugDescription)"
         )
     }
 }

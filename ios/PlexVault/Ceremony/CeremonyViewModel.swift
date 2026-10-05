@@ -63,6 +63,13 @@ public final class CeremonyViewModel {
     public private(set) var sessionActive = false
 
     public private(set) var inventory: CardInventory?
+    /// How many YubiKeys this run will write, and which one is in front of the operator
+    /// (0-based). The count is the operator's answer on the card-count step; the state is
+    /// read from the ceremony so the screens and the progress badge agree with the state
+    /// machine rather than with a copy kept here.
+    public var cardCount: Int = 1
+    public var cardIndex: Int { ceremony?.cardIndex ?? 0 }
+    public var cardsWritten: Int { ceremony?.cardIndex ?? 0 }
     public private(set) var entropyCommitment: String?
     public private(set) var mnemonic: [String] = []
     public private(set) var transcriptionChallenge: [Int] = []
@@ -281,6 +288,9 @@ public final class CeremonyViewModel {
         backfillEntries = [:]
         restoreWords = ""
         diceRolls = []
+        cardCount = 1
+        userPINRetryLimit = CardPolicy.defaultRetryLimit
+        adminPINRetryLimit = CardPolicy.defaultRetryLimit
         acknowledgeChainCodeWarning = false
         pairingAddressConfirmed = false
         mnemonicRevealed = false
@@ -339,6 +349,26 @@ public final class CeremonyViewModel {
                 user: self.userPINRetryLimit,
                 admin: self.adminPINRetryLimit
             )
+        }
+    }
+
+    /// The steps this run visits, in the order it visits them, with the per-card block
+    /// repeated once per YubiKey the operator chose. The progress badge reads it, so "3 of
+    /// 14" counts the cards this ceremony will actually write.
+    public var stepPath: [CeremonyStep] { mode.path(cardCount: cardCount) }
+
+    /// Records how many YubiKeys this run will write, and opens the per-card block.
+    public func setCardCount() async {
+        await run { ceremony in
+            try ceremony.setCardCount(self.cardCount)
+        }
+    }
+
+    /// Continues without a paper backup of the 24 words. The ceremony records the choice;
+    /// the step is where the operator is told what it means.
+    public func declineMnemonicBackup() {
+        runSync { ceremony in
+            try ceremony.declineMnemonicBackup()
         }
     }
 

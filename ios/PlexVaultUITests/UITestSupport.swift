@@ -331,8 +331,12 @@ extension XCTestCase {
 /// preceded by a real provisioning pass to have anything to read.
 extension XCTestCase {
 
-    /// Steps 1-6: setup, inventory, reset, PINs, the retry limits, entropy — landing on
-    /// the mnemonic step with the words still hidden.
+    /// Steps 1-2: setup, the entropy and the commitment — landing on the mnemonic step with the
+    /// words still hidden.
+    ///
+    /// The card is not touched here: the keys come first, and the cards follow (amendment 40).
+    /// `userPIN` and `adminPIN` are the caller's, and `completeCeremonyAfterMnemonic` uses them
+    /// when it walks the card.
     func advanceToMnemonicStep(
         _ app: XCUIApplication,
         userPIN: String,
@@ -340,12 +344,48 @@ extension XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
+        _ = userPIN
+        _ = adminPIN
         openProvisioningFlow(app, file: file, line: line)
         // The connection was seeded at launch: this walk is about the ceremony, and the
         // simulated card is what a simulator can reach (`launchApp(deviceChoice:)`).
         acknowledgePosture(in: app, file: file, line: line)
         tapPinnedPrimaryAction(app, file: file, line: line)
 
+        // Entropy first: the keys are generated before any YubiKey is touched.
+        let generate = app.buttons["Generate entropy"]
+        XCTAssertTrue(
+            generate.waitForExistence(timeout: 15),
+            "the entropy step must come first; hierarchy:\n\(app.debugDescription)",
+            file: file, line: line
+        )
+        tapWhenVisible(generate, in: app, file: file, line: line)
+
+        let commitment = app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"]
+        XCTAssertTrue(commitment.waitForExistence(timeout: 10),
+                      "the commitment must stay on screen after generating", file: file, line: line)
+        let recorded = app.switches["I have written down the entropy commitment"]
+        XCTAssertTrue(recorded.waitForExistence(timeout: 5), file: file, line: line)
+        tapWhenVisible(recorded, in: app, file: file, line: line)
+
+        let reveal = app.buttons["Reveal the mnemonic"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "cannot proceed to the mnemonic", file: file, line: line)
+        tapWhenVisible(reveal, in: app, file: file, line: line)
+
+        XCTAssertTrue(app.buttons["reveal-mnemonic"].waitForExistence(timeout: 10),
+                      "mnemonic step missing", file: file, line: line)
+    }
+
+    /// One YubiKey, end to end: read it, reset it, set its PINs and the retry limits, then write
+    /// it and read it back. Returns with the ceremony on the next card's inventory, or on the
+    /// pairing step when that was the last card (amendment 40).
+    func provisionTheCard(
+        _ app: XCUIApplication,
+        userPIN: String,
+        adminPIN: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         // Card inventory: read, look at it, then continue.
         let read = app.buttons["Read YubiKey"]
         XCTAssertTrue(read.waitForExistence(timeout: 10), "inventory step missing", file: file, line: line)
@@ -362,7 +402,9 @@ extension XCTestCase {
         XCTAssertTrue(confirmReset.waitForExistence(timeout: 5), "reset confirmation missing", file: file, line: line)
         confirmReset.tap()
 
-        // PINs: user, repeat, admin, repeat.
+        // PINs: user, repeat, admin, repeat. Every card gets its own, so these fields are
+        // empty again here for the second card — which is what makes this walk the test of
+        // that (amendment 40).
         XCTAssertTrue(app.staticTexts["User PIN (PW1) — at least 6 digits"].waitForExistence(timeout: 10),
                       "PIN step missing", file: file, line: line)
         typeSecret(userPIN, into: "User PIN", in: app, file: file, line: line)
@@ -393,29 +435,19 @@ extension XCTestCase {
         dismissKeyboard(in: app)
         tapStepAction("Set PIN retry limits", in: app, file: file, line: line)
 
-        // Entropy: generate, record the commitment, then continue.
-        let generate = app.buttons["Generate entropy"]
+        // The card: one action writes the keys, the policy and the pairing manifest,
+        // and reads all of it back. The step only shows "Continue" once the card has
+        // reported everything back, so reaching it is the assertion that the writes
+        // happened and were verified (amendment 37).
+        tapStepAction("Write and verify the YubiKey", in: app, file: file, line: line)
         XCTAssertTrue(
-            generate.waitForExistence(timeout: 10),
-            "entropy step missing; hierarchy:\n\(app.debugDescription)",
-            file: file, line: line
+            app.staticTexts["The pairing manifest is stored on the YubiKey and read back byte-for-byte."]
+                .waitForExistence(timeout: 20),
+            "the manifest must be stored and read back", file: file, line: line
         )
-        tapWhenVisible(generate, in: app, file: file, line: line)
-
-        let commitment = app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"]
-        XCTAssertTrue(commitment.waitForExistence(timeout: 10),
-                      "the commitment must stay on screen after generating", file: file, line: line)
-        let recorded = app.switches["I have written down the entropy commitment"]
-        XCTAssertTrue(recorded.waitForExistence(timeout: 5), file: file, line: line)
-        tapWhenVisible(recorded, in: app, file: file, line: line)
-
-        let reveal = app.buttons["Reveal the mnemonic"]
-        XCTAssertTrue(reveal.waitForExistence(timeout: 5), "cannot proceed to the mnemonic", file: file, line: line)
-        tapWhenVisible(reveal, in: app, file: file, line: line)
-
-        XCTAssertTrue(app.buttons["reveal-mnemonic"].waitForExistence(timeout: 10),
-                      "mnemonic step missing", file: file, line: line)
+        tapStepAction("Continue", in: app, file: file, line: line)
     }
+
 
     /// Reveals the words, back-fills the challenge from the entropy the app was
     /// launched with, and confirms the transcription.
@@ -461,6 +493,8 @@ extension XCTestCase {
     func completeCeremonyAfterMnemonic(
         _ app: XCUIApplication,
         expectedEVMAddress: String,
+        userPIN: String,
+        adminPIN: String,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -473,17 +507,14 @@ extension XCTestCase {
         tapStepAction("Derive keys", in: app, file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
 
-        // The card: one action writes the keys, the policy and the pairing manifest,
-        // and reads all of it back. The step only shows "Continue" once the card has
-        // reported everything back, so reaching it is the assertion that the writes
-        // happened and were verified (amendment 37).
-        tapStepAction("Write and verify the YubiKey", in: app, file: file, line: line)
-        XCTAssertTrue(
-            app.staticTexts["The pairing manifest is stored on the YubiKey and read back byte-for-byte."]
-                .waitForExistence(timeout: 20),
-            "the manifest must be stored and read back", file: file, line: line
-        )
+        // How many YubiKeys: the walk provisions one, which is what the simulator's single
+        // simulated card can be (amendment 40).
+        XCTAssertTrue(app.steppers["card-count"].waitForExistence(timeout: 10),
+                      "the card-count step is missing:\(app.debugDescription)", file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
+
+        // The card, in its own steps, then the pairing codes.
+        provisionTheCard(app, userPIN: userPIN, adminPIN: adminPIN, file: file, line: line)
 
         // Pairing: acknowledge the chain code, build the codes, check the address,
         // then continue.

@@ -1798,3 +1798,68 @@ no longer exists; the UI walk no longer taps a counter screen. A hardware trace 
 statement. This is a genuine reduction in what the off-hardware suite can prove — there is no
 longer anything to assert about a number the app does not read — and it is recorded here rather
 than left implicit.
+
+## 40. v0.2: the keys come first, and one ceremony writes several YubiKeys
+
+**Sections:** §4.2 (the order paragraph, steps 2, 3, the new 4b, 5 and 6), §4.3, §8.1;
+`CeremonyStep.cardCount`, `CeremonyMode.path(cardCount:)`,
+`ProvisioningCeremony.setCardCount` / `declineMnemonicBackup`, `CeremonyReport.cards` /
+`mnemonicBackedUp`, `CardRecord`, `CardPolicy.cardCountRange`; `CardCountStepView`;
+`docs/provisioning-checklist.md`; the UI test walk.
+
+**What changed.** Three things, in one design, because each is what makes the next legible.
+
+1. **The order.** A provisioning run generates the keys first — entropy, mnemonic, derivation —
+   and only then touches a card. The per-card steps (inventory, reset, PINs, retry limits, write
+   and read-back) follow, once per card. Re-pair is unchanged and still starts at the card: it
+   reads one that is already provisioned.
+2. **Several cards per run.** After the keys exist and before the first card is touched, the
+   operator says how many YubiKeys this run will write (`4b`, 1–5). Each card is reset, given
+   **its own User PIN and Admin PIN**, given the ceremony's retry limits, and written and verified
+   in its own pass. Every card ends up holding the same two keys and the same pairing material;
+   each stores its own manifest, because the manifest names the card's serial. The report names
+   every card, in the order the operator presented them. A card this run has already written is
+   refused at its inventory (`duplicateCard`) — the step after that inventory resets the card,
+   which would erase the keys it now holds.
+3. **The paper backup is optional.** The mnemonic step can be declined, and the choice is recorded
+   (`mnemonicBackedUp`, and a line on the printable record) and said in the terms that matter:
+   with one card and no backup, that card *is* the wallet. Restore mode cannot decline it, because
+   those words came from a backup that exists and the back-fill there is a check on the typing.
+
+**Why the keys go first.** The count is a decision about the operator's equipment, and it does not
+exist until the keys do. It has to be known before the first card because the per-card block is
+what the operator is about to repeat, and it has to be known *by the mnemonic step* because that
+step's warning depends on it: "the words are the only copy" is true with one card and false with
+three. The previous order — reset and configure a card, then generate the keys — could not ask the
+question in either place, and it put a destructive operation before the only backup of the keys it
+was about to write.
+
+**Why several cards in one run.** A second YubiKey is the reason to have a mnemonic at all: the
+same keys on two devices means one can be lost without losing the wallet. Doing it in one run is
+what makes that practical — the keys are in memory once, the words are in front of the operator
+once, and the pairing codes are produced once. The alternative (a second full ceremony in restore
+mode) works, and remains the recovery path, but it re-derives the keys and re-runs the whole
+per-card sequence anyway. What the single run costs is stated on the step: **every card must be to
+hand**, because the ceremony cannot be paused between cards, and it cannot go back to one it has
+already written.
+
+**Why the backup is optional.** A compulsory backup is one an operator learns to click through,
+and the honest reason it matters is the card count: with N cards the keys exist N times, with one
+card they exist once. The app asks the count, says which case the operator is in, and records what
+they chose. What it cannot do is make the record true: if the words are not written down and every
+card is lost, reset or destroyed, the wallet is gone — and the record says exactly that.
+
+**What is checked where.** `ProvisioningCeremonyTests` covers the count being chosen after the keys
+and before the cards (and refused outside 1–5, leaving the step where it was), the same card
+refused as a second card with the first card's keys untouched, the per-card PIN steps (the path has
+one per card, so card 2's write cannot inherit card 1's PINs, which are wiped when card 1 is
+written), the decline-and-record path for the mnemonic, and a restore that cannot decline. The
+integration test `testTwoYubiKeysAreProvisionedInOneCeremony` swaps the transport underneath the
+single `SignerCard` the ceremony holds — which is what "the card" means over NFC — and asserts that
+both cards hold the keys, that each stores its own manifest, and that the report names both
+serials. The UI walk provisions one card, which is what the simulator's one simulated card can be.
+
+**What this does not do.** There is no resumption: a run that stops between cards starts again from
+the keys. Per-card retry limits are deliberately not offered — the limits are one policy decision,
+and the PINs are what differ per card. And nothing here changes what a single card *is*: the same
+two keys, the same fixed paths, the same pairing material, whichever run wrote it.

@@ -55,7 +55,7 @@ struct CeremonyRootView: View {
                 }
                 if viewModel.phase != .setup {
                     ToolbarItem(placement: .topBarTrailing) {
-                        StepProgressBadge(step: viewModel.step, mode: viewModel.mode)
+                        StepProgressBadge(step: viewModel.step, path: viewModel.stepPath)
                     }
                 }
             }
@@ -84,9 +84,22 @@ struct CeremonyRootView: View {
     private var title: String {
         switch viewModel.phase {
         case .setup: return "Provision wallet"
-        case .running: return viewModel.step.title
+        case .running:
+            // Which card this is matters on every per-card step: the operator has several
+            // physical YubiKeys in front of them, and "Import and verify the YubiKey" does
+            // not say which one (amendment 40).
+            if viewModel.mode != .rePair, viewModel.cardCount > 1, perCardSteps.contains(viewModel.step) {
+                return "\(viewModel.step.title) — YubiKey \(viewModel.cardIndex + 1) of \(viewModel.cardCount)"
+            }
+            return viewModel.step.title
         case .finished: return "Provisioning record"
         }
+    }
+
+    /// The steps that run once per YubiKey. The title names the card only on these; the
+    /// entropy and mnemonic steps happen once, before any card is touched.
+    private var perCardSteps: Set<CeremonyStep> {
+        [.cardInventory, .reset, .pinProvisioning, .pinRetries, .keyImport]
     }
 
     @ViewBuilder
@@ -108,6 +121,8 @@ struct CeremonyRootView: View {
             MnemonicStepView(viewModel: viewModel)
         case .derivation:
             DerivationStepView(viewModel: viewModel)
+        case .cardCount:
+            CardCountStepView(viewModel: viewModel)
         case .keyImport:
             ImportStepView(viewModel: viewModel)
         case .pairingExport:
@@ -234,13 +249,12 @@ struct SessionBanner: View {
 
 struct StepProgressBadge: View {
     let step: CeremonyStep
-    /// The progress is the mode's own path, not the union of all steps: re-pair
-    /// visits five of them, and counting the reset it will never run would tell
-    /// the operator they are at the start of a long ceremony.
-    let mode: CeremonyMode
+    /// The route this *run* will take, which is the mode's path with the per-card block
+    /// repeated once per YubiKey the operator chose: "3 of 14" counts the cards this
+    /// ceremony will actually write, rather than the cards it might have.
+    let path: [CeremonyStep]
 
     var body: some View {
-        let path = mode.path
         let total = max(1, path.count)
         let current = (path.firstIndex(of: step) ?? 0) + 1
         Text("\(min(current, total))/\(total)")

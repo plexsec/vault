@@ -87,8 +87,21 @@ struct ReportBody: View {
         if !report.diceRolls.isEmpty {
             rows.append(("Dice rolls (non-authoritative)", report.diceRolls.map(String.init).joined()))
         }
-        if let serial = report.cardSerial { rows.append(("YubiKey serial", serial)) }
-        if let version = report.cardOpenPGPVersion { rows.append(("OpenPGP applet", version)) }
+        if report.cards.isEmpty {
+            rows.append(("YubiKey serial", report.cardSerial ?? "not reported"))
+        } else {
+            for card in report.cards {
+                let label = report.cards.count > 1 ? "YubiKey \(card.order) of \(report.cards.count)" : "YubiKey"
+                rows.append(("\(label) serial", card.serial ?? "not reported"))
+                rows.append(("\(label) OpenPGP applet", card.openPGPVersion))
+            }
+        }
+        if let backedUp = report.mnemonicBackedUp {
+            rows.append((
+                "Mnemonic written down",
+                backedUp ? "yes — transcription checked" : "NO — the cards above are the only copy"
+            ))
+        }
         rows.append(("Read-back verified (both keys)", report.readBackVerified ? "yes" : "NO"))
 
         for record in report.keys {
@@ -157,6 +170,7 @@ struct ChecklistView: View {
                 "PIN retry limits set and read back (User / Admin)",
                 report?.userPINRetryLimit != nil && report?.adminPINRetryLimit != nil
             ),
+            ("Mnemonic checked against the written copy, or the backup declined", report?.mnemonicBackedUp != nil),
             ("Entropy commitment recorded", report?.entropyCommitmentHex != nil),
             ("Mnemonic transcribed and back-fill check passed", !(report?.keys.isEmpty ?? true)),
             ("Both public keys read back from YubiKey match the derived keys", report?.readBackVerified == true),

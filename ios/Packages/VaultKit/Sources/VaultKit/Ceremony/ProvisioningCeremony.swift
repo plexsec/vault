@@ -38,6 +38,26 @@ public struct KeyRecord: Equatable, Codable, Sendable {
     }
 }
 
+/// One YubiKey this ceremony wrote.
+///
+/// The same two keys go into every card, so the keys are recorded once, above; this is
+/// about the cards themselves — which physical YubiKeys now hold that key material, in the
+/// order the operator presented them. It matters for the operator's inventory of their own
+/// equipment, and for the duplicate check: a card whose serial is already in `cards` has
+/// been written and must not be reset again in this run.
+public struct CardRecord: Equatable, Codable, Sendable {
+    /// 1-based, in the order the operator presented them.
+    public var order: Int
+    public var serial: String?
+    public var openPGPVersion: String
+
+    public init(order: Int, serial: String?, openPGPVersion: String) {
+        self.order = order
+        self.serial = serial
+        self.openPGPVersion = openPGPVersion
+    }
+}
+
 /// Everything the ceremony records for the user's file. Contains **no secrets**:
 /// it is safe to display, print, export as QR and keep alongside the steel plate.
 public struct CeremonyReport: Equatable, Codable, Sendable {
@@ -50,8 +70,19 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     public var entropyCommitmentHex: String?
     /// Dice rolls, kept for the record only. Non-authoritative in v1.
     public var diceRolls: [Int] = []
-    public var cardSerial: String?
-    public var cardOpenPGPVersion: String?
+    /// Every YubiKey this ceremony wrote, in the order the operator presented them. Empty
+    /// until the first inventory, and one entry per card by the time the ceremony ends.
+    public var cards: [CardRecord] = []
+    /// True when the operator wrote the 24 words down and proved the transcription by
+    /// back-filling three of them; false when they chose to continue without a paper backup,
+    /// which the ceremony allows and records rather than assumes (amendment 40). `nil` for a
+    /// restore ceremony, where the words came from an existing backup and nothing new is
+    /// being written down.
+    public var mnemonicBackedUp: Bool?
+    /// The first card's serial and applet version, for the one place that speaks about "the
+    /// card": a re-pair reads exactly one. The full list is `cards`.
+    public var cardSerial: String? { cards.first?.serial }
+    public var cardOpenPGPVersion: String? { cards.first?.openPGPVersion }
     /// True when a pairing manifest has been written into the card's private-use data
     /// object and read back byte-for-byte, with its binding to the card's own keys
     /// checked. There is no false: a manifest that could not be stored stops the
@@ -95,8 +126,17 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
         if let completedAt { lines.append("completed: \(Self.formatter.string(from: completedAt))") }
         if let entropyCommitmentHex { lines.append("entropy commitment: \(entropyCommitmentHex)") }
         if !diceRolls.isEmpty { lines.append("dice rolls (non-authoritative): \(diceRolls.map(String.init).joined())") }
-        if let cardSerial { lines.append("yubikey serial: \(cardSerial)") }
-        if let cardOpenPGPVersion { lines.append("openpgp applet: \(cardOpenPGPVersion)") }
+        if !cards.isEmpty {
+            for card in cards {
+                lines.append("yubikey \(card.order) of \(cards.count) serial: \(card.serial ?? "not reported")")
+                lines.append("yubikey \(card.order) openpgp applet: \(card.openPGPVersion)")
+            }
+        }
+        if let mnemonicBackedUp {
+            lines.append(
+                "mnemonic written down: \(mnemonicBackedUp ? "yes" : "NO — this record is the only copy, and the keys exist only in the card(s) above")"
+            )
+        }
 
         for record in keys {
             lines.append("")
@@ -316,6 +356,18 @@ public final class ProvisioningCeremony {
     private var mnemonicConfirmed = false
     private var cardHeldExistingKey = false
     private var mutatingStepInFlight: CeremonyStep?
+    /// How many YubiKeys the operator committed to, and which one is in front of them
+    /// (0-based). Set on the `cardCount` step; `cardIndex` advances once per written card,
+    /// so the per-card block of `CeremonyMode.path(cardCount:)` is walked once per card.
+    public private(set) var cardCount = 1
+    public private(set) var cardIndex = 0
+    /// The retry limits chosen for the first card. The *policy* is one decision per
+    /// ceremony — the same numbers go on every card — while each card gets its own PINs, so
+    /// the UI pre-fills these and every card's write is verified against them.
+    public private(set) var chosenRetryLimits: (user: Int, admin: Int)?
+    /// Serials this ceremony has already written. Read at the inventory, because the step
+    /// after that inventory resets the card — which would erase the keys just written to it.
+    private var provisionedSerials: Set<String> = []
     /// Held from the PIN step onwards — the retry write, the import with its policy
     /// write, and the manifest all authenticate with it — and wiped with everything
     /// else.
@@ -419,7 +471,7 @@ public final class ProvisioningCeremony {
                     detail: "the pairing manifest is not on the card yet"
                 )
             }
-            step = .pairingExport
+            step = stepAfterCardWritten()
 
         case .entropy:
             guard let entropy else {
@@ -439,7 +491,13 @@ public final class ProvisioningCeremony {
             guard derivedKeys != nil else {
                 throw CeremonyError.stepIncomplete(step: .derivation, detail: "the keys have not been derived yet")
             }
-            step = .keyImport
+            step = .cardCount
+
+        case .cardCount:
+            throw CeremonyError.stepIncomplete(
+                step: .cardCount,
+                detail: "the number of YubiKeys has not been chosen yet"
+            )
 
         case .pairingExport:
             guard pairingURs.count == KeyAlgorithm.allCases.count else {
@@ -463,6 +521,16 @@ public final class ProvisioningCeremony {
 
     private func advance(to next: CeremonyStep) {
         step = next
+    }
+
+    /// Where the ceremony goes once a card has been written: the next card's inventory, or
+    /// the pairing export when that was the last one.
+    private func stepAfterCardWritten() -> CeremonyStep {
+        if cardIndex + 1 < cardCount {
+            cardIndex += 1
+            return .cardInventory
+        }
+        return .pairingExport
     }
 
     /// Records an interruption (transport loss, app backgrounding).
@@ -525,7 +593,15 @@ public final class ProvisioningCeremony {
         if !postureConfirmed {
             report.warnings.append("Device posture was not confirmed by the operator.")
         }
-        advance(to: .cardInventory)
+        // The keys come first (amendment 40): the operator's answer about how many cards to
+        // write does not exist until the keys do, and the mnemonic step's warning depends on
+        // that answer. A restore starts at the words themselves — there is nothing to generate
+        // — and re-pair starts at the card it is about to read.
+        switch mode {
+        case .freshGeneration: advance(to: .entropy)
+        case .restoreFromMnemonic: advance(to: .mnemonic)
+        case .rePair: advance(to: .cardInventory)
+        }
     }
 
     // MARK: Step 2 — card inventory
@@ -537,9 +613,13 @@ public final class ProvisioningCeremony {
     public func inspectCard() async throws -> CardInventory {
         try requireCurrent(.cardInventory)
         let result = try await card.inventory()
+        // Refused before anything touches the card: the next step resets it, and resetting a
+        // card this ceremony has already written would erase the keys it now holds.
+        if let serial = result.serial, provisionedSerials.contains(serial) {
+            throw CeremonyError.duplicateCard(serial: serial)
+        }
         inventory = result
-        report.cardSerial = result.serial
-        report.cardOpenPGPVersion = result.openPGPVersion
+        recordCard(result)
         cardHeldExistingKey = !result.occupiedSlots.isEmpty
         for slot in KeySlot.allCases {
             if let detail = result.probeFailures[slot] {
@@ -614,8 +694,23 @@ public final class ProvisioningCeremony {
         // is in the expected state just because the APDU returned 9000.
         let after = try await card.inventory()
         inventory = after
-        report.cardSerial = after.serial ?? report.cardSerial
+        recordCard(after)
         advance(to: .pinProvisioning)
+    }
+
+    /// Keeps the report's card list in step with the card in front of the operator: one
+    /// entry per card, in the order they were presented, updated in place when the same
+    /// card is re-read (after a reset, for instance).
+    private func recordCard(_ inventory: CardInventory) {
+        let order = cardIndex + 1
+        if let index = report.cards.firstIndex(where: { $0.order == order }) {
+            report.cards[index].serial = inventory.serial
+            report.cards[index].openPGPVersion = inventory.openPGPVersion
+        } else {
+            report.cards.append(
+                CardRecord(order: order, serial: inventory.serial, openPGPVersion: inventory.openPGPVersion)
+            )
+        }
     }
 
     // MARK: Step 4 — PINs
@@ -728,7 +823,27 @@ public final class ProvisioningCeremony {
         }
         report.userPINRetryLimit = userLimit
         report.adminPINRetryLimit = adminLimit
-        advance(to: .entropy)
+        chosenRetryLimits = (user: userLimit, admin: adminLimit)
+        advance(to: .keyImport)
+    }
+
+    // MARK: Step 4b — how many YubiKeys (amendment 40)
+
+    /// Records how many YubiKeys this ceremony will write, and opens the per-card block.
+    ///
+    /// The count is the operator's, asked after the keys exist and before any card is touched.
+    /// Each card is reset, given its own PINs and the ceremony's retry limits, written and
+    /// verified in its own pass; the ceremony cannot derive any of that from a card it has not
+    /// seen, and it must know the count before the first card because the per-card block is
+    /// what the operator is about to repeat.
+    public func setCardCount(_ count: Int) throws {
+        try requireCurrent(.cardCount)
+        guard CardPolicy.cardCountRange.contains(count) else {
+            throw CeremonyError.invalidCardCount(requested: count, allowed: CardPolicy.cardCountRange)
+        }
+        cardCount = count
+        cardIndex = 0
+        advance(to: .cardInventory)
     }
 
     // MARK: Step 6 — entropy
@@ -852,6 +967,34 @@ public final class ProvisioningCeremony {
             }
         }
         mnemonicConfirmed = true
+        if mode == .freshGeneration { report.mnemonicBackedUp = true }
+        advance(to: .derivation)
+    }
+
+    /// Continues without writing the 24 words down.
+    ///
+    /// Allowed, and recorded rather than assumed: with the words unwritten, the YubiKeys this
+    /// ceremony writes are the wallet, and the operator is told so in those terms. The
+    /// judgement behind allowing it is that a compulsory backup is one an operator learns to
+    /// click through; what makes the choice legible is the count they just gave — one card and
+    /// no backup means one device holding everything (amendment 40).
+    ///
+    /// Restore mode has nothing to decline: those words came from a backup that already
+    /// exists, and the back-fill there is a check on the typing rather than a backup step.
+    public func declineMnemonicBackup() throws {
+        try requireCurrent(.mnemonic)
+        guard mode == .freshGeneration else {
+            throw CeremonyError.unsupportedRecovery(
+                "these words came from an existing backup, so there is nothing new to write down"
+            )
+        }
+        guard !mnemonicWords.isEmpty else { throw CeremonyError.missingMnemonic }
+        mnemonicConfirmed = true
+        report.mnemonicBackedUp = false
+        addWarning(
+            "The 24 words were not written down. They are the only way to restore these keys: if every "
+                + "YubiKey provisioned in this ceremony is lost, destroyed or reset, the wallet is gone."
+        )
         advance(to: .derivation)
     }
 
@@ -1031,6 +1174,13 @@ public final class ProvisioningCeremony {
         try await writeKeysAndPolicy(creationTime: creationTime)
         try await readBackAndCheckPolicy()
         _ = try await writePairingManifestAndCheck()
+        // This card is written and verified, so its serial joins the written set (which the
+        // next card's inventory checks against) and its PINs are wiped here rather than held
+        // to the end of the ceremony: every card gets its own PINs (amendment 40), and a
+        // secret kept past its last use is a secret kept for no reason.
+        if let serial = inventory?.serial { provisionedSerials.insert(serial) }
+        sessionAdminPIN?.zeroize()
+        sessionAdminPIN = nil
 
         // Deliberately does NOT advance: the operator has to see the card's own answer —
         // both public keys next to the ones derived here, the policy as the card reports
@@ -1308,7 +1458,6 @@ public final class ProvisioningCeremony {
         report.pairingManifestStored = true
         return manifest
     }
-
     private func requireMode(_ expected: CeremonyMode) throws {
         guard mode == expected else {
             throw CeremonyError.wrongCeremonyMode(expected: expected, actual: mode)
@@ -1587,6 +1736,10 @@ public final class ProvisioningCeremony {
         // leaving a copy behind after a wipe would mean the teardown step left
         // wallet material in memory. The durable record is `report`.
         pairingManifest = nil
+        provisionedSerials.removeAll()
+        chosenRetryLimits = nil
+        cardIndex = 0
+        cardCount = 1
         derivedKeys = nil
         readBackResults = [:]
     }

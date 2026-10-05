@@ -77,7 +77,9 @@ final class SigningFlowUITests: XCTestCase {
         openProvisioningFlow(app)
         try advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         try revealAndConfirmMnemonic(app, entropy: Self.entropy)
-        completeCeremonyAfterMnemonic(app, expectedEVMAddress: expectedAddress)
+        completeCeremonyAfterMnemonic(app,
+            expectedEVMAddress: expectedAddress,
+            userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         tapStepAction("Provision another wallet", in: app)
 
         // 2. Back at the home screen, choose the signing flow.

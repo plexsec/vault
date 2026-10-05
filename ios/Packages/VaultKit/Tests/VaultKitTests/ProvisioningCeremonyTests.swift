@@ -41,21 +41,19 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let mnemonic: [String]
     }
 
-    /// Walks steps 1-8 (preflight through derivation). Returns the derived keys
-    /// and the mnemonic, because the mnemonic step is deliberately unreachable
-    /// once derivation has happened.
+    /// Steps 1-4: preflight, entropy (or the restored words), the mnemonic, the derivation,
+    /// and how many YubiKeys this run will write. Returns the derived keys and the mnemonic,
+    /// because the mnemonic step is deliberately unreachable once derivation has happened.
+    ///
+    /// The card is not touched here any more: the keys come first, and the cards follow
+    /// (amendment 40).
     private func runThroughDerivation(
         _ ceremony: ProvisioningCeremony,
         mode: CeremonyMode = .freshGeneration,
-        restoredWords: [String]? = nil
+        restoredWords: [String]? = nil,
+        cardCount: Int = 1
     ) async throws -> WalkResult {
         try ceremony.begin(mode: mode, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
         } else {
@@ -70,24 +68,82 @@ final class ProvisioningCeremonyTests: XCTestCase {
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         let keys = try ceremony.deriveKeys()
         try ceremony.advance()
+        try ceremony.setCardCount(cardCount)
         return WalkResult(keys: keys, mnemonic: words)
     }
 
-    /// Steps 9-13: import, read-back, pairing, counter.
+    /// One YubiKey, end to end: inventory, reset, PINs, retry limits, then the write and its
+    /// read-back, and the operator's Continue — which opens the next card or the pairing step.
+    private func provisionOneCard(
+        _ ceremony: ProvisioningCeremony,
+        userPIN: String = "123456",
+        adminPIN: String = "87654321",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        try await reachWriteStep(ceremony, userPIN: userPIN, adminPIN: adminPIN, file: file, line: line)
+        // The write and its read-back: both keys, the policy and the manifest, then the
+        // keys, the policy and the manifest read straight back off the card. One step, and
+        // it does not advance itself — the card's own answer has to be on screen first
+        // (amendments 37, 38).
+        _ = try await ceremony.importAndVerify()
+        try ceremony.advance()
+    }
+
+    /// The keys, when the ceremony is still at the start. A test that asks for a card step is
+    /// asking to be at that card step, not to repeat the key walk, and the walk is the same
+    /// every time: entropy (all-zero in these fixtures), the mnemonic, the derivation and the
+    /// card count (amendment 40).
+    private func ensureKeys(_ ceremony: ProvisioningCeremony, cardCount: Int = 1) async throws {
+        switch ceremony.step {
+        case .notStarted, .preflight, .entropy:
+            _ = try await runThroughDerivation(ceremony, cardCount: cardCount)
+        default:
+            break
+        }
+    }
+
+    /// Up to a card's inventory, acknowledged: the ceremony is then at the reset step.
+    private func reachResetStep(_ ceremony: ProvisioningCeremony, cardCount: Int = 1) async throws {
+        try await ensureKeys(ceremony, cardCount: cardCount)
+        _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
+    }
+
+    /// ... through the reset and the PINs, leaving the ceremony at the retry-limit step.
+    private func reachRetryLimitStep(
+        _ ceremony: ProvisioningCeremony,
+        userPIN: String = "123456",
+        adminPIN: String = "87654321"
+    ) async throws {
+        try await reachResetStep(ceremony)
+        try await ceremony.resetCard(acknowledgingDestruction: true)
+        try await ceremony.setPINs(userPIN: Array(userPIN.utf8), adminPIN: Array(adminPIN.utf8))
+    }
+
+    /// ... and through the retry limits, leaving the ceremony at the write step.
+    private func reachWriteStep(
+        _ ceremony: ProvisioningCeremony,
+        userPIN: String = "123456",
+        adminPIN: String = "87654321",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        try await reachRetryLimitStep(ceremony, userPIN: userPIN, adminPIN: adminPIN)
+        try await ceremony.setPINRetries()
+        XCTAssertEqual(ceremony.step, .keyImport, "the card's write step is next", file: file, line: line)
+    }
+
+    /// Every card, then the pairing codes and the record.
     private func completeCeremony(
         _ ceremony: ProvisioningCeremony,
         style: URTypeStyle = .keystoneLegacy,
         chainCodeAcknowledged: Bool = true
     ) async throws -> CeremonyReport {
-        _ = try await ceremony.importAndVerify()
-        // One step writes the whole card — both keys, then the policy, because writing
-        // a slot's algorithm attributes resets that slot and the applet discards its
-        // touch policy with it (amendment 26), then the pairing manifest, so that a
-        // card is never told to advertise a key that has not been verified to be in it
-        // — and reads all of it back before it will advance (amendment 37). A card that
-        // cannot store a manifest is a degraded card rather than an abort: the keys and
-        // the mnemonic are unaffected.
-        try ceremony.advance()
+        while ceremony.step != .pairingExport {
+            try await provisionOneCard(ceremony)
+        }
         _ = try ceremony.buildPairingURs(style: style, chainCodeAcknowledged: chainCodeAcknowledged)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -122,6 +178,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(keys.ed25519.publicKey.count, 32)
         XCTAssertEqual(keys.secp256k1.publicKey.count, 33)
 
+        try await reachWriteStep(ceremony)
         let readBack = try await ceremony.importAndVerify()
 
         // Both keys are in the card, with the fingerprint each was imported with.
@@ -178,14 +235,16 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertTrue(report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.isFinished)
 
-        // The card call sequence must match design.md §4.2 exactly, with both
-        // slots written in a fixed order.
+        // The card call sequence must match design.md §4.2 exactly — keys first, then one
+        // card at a time (amendment 40) — with both slots written in a fixed order.
         XCTAssertEqual(card.calls, [
+            // The entropy comes from the card's own RNG, which is why it is the first card
+            // operation even though the keys exist before any *card* step.
+            .randomBytes(count: 32),
             .inventory, .reset, .inventory, .setPINs,
             // The retry limit is set right after the PINs it applies to, and read
             // back (design.md §4.2 step 3).
             .setPINRetries(user: 3, admin: 3), .inventory,
-            .randomBytes(count: 32),
             .importKey(slot: .signature, algorithm: .secp256k1, fingerprint: Expected.secp256k1Fingerprint),
             .importKey(slot: .authentication, algorithm: .ed25519, fingerprint: Expected.ed25519Fingerprint),
             // The policy is written *after* the last key, in the same step, and read
@@ -240,12 +299,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testRestoreRejectsInvalidMnemonic() async throws {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .restoreFromMnemonic, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         XCTAssertThrowsError(try ceremony.restoreMnemonic(words: Array(repeating: "abandon", count: 12))) { error in
             XCTAssertEqual(error as? BIP39Error, .invalidChecksum)
         }
@@ -260,11 +313,11 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAFailedImportLeavesTheCardPartlyProvisionedAndSaysSo() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
 
         // The signature key lands; the authentication import is refused.
         card.refuseImportForSlot = .authentication
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .importLeftTheCardPartlyProvisioned(let slots, let detail)? = error as? CeremonyError else {
                 return XCTFail("expected importLeftTheCardPartlyProvisioned, got \(error)")
@@ -281,10 +334,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAnImportThatWroteNothingReportsItsOwnError() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
         card.failurePoint = .keyImport
         card.refuseImportForSlot = .signature
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             XCTAssertEqual(error as? CardError, .keyImportRejected)
         }
@@ -297,7 +350,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testTheRetryLimitsAreChosenPerPINAndReadBack() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         try await ceremony.resetCard(acknowledgingDestruction: true)
@@ -310,14 +363,14 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertTrue(card.calls.contains(.setPINRetries(user: 6, admin: 4)))
         XCTAssertEqual(ceremony.report.userPINRetryLimit, 6)
         XCTAssertEqual(ceremony.report.adminPINRetryLimit, 4)
-        XCTAssertEqual(ceremony.step, .entropy)
+        XCTAssertEqual(ceremony.step, .keyImport, "the retry limits are the last step before the card is written")
     }
 
     /// A number outside the offered range never reaches the card — on either input.
     func testARetryLimitOutsideTheOfferedRangeIsRefused() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         try await ceremony.resetCard(acknowledgingDestruction: true)
@@ -352,7 +405,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testRetryLimitsTheCardDoesNotApplyFailTheCeremony() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         try await ceremony.resetCard(acknowledgingDestruction: true)
@@ -377,18 +430,11 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testTheImportStepRechecksTheRetryLimits() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
+        try await reachRetryLimitStep(ceremony)
+        XCTAssertEqual(ceremony.step, .pinRetries)
+        // The operator's two numbers, chosen before the card is written (amendment 32).
         try await ceremony.setPINRetries(user: 8, admin: 5)
-        try await ceremony.generateEntropy()
-        try ceremony.advance()
-        let words = try ceremony.mnemonicForDisplay()
-        try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
-        _ = try ceremony.deriveKeys()
-        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .keyImport)
 
         // Something reset the counters behind the ceremony's back (a reset would
         // wipe the keys too, so this stands in for any such disturbance) — and only
@@ -418,11 +464,11 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAPolicyTheCardDoesNotReportBackFailsTheCeremony() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
 
         // Every write is answered `9000`; nothing changes on the card. The policy is
         // written by the import step, so the flag goes up before it runs.
         card.uifWritesAreIgnored = true
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .policyNotApplied(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected policyNotApplied, got \(error)")
@@ -471,6 +517,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
         XCTAssertEqual(ceremony.step, .keyImport, "the policy write and its proof belong to the import step")
         try ceremony.advance()
@@ -497,32 +544,36 @@ final class ProvisioningCeremonyTests: XCTestCase {
         }
 
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        // The first step is the entropy step now: the keys come before any card
+        // (amendment 40).
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.inspectCard() } verify: { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepOutOfOrder(expected: .entropy, actual: .cardInventory)
+            )
+        }
+        // A card step cannot be reached before the keys exist, and the entropy step
+        // cannot be walked past without generating entropy.
         await XCTAssertThrowsErrorAsync {
             try await ceremony.resetCard(acknowledgingDestruction: true)
         }
-        await XCTAssertThrowsErrorAsync { try await ceremony.generateEntropy() }
-        // The mnemonic cannot be reached without generating entropy first.
         XCTAssertThrowsError(try ceremony.advance())
+        XCTAssertThrowsError(try ceremony.deriveKeys())
     }
 
     func testMnemonicCannotBeReadAfterTheMnemonicStep() async throws {
         let ceremony = makeCeremony()
         _ = try await runThroughDerivation(ceremony)
-        // We are now on the keyImport step, so the mnemonic must be unreachable.
+        // The keys are derived and the card count is chosen, so the mnemonic is behind us
+        // and the card's inventory is due: the words are unreachable from here.
         XCTAssertThrowsError(try ceremony.mnemonicForDisplay()) { error in
-            XCTAssertEqual(error as? CeremonyError, .stepOutOfOrder(expected: .keyImport, actual: .mnemonic))
+            XCTAssertEqual(error as? CeremonyError, .stepOutOfOrder(expected: .cardInventory, actual: .mnemonic))
         }
     }
 
     func testDerivationRequiresTranscriptionConfirmation() async throws {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         // Without advancing, the mnemonic step is not even due yet, so derivation
         // is refused by the ordering gate.
@@ -541,12 +592,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testTranscriptionMismatchIsRejected() async throws {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         try ceremony.advance()
         XCTAssertThrowsError(try ceremony.confirmTranscription(entries: [(5, "wrong")])) { error in
@@ -569,7 +614,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
             isFactoryFresh: false
         ))
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         let inventory = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
@@ -599,7 +644,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
             isFactoryFresh: false
         ))
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         await XCTAssertThrowsErrorAsync {
@@ -616,7 +661,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
             isFactoryFresh: true
         ))
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         let inventory = try await ceremony.inspectCard()
         XCTAssertFalse(inventory.likelySupportsSecp256k1)
         XCTAssertTrue(inventory.isDefinitelyUnsupported)
@@ -633,7 +678,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testSecp256k1ReadBackMismatchVoidsTheProcedureAndWipesSecrets() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
         // A counterfeit or tampered card returning a different public key. The step
         // reads the keys back inside itself, so the mismatch surfaces from the write's
         // own proof rather than from a screen the operator could walk past.
@@ -641,6 +685,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         ))
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .readBackMismatch(let algorithm, _, _) = (error as? CeremonyError) else {
                 return XCTFail("expected readBackMismatch, got \(error)")
@@ -656,9 +701,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testEd25519ReadBackMismatchVoidsTheProcedure() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
         card.storedPublicKeyOverride[.authentication] = [UInt8](repeating: 0xAB, count: 32)
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .readBackMismatch(let algorithm, _, _) = (error as? CeremonyError) else {
                 return XCTFail("expected readBackMismatch, got \(error)")
@@ -667,6 +712,138 @@ final class ProvisioningCeremonyTests: XCTestCase {
         }
         XCTAssertEqual(ceremony.step, .cardInventory)
         XCTAssertNil(ceremony.derivedKeys)
+    }
+
+    // MARK: The backup is optional (amendment 40)
+
+    /// Declining the paper backup is allowed and recorded: with the words unwritten, the
+    /// cards are the wallet, and the record has to say so.
+    func testTheMnemonicBackupCanBeDeclinedAndIsRecorded() async throws {
+        let ceremony = makeCeremony()
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        try await ceremony.generateEntropy()
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .mnemonic)
+
+        try ceremony.declineMnemonicBackup()
+
+        XCTAssertEqual(ceremony.step, .derivation)
+        XCTAssertEqual(ceremony.report.mnemonicBackedUp, false)
+        XCTAssertTrue(
+            ceremony.report.warnings.contains { $0.contains("were not written down") },
+            "the operator must be told what declining means: \(ceremony.report.warnings)"
+        )
+        // The keys still derive: declining the backup does not stop the ceremony, and the
+        // printed record carries the fact.
+        _ = try ceremony.deriveKeys()
+        XCTAssertTrue(
+            ceremony.report.printableLines().contains { $0.contains("mnemonic written down: NO") },
+            ceremony.report.printableLines().joined(separator: "\n")
+        )
+    }
+
+    func testAConfirmedTranscriptionIsRecordedAsBackedUp() async throws {
+        let ceremony = makeCeremony()
+        _ = try await runThroughDerivation(ceremony)
+        XCTAssertEqual(ceremony.report.mnemonicBackedUp, true)
+        XCTAssertTrue(ceremony.report.printableLines().contains { $0.contains("mnemonic written down: yes") })
+    }
+
+    /// Restore mode has nothing to decline: those words came from a backup that exists, and
+    /// the back-fill there is a check on the typing rather than a backup step.
+    func testARestoreCannotDeclineItsBackup() async throws {
+        let ceremony = makeCeremony()
+        let words = try BIP39.mnemonic(fromEntropy: [UInt8](repeating: 0, count: 32))
+        try ceremony.begin(mode: .restoreFromMnemonic, postureConfirmed: true)
+        try ceremony.restoreMnemonic(words: words)
+        XCTAssertEqual(ceremony.step, .mnemonic)
+
+        XCTAssertThrowsError(try ceremony.declineMnemonicBackup()) { error in
+            guard case .unsupportedRecovery? = error as? CeremonyError else {
+                return XCTFail("expected unsupportedRecovery, got \(error)")
+            }
+        }
+        XCTAssertNil(ceremony.report.mnemonicBackedUp, "a restore does not claim a new backup")
+
+        try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
+        XCTAssertEqual(ceremony.step, .derivation)
+    }
+
+    // MARK: More than one YubiKey (amendment 40)
+
+    /// The count is the operator's, asked once the keys exist and before any card is touched,
+    /// and it is what the per-card block is repeated for.
+    func testTheCardCountIsChosenAfterTheKeysAndBeforeTheCards() async throws {
+        let ceremony = makeCeremony()
+        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        try await ceremony.generateEntropy()
+        try ceremony.advance()
+        let words = try ceremony.mnemonicForDisplay()
+        try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
+        _ = try ceremony.deriveKeys()
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .cardCount)
+
+        for value in [0, 6, 100] {
+            XCTAssertThrowsError(try ceremony.setCardCount(value)) { error in
+                XCTAssertEqual(
+                    error as? CeremonyError,
+                    .invalidCardCount(requested: value, allowed: CardPolicy.cardCountRange)
+                )
+            }
+        }
+        XCTAssertEqual(ceremony.step, .cardCount, "a refused count leaves the step where it was")
+
+        try ceremony.setCardCount(3)
+        XCTAssertEqual(ceremony.cardCount, 3)
+        XCTAssertEqual(ceremony.cardIndex, 0)
+        XCTAssertEqual(ceremony.step, .cardInventory, "the first card is next")
+    }
+
+    /// Presenting the card that was just written instead of the next one is refused at the
+    /// inventory — because the step after it resets the card, which would erase the keys it
+    /// now holds.
+    func testTheSameYubiKeyIsRefusedAsASecondCard() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony, cardCount: 2)
+        try await provisionOneCard(ceremony)
+
+        XCTAssertEqual(ceremony.step, .cardInventory, "the second card's inventory is due")
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.inspectCard() } verify: { error in
+            guard case .duplicateCard(let serial)? = error as? CeremonyError else {
+                return XCTFail("expected duplicateCard, got \(error)")
+            }
+            XCTAssertEqual(serial, "00000000")
+        }
+
+        // Nothing was touched: the keys the first pass wrote are still there, and the reset
+        // for the second card never ran.
+        XCTAssertTrue(card.hasKey(in: .signature))
+        XCTAssertTrue(card.hasKey(in: .authentication))
+        XCTAssertEqual(card.resetCount, 1)
+        XCTAssertEqual(ceremony.report.cards.count, 1, "one card has been written so far")
+    }
+
+    /// The first card's PINs are not the second card's. They are wiped when the card they
+    /// belong to is written, and the path runs the PIN step again for every card — which is
+    /// what the operator's own re-entry provides.
+    func testThePINsAreNotReusedAcrossCards() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony, cardCount: 2)
+        try await provisionOneCard(ceremony, userPIN: "111111", adminPIN: "11111111")
+
+        XCTAssertEqual(ceremony.cardIndex, 1, "card 2 is next")
+        XCTAssertEqual(ceremony.step, .cardInventory)
+        XCTAssertEqual(
+            CeremonyMode.freshGeneration.path(cardCount: 2).filter { $0 == .pinProvisioning }.count, 2,
+            "each card has its own PIN step, and none of them is skipped"
+        )
+        // The retry limits are the ceremony's choice, not the card's, so they are remembered
+        // for the cards that follow (the UI pre-fills them from here).
+        XCTAssertEqual(ceremony.chosenRetryLimits?.user, CardPolicy.defaultRetryLimit)
+        XCTAssertEqual(ceremony.chosenRetryLimits?.admin, CardPolicy.defaultRetryLimit)
     }
 
     // MARK: Pairing export (design.md §4.2 step 8)
@@ -696,7 +873,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testWeakPINsAreRejectedBeforeTouchingTheCard() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
@@ -717,6 +894,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testPairingExportIsKeystoneCompatibleForBothKeys() async throws {
         let ceremony = makeCeremony()
         let walk = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
         try ceremony.advance()
 
@@ -772,7 +950,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
     func testUnacknowledgedChainCodeExportIsRefused() async throws {
         let ceremony = makeCeremony()
-        _ = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
         try ceremony.advance()
         XCTAssertThrowsError(try ceremony.buildPairingURs(style: .v2, chainCodeAcknowledged: false)) { error in
@@ -784,7 +962,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     /// codes are regenerated (the operator can press "Regenerate").
     func testChainCodeWarningIsRecordedOnce() async throws {
         let ceremony = makeCeremony()
-        _ = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
         _ = try await ceremony.importAndVerify()
         try ceremony.advance()
 
@@ -852,7 +1030,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testInterruptionDuringMutatingStepForcesReinspection() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
@@ -876,7 +1054,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAResetThatCouldNotBlockThePINsStillForcesReinspection() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         XCTAssertEqual(ceremony.step, .reset)
@@ -900,6 +1078,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
         XCTAssertEqual(ceremony.step, .keyImport)
 
         card.failurePoint = .keyImport
@@ -913,7 +1092,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testInterruptionDuringReadOnlyStepDoesNotRewind() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await runThroughDerivation(ceremony)
         _ = try await ceremony.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try ceremony.advance()
@@ -928,12 +1107,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let entropy: [UInt8] = Array(0...31)
         let ceremony = makeCeremony(entropy: entropy)
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         let commitment = try await ceremony.generateEntropy()
         XCTAssertEqual(commitment, Hex.encode(Array(SHA256.hash(entropy).prefix(4))))
         XCTAssertEqual(ceremony.report.entropyCommitmentHex, commitment)
@@ -953,11 +1126,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
             clock: { Date(timeIntervalSince1970: 1_700_000_000) }
         )
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
 
         let commitment = try await ceremony.generateEntropy()
         // 0xAA XOR 0xFF = 0x55
@@ -967,12 +1135,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testDiceRollsAreRecordedButNonAuthoritative() async throws {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         try ceremony.recordDiceRolls([1, 6, 3, 4])
         XCTAssertThrowsError(try ceremony.recordDiceRolls([7])) { error in
             XCTAssertEqual(error as? CeremonyError, .diceRollsOutOfRange)
@@ -991,12 +1153,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testTranscriptionChallengeIsStableAndInRange() async throws {
         let ceremony = makeCeremony()
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard(acknowledgingDestruction: true)
-        try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
-        try await ceremony.setPINRetries()
         try await ceremony.generateEntropy()
         try ceremony.advance()
         let first = try ceremony.transcriptionChallenge()
@@ -1015,9 +1171,10 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let report = try await completeCeremony(ceremony)
         let text = report.printableLines().joined(separator: "\n")
         for expected in ["entropy commitment:", "path:", "key fingerprint:",
-                         "yubikey serial:", "openpgp applet:", "read-back verified: yes",
+                         "serial:", "openpgp applet:", "read-back verified: yes",
                          "[secp256k1]", "[ed25519]",
-                         "evm address:", "bitcoin address:", "identity:"] {
+                         "evm address:", "bitcoin address:", "identity:",
+                         "mnemonic written down:"] {
             XCTAssertTrue(text.contains(expected), "printout missing: \(expected)")
         }
     }
@@ -1070,8 +1227,8 @@ final class ProvisioningCeremonyTests: XCTestCase {
         )
         card.supportsPairingManifest = false
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .pairingManifestNotStored(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected pairingManifestNotStored, got \(error)")
@@ -1100,11 +1257,11 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAManifestThatDoesNotReadBackIsNotTrusted() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
         // The override is in place before the step runs: the manifest is written, and
         // read straight back, inside it.
         card.pairingManifestReadBackOverride = [UInt8](repeating: 0, count: 194)
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .pairingManifestNotStored(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected pairingManifestNotStored, got \(error)")
@@ -1125,9 +1282,9 @@ final class ProvisioningCeremonyTests: XCTestCase {
     func testAFailedManifestWriteStopsTheCeremony() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
-        _ = try await runThroughDerivation(ceremony)
         card.failurePoint = .pairingManifest
 
+        try await reachWriteStep(ceremony)
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .pairingManifestNotStored(let detail)? = error as? CeremonyError else {
                 return XCTFail("expected pairingManifestNotStored, got \(error)")
@@ -1152,6 +1309,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
 
         let ceremony = makeCeremony()
         _ = try await runThroughDerivation(ceremony)
+        try await reachWriteStep(ceremony)
 
         // The step does not advance on its own and does not take a bare acknowledgement:
         // `importAndVerify` is the only way forward, and it ends with a card the

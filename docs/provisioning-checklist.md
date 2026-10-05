@@ -40,20 +40,10 @@ look for a way around it — the ordering gates are the security property.
 ## Part 3 — Ceremony
 
 Follow the app. The checklist below is the same sequence, so you can confirm each
-step completed rather than trusting the flow.
+step completed rather than trusting the flow: the keys are generated first, then each
+YubiKey is reset, configured and written in its own pass, and the pairing codes come last.
 
 - [ ] **Posture + rules** acknowledged
-- [ ] **Card inventory** read
-      - Serial recorded: `________________`   Applet: `__________`
-- [ ] **Reset** — **no PIN is asked for.** The app blocks both PINs and then terminates the
-      applet, exactly as `ykman openpgp reset` does, so neither the factory default nor your own
-      Admin PIN is relevant here
-      - [ ] Warning understood: this erases every key on the applet, and the tap must **not** be
-            interrupted — if it is, the card is left with both PINs blocked and the old keys still
-            in place, and tapping reset again (still no PIN) is what finishes it
-- [ ] **PINs set** — both recorded in the password manager ✔
-- [ ] **PIN retry limits** — one number **per password** (User PIN / Admin PIN): `______` / `______`
-      - [ ] The report shows both, as the card reported them back
 - [ ] **Entropy commitment** (first 8 hex digits of SHA-256 of the entropy read
       from the YubiKey's hardware RNG):
       `________`
@@ -62,24 +52,45 @@ step completed rather than trusting the flow.
 - [ ] **Mnemonic** — 24 words revealed by holding the screen
       - [ ] Transcribed onto steel, **twice**
       - [ ] Back-fill check passed
+      - [ ] Or: the backup was **declined** on purpose, and the number of YubiKeys written in this
+            run is what the keys now live in (write that number down)
 - [ ] **Derivation** — both keys derived
       - secp256k1 path `m/44'/0'/0'/0/0`
         - EVM address from this device: `______________________________________`
         - Bitcoin address from this device: `__________________________________`
       - Ed25519 path `m/44'/501'/0'/0'`
         - Public key from this device: `______________________________________`
-- [ ] **The card, written and verified in one step** — keys, then the touch/PIN policy after the last
-      key (writing a slot's algorithm attributes would otherwise discard it), then the pairing
-      manifest, then all of it read back off the card. One action, one screen: the step shows
-      "Continue" only once every value has come back
-      - [ ] Both public keys read back and matching the derived keys ✔
-      - [ ] The same screen reports the policy read back off the card: touch policy **Fixed** on
-            both slots, PW1 status `0x00`, and both PIN retry limits as chosen. Anything else leaves
-            the app on this step, and the card must be reset rather than used
-      - [ ] Pairing manifest stored on the card, and read back byte-for-byte ✔ — a card that cannot
-            store it, or that hands back something else, stops the ceremony on this step rather than
-            finishing without it
-      - [ ] No step asked for a second touch, and no screen was left between a write and its proof
+- [ ] **How many YubiKeys** — 1 to 5. Every card gets the same two keys; each gets **its own**
+      User PIN and Admin PIN, and the retry limits below are one choice written to all of them.
+      Number chosen: `______`
+- [ ] **Repeat this block once per YubiKey**, in the order the app asks for it:
+      - [ ] **Card inventory** read
+            - Serial recorded: `________________`   Applet: `__________`
+            - [ ] The serial is one you have not already written in this run (the app refuses a
+                  card it has already provisioned, rather than resetting it)
+      - [ ] **Reset** — **no PIN is asked for.** The app blocks both PINs and then terminates the
+            applet, exactly as `ykman openpgp reset` does, so neither the factory default nor your
+            own Admin PIN is relevant here
+            - [ ] Warning understood: this erases every key on the applet, and the tap must **not**
+                  be interrupted — if it is, the card is left with both PINs blocked and the old
+                  keys still in place, and tapping reset again (still no PIN) is what finishes it
+      - [ ] **PINs set for this card** — both recorded in the password manager, keyed by serial ✔
+      - [ ] **PIN retry limits** — one number **per password** (User PIN / Admin PIN): `______` /
+            `______`. The same numbers go on every card in the run
+            - [ ] The report shows both, as the card reported them back
+      - [ ] **The card, written and verified in one step** — keys, then the touch/PIN policy after
+            the last key (writing a slot's algorithm attributes would otherwise discard it), then
+            the pairing manifest, then all of it read back off the card. One action, one screen:
+            the step shows "Continue" only once every value has come back
+            - [ ] Both public keys read back and matching the derived keys ✔
+            - [ ] The same screen reports the policy read back off the card: touch policy **Fixed**
+                  on both slots, PW1 status `0x00`, and both PIN retry limits as chosen. Anything
+                  else leaves the app on this step, and the card must be reset rather than used
+            - [ ] Pairing manifest stored on the card, and read back byte-for-byte ✔ — a card that
+                  cannot store it, or that hands back something else, stops the ceremony on this
+                  step rather than finishing without it
+            - [ ] No step asked for a second touch, and no screen was left between a write and its
+                  proof
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
       - [ ] The wallet shows the same Ed25519 public key as the app ✔

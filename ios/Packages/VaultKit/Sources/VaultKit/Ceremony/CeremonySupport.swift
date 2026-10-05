@@ -416,6 +416,12 @@ public enum CardPolicy {
     /// The card's factory value, and what this app writes unless told otherwise.
     /// Three attempts is what makes the PIN a real barrier on a 6-digit secret.
     public static let defaultRetryLimit = 3
+    /// How many YubiKeys one ceremony may write. The upper bound is a judgement rather than
+    /// a limit of the protocol: every card is its own five-step provisioning run, and an
+    /// operator holding more spare keys than this is better served by two ceremonies than by
+    /// one that never seems to end. The lower bound is one, because a ceremony that writes
+    /// nothing is not a ceremony.
+    public static let cardCountRange = 1...5
 
     public static func isTouchFixed(_ value: UInt8?) -> Bool { value == touchFixed }
 
@@ -560,6 +566,17 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case entropy
     case mnemonic
     case derivation
+    /// How many YubiKeys this ceremony will write — one card per key, all holding the
+    /// same two keys and the same pairing material.
+    ///
+    /// Deliberately after the keys exist and before the first card is touched: the count
+    /// is a decision about the operator's equipment rather than something learned from a
+    /// card, and it is what tells the mnemonic step how much the paper backup matters
+    /// (one card and no paper backup means one device holds the wallet; three cards and no
+    /// backup means three). It cannot come earlier, because the answer does not exist
+    /// until the keys do — and it must come before any card, because the per-card steps
+    /// below it run once per card the operator has committed to.
+    case cardCount
     /// Writes the whole card — both private keys, the policy that makes them safe to
     /// use, and the pairing manifest — **and reads all of it back** to check it.
     ///
@@ -597,6 +614,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .entropy: return "Generate entropy"
         case .mnemonic: return "Write down the mnemonic"
         case .derivation: return "Derive the signing keys"
+        case .cardCount: return "Choose how many YubiKeys"
         case .keyImport: return "Import and verify the YubiKey"
         case .pairingExport: return "Pair with the desktop wallet"
         case .teardown: return "Wipe secrets and finish"
@@ -627,28 +645,36 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
     /// that puts it in the ceremony, and this mode never reaches those steps.
     case rePair
 
-    /// The steps this mode visits, in order.
+    /// The steps this mode visits, in order, when it will write `cardCount` YubiKeys.
     ///
-    /// The UI reads it for its progress indicator, and — more importantly — it is
-    /// the mode's central promise expressed as data that a test can assert on: the
-    /// re-pair path contains no mutating step, because the operator chose this mode
-    /// precisely so that nothing would be written.
-    public var path: [CeremonyStep] {
+    /// The UI reads it for its progress indicator, and — more importantly — the
+    /// per-card block is the mode's own structure rather than something the view layer
+    /// runs in a loop: a card that has been written is followed by the next card's
+    /// inventory, so "did every card get written?" is answered by the state machine.
+    public func path(cardCount: Int) -> [CeremonyStep] {
+        // The keys come first, then one card at a time. Writing a slot's algorithm
+        // attributes resets that slot and the applet discards its touch policy with
+        // it (amendment 26), so the policy is written inside the same step as the
+        // keys and read back before that step closes (amendment 37).
+        let perCard: [CeremonyStep] = [
+            .cardInventory, .reset, .pinProvisioning, .pinRetries, .keyImport,
+        ]
+        let cards = Array(repeating: perCard, count: max(1, cardCount)).flatMap { $0 }
         switch self {
-        case .freshGeneration, .restoreFromMnemonic:
-            // The policy is written inside the key-import step and verified by the same
-            // step's read-back, so there is no policy step and no ordering to get wrong
-            // (amendment 26 measured the loss on hardware; amendment 32 folded the
-            // writes together, and amendment 37 folded the read-back and the pairing
-            // manifest in with them).
-            return [
-                .cardInventory, .reset, .pinProvisioning, .pinRetries, .entropy, .mnemonic,
-                .derivation, .keyImport, .pairingExport, .teardown,
-            ]
+        case .freshGeneration:
+            return [.entropy, .mnemonic, .derivation, .cardCount] + cards + [.pairingExport, .teardown]
+        case .restoreFromMnemonic:
+            // No entropy step: the words come from the operator rather than from a generator,
+            // and the mnemonic step is where they are entered and checked (amendment 40).
+            return [.mnemonic, .derivation, .cardCount] + cards + [.pairingExport, .teardown]
         case .rePair:
             return [.cardInventory, .rePairRead, .pairingExport, .teardown]
         }
     }
+
+    /// The path for a single-card ceremony, which is what a re-pair always is and what a
+    /// provisioning run shows until the operator has chosen a count.
+    public var path: [CeremonyStep] { path(cardCount: 1) }
 
     /// Short name for the operator. The app shows longer copy in the mode picker;
     /// this is what error messages use, so it must stay recognisable on its own.
@@ -690,6 +716,12 @@ public enum CeremonyError: Swift.Error, Equatable {
     case importLeftTheCardPartlyProvisioned(slots: [String], detail: String)
     /// The requested retry limit is outside the range the app offers.
     case invalidRetryLimit(requested: Int, allowed: ClosedRange<Int>)
+    /// The chosen YubiKey count is outside the range the ceremony offers.
+    case invalidCardCount(requested: Int, allowed: ClosedRange<Int>)
+    /// The card in front of the operator is one this ceremony has already written. Refused
+    /// at the inventory, before anything is touched, because the next step would reset it
+    /// and erase the keys that were just written to it.
+    case duplicateCard(serial: String)
     /// The card accepted the retry write and reports different counters.
     case retryLimitsNotApplied(detail: String)
     case pairingPolicyNotAcknowledged
@@ -737,6 +769,11 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "The import failed (\(detail)) after writing the \(slots.joined(separator: " and ")) slot. The card is now half provisioned: reset the OpenPGP applet and start this ceremony again — retrying the import will be refused because that slot already holds a key."
         case .invalidRetryLimit(let requested, let allowed):
             return "Choose between \(allowed.lowerBound) and \(allowed.upperBound) PIN attempts; \(requested) is outside that range."
+        case .invalidCardCount(let requested, let allowed):
+            return "Choose between \(allowed.lowerBound) and \(allowed.upperBound) YubiKeys; \(requested) is outside that range."
+        case .duplicateCard(let serial):
+            return "This is YubiKey \(serial), which this ceremony has already provisioned. "
+                + "Hold the next YubiKey instead: resetting this one would erase the keys it now holds."
         case .retryLimitsNotApplied(let detail):
             return "The YubiKey did not accept the PIN retry limits: \(detail). Restart from the card reset."
         case .pairingPolicyNotAcknowledged:

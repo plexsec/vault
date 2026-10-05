@@ -4,12 +4,15 @@ An offline iOS app that provisions a YubiKey 5 as a minimum-trust, air-gapped
 signer, plus the supporting tooling to verify it. The design is in
 [`design.md`](design.md); this file explains what actually exists.
 
-**v0.1 was provisioning only. v0.2 signs EVM transactions.** Provisioning resets a
-YubiKey, generates or restores a BIP39 mnemonic, derives **two** keys from it — ECDSA
-secp256k1 and Ed25519 — imports them into the OpenPGP applet's signature and
-authentication slots, verifies each import by reading the public key back, and exports
-both public keys for a desktop wallet. One key per *algorithm* means every secp256k1
-chain shares one key and every Ed25519 chain shares the other.
+**v0.1 was provisioning only. v0.2 signs EVM transactions.** Provisioning generates or
+restores a BIP39 mnemonic and derives **two** keys from it — ECDSA secp256k1 and Ed25519 — then
+asks how many YubiKeys the run will write (1-5) and resets and writes each card in its own pass:
+importing the two keys into the OpenPGP applet's signature and authentication slots, verifying
+each import by reading the public key back, and storing the pairing material. Every card holds the
+same two keys, with its own PINs and the ceremony's retry limits; the paper backup of the words is
+the operator's choice, recorded either way (amendment 40). The public keys are exported for a
+desktop wallet. One key per *algorithm* means every secp256k1 chain shares one key and every
+Ed25519 chain shares the other.
 
 Signing reads an `eth-sign-request` from the wallet's animated QR code, decodes the
 transaction (legacy, EIP-2930 or EIP-1559), checks it against the account the card holds,

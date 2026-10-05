@@ -46,7 +46,9 @@ struct InventoryStepView: View {
         StepScaffold(
             why: isRePair
                 ? "Read the card before trusting anything on it. This records the applet version and serial number, and confirms both key slots are occupied — the manifest is only worth reading from a card that holds the keys it describes."
-                : "Read the card before changing anything. This records the applet version, the serial number, and which key slots are already occupied.",
+                : (viewModel.cardIndex > 0
+                    ? "Hold the next YubiKey against the phone, and check the serial it reports is one you have not already written in this ceremony — a card that already holds these keys is refused rather than reset, because resetting it would erase them. This records the applet version, the serial number, and which key slots are occupied."
+                    : "Read the card before changing anything. This records the applet version, the serial number, and which key slots are already occupied."),
             caution: !isRePair && viewModel.cardHoldsAnyKey
                 ? "This YubiKey already holds a key. Continuing will erase it."
                 : nil,
@@ -82,7 +84,9 @@ struct InventoryStepView: View {
 
                 Text(isRePair
                      ? "Check the serial number against the card you intend to re-pair. Nothing will be written to it."
-                     : "Check the serial number against the key you intend to provision, then continue.")
+                     : (viewModel.cardCount > 1
+                        ? "This is YubiKey \(viewModel.cardIndex + 1) of \(viewModel.cardCount). Check the serial against the card in your hand."
+                        : "Check the serial number against the key you intend to provision, then continue."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -232,6 +236,39 @@ struct RetryLimitStepView: View {
     }
 }
 
+// MARK: - Step 4b: how many YubiKeys
+
+/// The count comes after the keys exist and before any card is touched: it is what tells the
+/// mnemonic step how much the paper backup matters, and it is what the per-card block below
+/// is repeated for.
+struct CardCountStepView: View {
+    @Bindable var viewModel: CeremonyViewModel
+
+    var body: some View {
+        StepScaffold(
+            why: "Every YubiKey written here gets the same two private keys and the same pairing material, so any of them can sign for this wallet. Each one is provisioned in its own pass — reset, PINs, retry limits, write and read back — so the number is what the next steps will repeat.",
+            caution: viewModel.cardCount == 1
+                ? "With one YubiKey there is no second copy of these keys. Write the 24 words down: if this card is lost, reset or destroyed, they are the only way back to the wallet."
+                : nil,
+            actionTitle: "Continue",
+            isBusy: viewModel.busy,
+            action: { Task { await viewModel.setCardCount() } }
+        ) {
+            Stepper(value: Binding(
+                get: { viewModel.cardCount },
+                set: { viewModel.cardCount = $0 }
+            ), in: CardPolicy.cardCountRange) {
+                Text("YubiKeys to provision: **\(viewModel.cardCount)**")
+            }
+            .accessibilityIdentifier("card-count")
+
+            Text("Each YubiKey gets its own User PIN and Admin PIN; the retry limits are one decision for the whole ceremony and are written to every card. Have every card to hand before starting — the next card cannot be skipped once this run has begun.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - Step 6: entropy
 
 struct EntropyStepView: View {
@@ -276,6 +313,11 @@ struct EntropyStepView: View {
 
 struct MnemonicStepView: View {
     @Bindable var viewModel: CeremonyViewModel
+    @State private var confirmSkip = false
+
+    /// The backup is optional, and the model is where that is decided: a restore ceremony's
+    /// words came from an existing backup, so there is nothing new to write down there.
+    private var canSkipBackup: Bool { viewModel.mode == .freshGeneration }
 
     private var backfillComplete: Bool {
         viewModel.transcriptionChallenge.allSatisfy { index in
@@ -314,14 +356,20 @@ struct MnemonicStepView: View {
 
     private var generateView: some View {
         StepScaffold(
-            why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; the YubiKey can be replaced, the words cannot.",
+            why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; a YubiKey can be replaced from them, and nothing else can.",
             caution: viewModel.screenIsCaptured
                 ? "Screen recording or mirroring is active. The words cannot be shown."
-                : "No cameras, no screenshots. The words hide themselves again after \(CeremonyViewModel.revealWindowSeconds) seconds.",
+                : (viewModel.cardCount == 1
+                    ? "This is the only copy. With one YubiKey, the words are the whole backup: no second card holds these keys. No cameras, no screenshots."
+                    : "No cameras, no screenshots. The words hide themselves again after \(CeremonyViewModel.revealWindowSeconds) seconds."),
             actionTitle: "Confirm transcription",
             isEnabled: backfillComplete,
-            secondaryTitle: viewModel.mnemonicRevealed ? "Hide the words now" : nil,
-            secondaryAction: viewModel.mnemonicRevealed ? { viewModel.hideMnemonic() } : nil,
+            secondaryTitle: viewModel.mnemonicRevealed
+                ? "Hide the words now"
+                : (canSkipBackup ? "Continue without writing them down" : nil),
+            secondaryAction: viewModel.mnemonicRevealed
+                ? { viewModel.hideMnemonic() }
+                : (canSkipBackup ? { confirmSkip = true } : nil),
             action: { viewModel.confirmTranscription() }
         ) {
             mnemonicPanel
@@ -343,6 +391,22 @@ struct MnemonicStepView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog(
+            "Provision without a paper backup?",
+            isPresented: $confirmSkip,
+            titleVisibility: .visible
+        ) {
+            Button("Continue without a backup", role: .destructive) {
+                viewModel.declineMnemonicBackup()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                viewModel.cardCount == 1
+                    ? "No second copy of these keys will exist: this YubiKey is then the wallet. If it is lost, reset or destroyed, the funds are unreachable — nothing can recreate the keys."
+                    : "The 24 words will not be written down. \(viewModel.cardCount) YubiKeys will hold these keys, and there will be no way to recreate them if all of them are lost."
+            )
         }
     }
 
@@ -465,7 +529,7 @@ struct ImportStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — then the policy that makes them safe to hold (a physical touch for every use on both slots, and the User PIN re-entered for every signature), then the public keys and chain codes your desktop wallet needs. It then reads all of it straight back out of the card.",
+            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — then the policy that makes them safe to hold (a physical touch for every use on both slots, and the User PIN re-entered for every signature), then the public keys and chain codes your desktop wallet needs. It then reads all of it straight back out of the card.\(viewModel.cardCount > 1 ? " This is YubiKey \(viewModel.cardIndex + 1) of \(viewModel.cardCount); each card is written and verified in its own pass." : "")",
             caution: written
                 ? nil
                 : "Do not remove the YubiKey during this step. Nothing here is optional: a card that does not report back exactly what was written stops the ceremony rather than being used.",

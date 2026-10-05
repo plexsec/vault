@@ -49,24 +49,20 @@ final class ProvisioningIntegrationTests: XCTestCase {
     }
 
     /// Steps 1-8 through the real APDU layer. Returns the mnemonic and the
-    /// derived keys.
+    /// Steps 1-4 through the real APDU layer: preflight, entropy (or the restored words),
+    /// the mnemonic, the derivation, and the card count. Returns the mnemonic and the derived
+    /// keys.
+    ///
+    /// The card is not touched here any more: the keys come first, and the cards follow
+    /// (amendment 40).
     @discardableResult
     private func walkToDerivation(
         _ ceremony: ProvisioningCeremony,
         mode: CeremonyMode = .freshGeneration,
-        restoredWords: [String]? = nil
+        restoredWords: [String]? = nil,
+        cardCount: Int = 1
     ) async throws -> (mnemonic: [String], keys: DerivedKeys) {
         try ceremony.begin(mode: mode, postureConfirmed: true)
-        _ = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        try await ceremony.resetCard()
-        try await ceremony.setPINs(
-            userPIN: Array(Self.userPIN.utf8),
-            adminPIN: Array(Self.adminPIN.utf8)
-        )
-        try await ceremony.setPINRetries()
-
         if let restoredWords {
             try ceremony.restoreMnemonic(words: restoredWords)
         } else {
@@ -78,18 +74,33 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try ceremony.confirmTranscription(entries: challenge.map { ($0, words[$0]) })
         let keys = try ceremony.deriveKeys()
         try ceremony.advance()
+        try ceremony.setCardCount(cardCount)
         return (words, keys)
     }
 
-    /// The tail of the ceremony as one step: the keys, the policy and the pairing
-    /// manifest are written, and then all of it is read back off the card.
+    /// One card: inventory, reset, PINs and the retry limits, then the write and its
+    /// read-back — through the real APDU layer.
     ///
-    /// The policy cannot be written any earlier: writing a slot's algorithm attributes
-    /// resets that slot and the applet drops its touch policy with it, so an earlier
-    /// write is silently discarded (amendment 26). It is one step with the import and
-    /// the read-back, so there is no ordering left to get wrong (amendments 32 and 37).
+    /// The policy cannot be written any earlier than the write step: writing a slot's
+    /// algorithm attributes resets that slot and the applet drops its touch policy with it,
+    /// so an earlier write is silently discarded (amendment 26). It is one step with the
+    /// import, the manifest and the read-back, so there is no ordering left to get wrong
+    /// (amendments 32, 37 and 40).
     @discardableResult
-    private func finishProvisioning(_ ceremony: ProvisioningCeremony) async throws -> [KeyAlgorithm: ReadBackResult] {
+    private func finishProvisioning(
+        _ ceremony: ProvisioningCeremony,
+        userRetryLimit: Int = CardPolicy.defaultRetryLimit,
+        adminRetryLimit: Int = CardPolicy.defaultRetryLimit
+    ) async throws -> [KeyAlgorithm: ReadBackResult] {
+        _ = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
+        try await ceremony.resetCard()
+        try await ceremony.setPINs(
+            userPIN: Array(Self.userPIN.utf8),
+            adminPIN: Array(Self.adminPIN.utf8)
+        )
+        try await ceremony.setPINRetries(user: userRetryLimit, admin: adminRetryLimit)
         let readBack = try await ceremony.importAndVerify()
         // The step closes on the operator's Continue; the tests are the operator here.
         try ceremony.advance()
@@ -102,21 +113,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let (ceremony, _) = makeCeremony(transport: transport)
 
         try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
-
-        let inventory = try await ceremony.inspectCard()
-        // The inventory stays on screen; the operator acknowledges it.
-        try ceremony.advance()
-        XCTAssertEqual(inventory.openPGPVersion, "3.4")
-        XCTAssertFalse(inventory.holdsKey(in: .signature))
-        XCTAssertFalse(inventory.holdsKey(in: .authentication))
-        XCTAssertTrue(inventory.isFactoryFresh)
-
-        try await ceremony.resetCard()
-        try await ceremony.setPINs(
-            userPIN: Array(Self.userPIN.utf8),
-            adminPIN: Array(Self.adminPIN.utf8)
-        )
-        try await ceremony.setPINRetries()
 
         try await ceremony.generateEntropy()
         try ceremony.advance()
@@ -134,6 +130,23 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(keys.secp256k1.bitcoinAddress, Expected.bitcoinAddress)
         XCTAssertEqual(keys.secp256k1.publicKeyHex, Expected.secp256k1PublicKey)
         XCTAssertEqual(keys.ed25519.identity, Expected.ed25519PublicKey)
+
+        // The keys come first; then one card, in its own steps (amendment 40).
+        try ceremony.setCardCount(1)
+        let inventory = try await ceremony.inspectCard()
+        // The inventory stays on screen; the operator acknowledges it.
+        try ceremony.advance()
+        XCTAssertEqual(inventory.openPGPVersion, "3.4")
+        XCTAssertFalse(inventory.holdsKey(in: .signature))
+        XCTAssertFalse(inventory.holdsKey(in: .authentication))
+        XCTAssertTrue(inventory.isFactoryFresh)
+
+        try await ceremony.resetCard()
+        try await ceremony.setPINs(
+            userPIN: Array(Self.userPIN.utf8),
+            adminPIN: Array(Self.adminPIN.utf8)
+        )
+        try await ceremony.setPINRetries()
 
         let readBack = try await ceremony.importAndVerify()
         // The card really holds both keys: verify against the mock's own state.
@@ -233,7 +246,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
     func testChosenRetryLimitsReachTheCardPerPIN() async throws {
         let transport = MockYubikeyTransport()
         let (ceremony, _) = makeCeremony(transport: transport)
-        try ceremony.begin(mode: .freshGeneration, postureConfirmed: true)
+        _ = try await walkToDerivation(ceremony)
+
         _ = try await ceremony.inspectCard()
         try ceremony.advance()
         try await ceremony.resetCard()
@@ -248,7 +262,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentRetryLimits.admin, 6, "the Admin PIN's limit is its own choice")
         XCTAssertEqual(ceremony.report.userPINRetryLimit, 4)
         XCTAssertEqual(ceremony.report.adminPINRetryLimit, 6)
-        XCTAssertEqual(ceremony.step, .entropy)
+        XCTAssertEqual(ceremony.step, .keyImport, "the card is written next")
     }
 
     // MARK: The touch policy and the key import (amendment 26)
@@ -338,7 +352,9 @@ final class ProvisioningIntegrationTests: XCTestCase {
             transport: transport,
             entropy: [UInt8](repeating: 0xFF, count: 32)
         )
-        try second.begin(mode: .freshGeneration, postureConfirmed: true)
+        // The keys come first, then the card — and this card already holds keys, so the
+        // inventory is the step that has to say so.
+        _ = try await walkToDerivation(second)
         let inventory = try await second.inspectCard()
         // The inventory stays on screen; the operator acknowledges it.
         try second.advance()
@@ -408,6 +424,55 @@ final class ProvisioningIntegrationTests: XCTestCase {
         )
     }
 
+    /// Two YubiKeys, one ceremony: each is reset, given its own PINs and written, and the
+    /// record names both of them.
+    ///
+    /// The ceremony holds **one** `SignerCard` for the whole run, which is what the app does
+    /// over NFC — "the card" is whatever the reader sees — so the test swaps the transport
+    /// underneath it, exactly as the operator swaps the card (amendment 40).
+    func testTwoYubiKeysAreProvisionedInOneCeremony() async throws {
+        let first = MockYubikeyTransport(serial: 0x1111_2222)
+        let second = MockYubikeyTransport(serial: 0x3333_4444)
+        var current = first
+        let card = TransportSessionCard(makeTransport: { current })
+        let ceremony = ProvisioningCeremony(
+            card: card,
+            systemRandom: { count in SensitiveBytes(count: count) },
+            transportDescription: "Simulated (integration test)",
+            appVersion: "integration-test",
+            clock: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        try await walkToDerivation(ceremony, cardCount: 2)
+        try await finishProvisioning(ceremony)
+        XCTAssertEqual(ceremony.step, .cardInventory, "the second card's inventory is due")
+
+        current = second
+        let readBack = try await finishProvisioning(ceremony)
+        XCTAssertEqual(ceremony.step, .pairingExport, "both cards are written")
+
+        // Both cards hold the same keys, and each carries its own manifest — the manifest
+        // names the card's serial, so the two objects are deliberately different.
+        for transport in [first, second] {
+            XCTAssertTrue(transport.hasKey(in: .signature))
+            XCTAssertTrue(transport.hasKey(in: .authentication))
+            XCTAssertEqual(transport.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
+            XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
+            XCTAssertNotNil(transport.storedPairingManifest)
+        }
+        XCTAssertNotEqual(
+            first.storedPairingManifest,
+            second.storedPairingManifest,
+            "each manifest carries the serial of the card it was written to"
+        )
+
+        XCTAssertEqual(readBack[.secp256k1]?.matches, true)
+        XCTAssertEqual(readBack[.ed25519]?.matches, true)
+        XCTAssertEqual(ceremony.report.cards.map(\.serial), ["11112222", "33334444"])
+        XCTAssertEqual(ceremony.report.cards.map(\.order), [1, 2])
+        XCTAssertEqual(ceremony.report.cardSerial, "11112222", "the first card is what \"the card\" means")
+    }
+
     /// A card whose public key does not match what was imported (counterfeit, or
     /// tampered firmware) must void the ceremony and wipe the ceremony's secrets.
     func testCounterfeitCardVoidsTheCeremony() async throws {
@@ -418,7 +483,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let (ceremony, _) = makeCeremony(transport: transport)
         try await walkToDerivation(ceremony)
 
-        await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
+        await XCTAssertThrowsErrorAsync { _ = try await finishProvisioning(ceremony) } verify: { error in
             guard case .readBackMismatch = (error as? CeremonyError) else {
                 return XCTFail("expected readBackMismatch, got \(error)")
             }
@@ -432,6 +497,12 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let (ceremony, _) = makeCeremony(transport: transport)
         try await walkToDerivation(ceremony)
+        // The card steps run first, so the injected failure lands in the write.
+        _ = try await ceremony.inspectCard()
+        try ceremony.advance()
+        try await ceremony.resetCard()
+        try await ceremony.setPINs(userPIN: Array(Self.userPIN.utf8), adminPIN: Array(Self.adminPIN.utf8))
+        try await ceremony.setPINRetries()
 
         transport.injectedFailure = .transportError("NFC session invalidated")
         await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() }
