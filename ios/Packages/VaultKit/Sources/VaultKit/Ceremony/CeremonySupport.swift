@@ -379,32 +379,14 @@ public enum CardError: Swift.Error, Equatable {
     }
 }
 
-/// How the pairing-manifest step ended.
-///
-/// A card that cannot store a manifest is not a failure — the keys and the
-/// mnemonic, which are what hold funds, are unaffected — so the step records what
-/// happened and moves on. The distinction is kept in the report so the operator
-/// knows whether re-pairing will need the mnemonic again.
-public enum PairingManifestOutcome: Equatable, Sendable {
-    case stored(PairingManifest)
-    /// Not stored, with the reason, for the report and the screen.
-    case declined(reason: String)
-
-    public var manifest: PairingManifest? {
-        if case .stored(let manifest) = self { return manifest }
-        return nil
-    }
-
-    public var isStored: Bool { manifest != nil }
-}
-
 /// What a card's private-use data object holds — the pairing manifest slot.
 ///
 /// This is read during inventory because it decides whether the card can be
-/// re-paired without a reset. It is *not* a gate on provisioning: a card that
-/// cannot store a manifest is still perfectly provisionable, it just costs the
-/// operator a re-run of the ceremony (mnemonic included) the next time the
-/// pairing codes are needed.
+/// provisioned at all: the manifest is part of what the ceremony writes, and a card
+/// that cannot hold one cannot report back the whole of what was written
+/// (amendment 38). It is not a *preflight* gate — the inventory reports it, and the
+/// write step is where a card without the object stops, because that is where the
+/// write is attempted and where the operator is told which state their card is in.
 public enum PairingManifestState: Equatable, Sendable {
     /// The card refused the read of the private-use object, so it has no place to
     /// keep a manifest. Reported, never fatal.
@@ -722,6 +704,11 @@ public enum CeremonyError: Swift.Error, Equatable {
     /// read-back did not report what the ceremony asked for. Either way the card
     /// must not be used as provisioned, and a second write is a blind retry.
     case policyNotApplied(detail: String)
+    /// The pairing manifest is not on the card: the applet has no private-use object
+    /// for it, refused the write, or did not read back what was written. It is part of
+    /// what this ceremony writes, so a card without it has not been provisioned the
+    /// way the ceremony promises, and the step refuses to close (amendment 38).
+    case pairingManifestNotStored(detail: String)
     /// A key import failed after at least one slot had already been written, so the
     /// applet holds a half-provisioned key set. The only way forward is a reset.
     case importLeftTheCardPartlyProvisioned(slots: [String], detail: String)
@@ -767,6 +754,10 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "The \(algorithm.displayName) public key read back from the YubiKey does not match the derived key. The procedure is void — restart from the card reset."
         case .policyNotApplied(let detail):
             return "The YubiKey did not accept the security policy: \(detail). This card must not be used as provisioned — restart from the card reset."
+        case .pairingManifestNotStored(let detail):
+            return "The pairing manifest is not on the YubiKey: \(detail) It is part of what this "
+                + "ceremony writes, so this card is not provisioned the way it was promised: reset the "
+                + "OpenPGP applet and run the ceremony again."
         case .importLeftTheCardPartlyProvisioned(let slots, let detail):
             return "The import failed (\(detail)) after writing the \(slots.joined(separator: " and ")) slot. The card is now half provisioned: reset the OpenPGP applet and start this ceremony again — retrying the import will be refused because that slot already holds a key."
         case .invalidRetryLimit(let requested, let allowed):

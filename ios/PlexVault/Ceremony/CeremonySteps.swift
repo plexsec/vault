@@ -528,24 +528,15 @@ struct ImportStepView: View {
                     rows: viewModel.policyConfirmationRows
                 )
 
-                // And the chain codes, which live in the card's private-use object.
-                if let stored = viewModel.pairingManifestStored {
-                    if stored {
-                        Label("The pairing manifest is stored on the YubiKey and read back byte-for-byte.", systemImage: "checkmark.seal.fill")
-                            .font(.callout)
-                            .foregroundStyle(.green)
-                        Text("A later re-pair can read this off the card, so it will not need the mnemonic and will not reset the applet. A reset erases it.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Label("Not stored on this card — the pairing codes are only available now.", systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                        if let note = viewModel.pairingManifestNote {
-                            Text(note).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text("This does not affect the keys or the mnemonic. Re-pairing later will mean running the ceremony again with the mnemonic.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                // And the chain codes, which live in the card's private-use object. The
+                // step does not complete without them, so reaching this screen means the
+                // manifest was written and read back off the card (amendment 38).
+                if viewModel.pairingManifestStored == true {
+                    Label("The pairing manifest is stored on the YubiKey and read back byte-for-byte.", systemImage: "checkmark.seal.fill")
+                        .font(.callout)
+                        .foregroundStyle(.green)
+                    Text("A later re-pair can read this off the card, so it will not need the mnemonic and will not reset the applet. A reset erases it.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Text("The Admin PIN is re-entered for each write, in its own card session, and again for each read that needs it. The card is left holding the keys only if it reports them back exactly.")

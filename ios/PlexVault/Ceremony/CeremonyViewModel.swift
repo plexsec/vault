@@ -68,10 +68,10 @@ public final class CeremonyViewModel {
     public private(set) var transcriptionChallenge: [Int] = []
     public private(set) var derivedKeys: DerivedKeys?
     public private(set) var readBack: [KeyAlgorithm: ReadBackResult] = [:]
-    /// Whether the pairing manifest reached the card. `nil` before the step ran.
+    /// Whether the pairing manifest is on the card. `nil` before the step runs; the
+    /// step does not complete without it, so it is `true` on every screen that shows a
+    /// finished write (amendment 38).
     public private(set) var pairingManifestStored: Bool?
-    /// Why it did not, when it did not.
-    public private(set) var pairingManifestNote: String?
     /// Re-pair only: the key records the card's stored manifest describes, once it
     /// has been checked against the card. Empty means the step has not run.
     public private(set) var repairedKeys: [KeyAlgorithm: KeyRecord] = [:]
@@ -269,7 +269,6 @@ public final class CeremonyViewModel {
         derivedKeys = nil
         readBack = [:]
         pairingManifestStored = nil
-        pairingManifestNote = nil
         repairedKeys = [:]
         repairedFromSerial = nil
         pairingURStrings = [:]
@@ -470,11 +469,7 @@ public final class CeremonyViewModel {
     public func importAndVerify() async {
         await run { ceremony in
             self.readBack = try await ceremony.importAndVerify()
-            self.pairingManifestStored = ceremony.pairingManifestOutcome?.isStored
-            self.pairingManifestNote = ceremony.pairingManifestOutcome.flatMap { outcome in
-                if case .declined(let reason) = outcome { return reason }
-                return nil
-            }
+            self.pairingManifestStored = ceremony.pairingManifest != nil
         }
     }
 

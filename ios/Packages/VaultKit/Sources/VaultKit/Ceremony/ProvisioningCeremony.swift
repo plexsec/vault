@@ -53,11 +53,11 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     public var cardSerial: String?
     public var cardOpenPGPVersion: String?
     public var counterBaseline: UInt32?
-    /// True when a pairing manifest was written into the card's private-use data
-    /// object and read back byte-for-byte. False means the pairing codes can
-    /// still be produced now, but not later without the mnemonic — the card was
-    /// reset, the object was already occupied by something else, or the applet
-    /// has no private-use objects at all.
+    /// True once a pairing manifest has been written into the card's private-use data
+    /// object and read back byte-for-byte, with its binding to the card's own keys
+    /// checked. There is no false: a manifest that could not be stored stops the
+    /// ceremony, so a report that exists at all says true for a provisioning run
+    /// (amendment 38).
     public var pairingManifestStored: Bool?
     /// Both slots reported the touch policy the ceremony asked for. Only ever set
     /// after reading the UIF objects back off the card (amendment 26).
@@ -302,14 +302,11 @@ public final class ProvisioningCeremony {
     /// Key material written into each pairing UR. Not necessarily the leaf key;
     /// see `PairingExport`.
     public private(set) var pairingExports: [KeyAlgorithm: PairingExport] = [:]
-    /// The manifest written into the card's private-use data object, once it has
-    /// been read back and confirmed byte-for-byte.
+    /// The manifest written into the card's private-use data object, once its bytes
+    /// have been read back and its binding to the card's own keys checked. `nil` means
+    /// the step has not run: a manifest that could not be stored stops the ceremony
+    /// rather than leaving this nil with the step complete (amendment 38).
     public private(set) var pairingManifest: PairingManifest?
-    /// How the manifest step ended. Non-nil is what lets the step advance, so the
-    /// gate is "the step ran", not "the write succeeded": a card that cannot hold
-    /// a manifest must not strand the operator in the middle of a ceremony whose
-    /// keys are already in it.
-    public private(set) var pairingManifestOutcome: PairingManifestOutcome?
 
     // MARK: Secrets (wiped on every exit path)
 
@@ -420,10 +417,10 @@ public final class ProvisioningCeremony {
                     detail: "the touch policy has not been confirmed on the card yet"
                 )
             }
-            guard pairingManifestOutcome != nil else {
+            guard pairingManifest != nil else {
                 throw CeremonyError.stepIncomplete(
                     step: .keyImport,
-                    detail: "the pairing manifest step has not run yet"
+                    detail: "the pairing manifest is not on the card yet"
                 )
             }
             step = .pairingExport
@@ -1039,15 +1036,16 @@ public final class ProvisioningCeremony {
     ///   so a second write would be the blind retry design.md §5.2 rule 1 forbids, and
     ///   the way out of that state is the reset step;
     /// * a **manifest** that cannot be stored, or that does not read back byte-for-byte
-    ///   and bind to the card's own key, is reported as a degraded card rather than an
-    ///   abort: the keys and the mnemonic are unaffected, and only a later re-pair needs
-    ///   the mnemonic (`pairingManifestStored` on the report).
+    ///   and bind to the card's own key, stops the ceremony (`pairingManifestNotStored`):
+    ///   it is part of what the step writes, so a card that cannot report it back has not
+    ///   been provisioned the way the operator was told it would be.
     @discardableResult
     public func importAndVerify(creationTime: Date? = nil) async throws -> [KeyAlgorithm: ReadBackResult] {
         try requireCurrent(.keyImport)
         try await writeKeysAndPolicy(creationTime: creationTime)
         try await readBackAndCheckPolicy()
         _ = try await writePairingManifestAndCheck()
+
         // Deliberately does NOT advance: the operator has to see the card's own answer —
         // both public keys next to the ones derived here, the policy as the card reports
         // it, and the manifest's outcome — before the step closes. `advance()` is what
@@ -1242,27 +1240,31 @@ public final class ProvisioningCeremony {
     /// rather than after it, so that an interruption cannot leave a card that holds
     /// verified keys and no manifest without the ceremony knowing (amendment 37).
     ///
-    /// Failure here is a warning, not an abort. The keys and the mnemonic — the
-    /// things that actually hold funds — are already verified at this point; what
-    /// is at stake is the convenience of a later re-pair. The one exception is
-    /// data that came back different from what was written, which is reported as
-    /// a warning too, because the re-pair path re-checks the manifest against the
-    /// card's live keys and would refuse a manifest that does not match.
+    /// **Failure here stops the ceremony** (amendment 38). The manifest is part of what
+    /// this step writes, and the step's promise is that the card reports back everything
+    /// it was told: a card that cannot hold the object, refuses the write, or hands back
+    /// something other than what was written has not been provisioned the way the
+    /// operator was told it would be. The keys and the mnemonic are unaffected — which is
+    /// why this is reported as itself rather than as a lost wallet — but the card must
+    /// not be used, and the way forward is the reset, because a second write would be the
+    /// blind retry design.md §5.2 rule 1 forbids.
     ///
     /// Private: the third write of `importAndVerify`.
-    private func writePairingManifestAndCheck() async throws -> PairingManifest? {
+    private func writePairingManifestAndCheck() async throws -> PairingManifest {
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
         var pin = adminPIN.materializedCopy()
         defer { VaultKit.wipe(&pin) }
 
         switch inventory?.pairingManifest ?? .unsupported {
         case .unsupported:
-            return decline(
-                "This card refused the read of its private-use data object, so no pairing manifest "
-                + "was stored. Re-pairing this card later will require the mnemonic again."
+            throw CeremonyError.pairingManifestNotStored(
+                detail: "this card refused the read of its private-use data object, so there is no "
+                    + "place on it for the public keys and chain codes a wallet needs."
             )
         case .unreadable(let reason):
-            return decline("The card's pairing manifest slot could not be read (\(reason)); nothing was written.")
+            throw CeremonyError.pairingManifestNotStored(
+                detail: "the card's pairing manifest slot could not be read (\(reason))."
+            )
         case .absent, .present:
             break
         }
@@ -1280,7 +1282,9 @@ public final class ProvisioningCeremony {
                 try await card.writePairingManifest(encoded, adminPIN: pin)
             }
         } catch let error as CardError {
-            return decline("The pairing manifest could not be stored: \(error.userFacingDescription)")
+            throw CeremonyError.pairingManifestNotStored(
+                detail: "the write was refused (\(error.userFacingDescription.lowercased()))."
+            )
         }
 
         // Read it straight back. A write that is not read back is a write that is
@@ -1290,14 +1294,15 @@ public final class ProvisioningCeremony {
         do {
             readBack = try await card.readPairingManifest()
         } catch let error as CardError {
-            return decline(
-                "The pairing manifest was written but could not be read back: \(error.userFacingDescription)"
+            throw CeremonyError.pairingManifestNotStored(
+                detail: "it was written but could not be read back "
+                    + "(\(error.userFacingDescription.lowercased()))."
             )
         }
         guard readBack == encoded else {
-            return decline(
-                "The pairing manifest did not read back byte-for-byte (wrote \(encoded.count) bytes, "
-                + "read \(readBack?.count.description ?? "nothing")); it will not be trusted on re-pair."
+            throw CeremonyError.pairingManifestNotStored(
+                detail: "it did not read back byte-for-byte (wrote \(encoded.count) bytes, "
+                    + "read \(readBack?.count.description ?? "nothing"))."
             )
         }
 
@@ -1308,29 +1313,20 @@ public final class ProvisioningCeremony {
         do {
             try manifest.verify(against: cardKeyReport(from: readBackResults))
         } catch let error as PairingManifest.VerificationError {
-            return decline("The stored pairing manifest does not describe the keys in this card: \(error).")
+            throw CeremonyError.pairingManifestNotStored(
+                detail: "the stored manifest does not describe the keys in this card (\(error))."
+            )
         }
 
         pairingManifest = manifest
-        pairingManifestOutcome = .stored(manifest)
         report.pairingManifestStored = true
         return manifest
     }
 
-    /// Records that the manifest is not on the card, says why, and lets the step
-    /// advance. Every declining path in `writePairingManifest` goes through here,
-    /// so none of them can forget to record the outcome and strand the operator.
     private func requireMode(_ expected: CeremonyMode) throws {
         guard mode == expected else {
             throw CeremonyError.wrongCeremonyMode(expected: expected, actual: mode)
         }
-    }
-
-    private func decline(_ reason: String) -> PairingManifest? {
-        addWarning(reason)
-        pairingManifestOutcome = .declined(reason: reason)
-        report.pairingManifestStored = false
-        return nil
     }
 
     /// The public material the card needs in order to be re-paired later.
@@ -1630,7 +1626,6 @@ public final class ProvisioningCeremony {
         // leaving a copy behind after a wipe would mean the teardown step left
         // wallet material in memory. The durable record is `report`.
         pairingManifest = nil
-        pairingManifestOutcome = nil
         derivedKeys = nil
         readBackResults = [:]
     }

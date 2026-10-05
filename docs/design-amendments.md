@@ -1700,3 +1700,42 @@ asserts what replaced it: the import step is followed directly by the export, an
 on the import step is refused — `importAndVerify` is the only way forward, and it ends with a card the
 ceremony has read back. The UI test walk taps one action ("Write and verify the YubiKey") where it
 tapped three, and asserts the stored-manifest line that only appears once the step has run.
+
+## 38. v0.2: a card that cannot store the chain codes is not provisioned
+
+**Sections:** §4.2 step 7b (its "four properties are normative" list), §10 item 13;
+`CeremonyError.pairingManifestNotStored`, `ProvisioningCeremony.writePairingManifestAndCheck`,
+`ImportStepView`, `docs/provisioning-checklist.md`, `docs/m0-hardware-verification.md` item 12.
+
+**What changed.** The manifest write was the one write in the ceremony whose failure was
+tolerated: a card whose applet has no private-use object, one that refused the write, and one
+that handed back different bytes were all reported as a warning and the ceremony continued.
+They now stop the ceremony, like every other write. `PairingManifestOutcome` and its `declined`
+case are gone, `CeremonyReport.pairingManifestStored` is only ever true, and the step's gate is
+"the manifest is on the card" rather than "the step ran" — so a report that exists at all means
+the chain codes are in the card.
+
+**Why.** The rule the rest of the ceremony already follows is that a value the card does not
+report is not a value: §5.2 rule 7d states it for the touch policy, and the same reasoning
+applies to the chain codes, which are part of what this ceremony writes. The old justification —
+"the keys and the mnemonic are unaffected, so only the convenience of a later re-pair is lost" —
+was true about the funds and wrong about the card. A card that finishes the ceremony without a
+manifest is a card whose next re-pair silently costs the mnemonic, which is exactly the property
+the operator believed the ceremony had bought. A ceremony that cannot deliver what it promises
+says so and stops; it does not finish and leave a caveat in the record.
+
+**What it costs.** A YubiKey whose applet has no private-use objects can no longer be provisioned
+by this app (the objects are optional in the spec; they are present on YubiKey 5 firmware 5.8.0,
+verified in m0 item 12). And a card that reaches this point has both keys in it already, so the
+way out is the reset — the same position a policy that will not stick leaves the operator in, and
+for the same reason: the card holds something the ceremony did not confirm, and a second write
+would be the blind retry §5.2 rule 1 forbids. `pairingManifestNotStored` is the error, and its
+message names both facts: what did not reach the card, and that a reset is the way forward.
+
+**What is checked where.** The test that asserted the degradation
+(`testACardWithoutThePrivateUseObjectWarnsAndContinues`) becomes
+`testACardWithoutThePrivateUseObjectStopsTheCeremony`, and the two tests that asserted a warning
+for a refused write and for storage that hands back different bytes now assert the throw. Each
+checks three things: the error and its detail text, that the step stayed at `keyImport` and its
+gate refuses to close, and that both keys are still in the card — because "the keys are fine, the
+card is not" is the state the operator has to understand before resetting it.

@@ -393,10 +393,13 @@ already behind. Until then, treat "a wallet pairs from the stored manifest" as
 unverified.
 
 **Why it is safe to be wrong.** The write is 194 bytes into an object nothing else
-uses, it happens after the keys are verified, and a failure is reported and
-non-fatal: the ceremony still finishes, and the only consequence is that a later
-re-pair needs the mnemonic. A `TERMINATE DF` clears the object, so a wrong
-assumption cannot leave a card advertising keys it no longer holds.
+uses, and it happens after the keys are verified. It is no longer non-fatal: a card
+that cannot store the object, refuses the write, or hands back something else stops
+the ceremony there (amendment 38), because the manifest is part of what this
+ceremony writes and the card has not been provisioned without it. What that costs
+is a reset and a re-run, not funds: the keys and the mnemonic are untouched. A
+`TERMINATE DF` clears the object, so a wrong assumption cannot leave a card
+advertising keys it no longer holds.
 
 **And the read side, on the same card.** The re-pair path (§4.2 step 7c) was
 exercised against this card too, by reading the object with no PIN presented and

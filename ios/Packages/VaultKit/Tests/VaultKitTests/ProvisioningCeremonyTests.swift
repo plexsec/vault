@@ -1084,10 +1084,13 @@ final class ProvisioningCeremonyTests: XCTestCase {
         )
     }
 
-    /// A card that cannot store a manifest is not a broken card: the keys and the
-    /// mnemonic are unaffected, and all that is lost is re-pairing without the
-    /// mnemonic later. The ceremony warns and carries on.
-    func testACardWithoutThePrivateUseObjectWarnsAndContinues() async throws {
+    /// A card that cannot store a manifest cannot be provisioned by this ceremony: the
+    /// manifest is part of what the step writes, and a card that cannot hold it has not
+    /// been provisioned the way the operator was told it would be (amendment 38).
+    ///
+    /// The keys in the card are unaffected, which is exactly why this is reported as
+    /// itself, and why the way forward is the reset rather than a retry.
+    func testACardWithoutThePrivateUseObjectStopsTheCeremony() async throws {
         let card = MockSignerCard(
             inventory: {
                 var inventory = MockSignerCard.factoryFreshCard
@@ -1099,22 +1102,31 @@ final class ProvisioningCeremonyTests: XCTestCase {
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
 
-        let report = try await completeCeremony(ceremony)
-
-        XCTAssertEqual(report.pairingManifestStored, false)
-        XCTAssertTrue(
-            report.warnings.contains { $0.contains("no pairing manifest was stored") },
-            "the operator must be told the re-pair will need the mnemonic: \(report.warnings)"
-        )
-        // The ceremony still completed: the pairing codes themselves are fine.
-        XCTAssertEqual(report.keys.count, 2)
-        for key in report.keys {
-            XCTAssertNotNil(key.pairingURType, "the codes are still produced")
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
+            guard case .pairingManifestNotStored(let detail)? = error as? CeremonyError else {
+                return XCTFail("expected pairingManifestNotStored, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("private-use data object"), detail)
         }
+
+        // The step refuses to close, the report does not claim the manifest is there,
+        // and the keys really are in the card — which is what the message says.
+        XCTAssertEqual(ceremony.step, .keyImport)
+        XCTAssertNil(ceremony.pairingManifest)
+        XCTAssertNil(ceremony.report.pairingManifestStored)
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepIncomplete(step: .keyImport, detail: "the pairing manifest is not on the card yet")
+            )
+        }
+        XCTAssertTrue(card.hasKey(in: .signature))
+        XCTAssertTrue(card.hasKey(in: .authentication))
+        XCTAssertEqual(ceremony.report.keys.count, 2, "the report still describes the keys")
     }
 
-    /// Storage that hands back something other than what was written is never
-    /// trusted, and the ceremony says so instead of pretending.
+    /// Storage that hands back something other than what was written is never trusted,
+    /// and the ceremony refuses to finish rather than pretending (amendment 38).
     func testAManifestThatDoesNotReadBackIsNotTrusted() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
@@ -1123,38 +1135,39 @@ final class ProvisioningCeremonyTests: XCTestCase {
         // read straight back, inside it.
         card.pairingManifestReadBackOverride = [UInt8](repeating: 0, count: 194)
 
-        _ = try await ceremony.importAndVerify()
-        try ceremony.advance()
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
+            guard case .pairingManifestNotStored(let detail)? = error as? CeremonyError else {
+                return XCTFail("expected pairingManifestNotStored, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("did not read back byte-for-byte"), detail)
+            XCTAssertTrue(detail.contains("wrote 198 bytes"), detail)
+        }
 
         XCTAssertNil(ceremony.pairingManifest)
-        XCTAssertEqual(ceremony.pairingManifestOutcome?.isStored, false)
-        XCTAssertEqual(ceremony.report.pairingManifestStored, false)
-        XCTAssertTrue(
-            ceremony.report.warnings.contains { $0.contains("did not read back byte-for-byte") },
-            "a write that cannot be read back must be reported: \(ceremony.report.warnings)"
-        )
-        // The step still advances, because the keys are already verified.
-        XCTAssertEqual(ceremony.step, .pairingExport)
+        XCTAssertNil(ceremony.report.pairingManifestStored)
+        XCTAssertEqual(ceremony.step, .keyImport, "the step must not close on a card it could not read back")
+        XCTAssertTrue(card.hasKey(in: .signature), "the keys are unaffected")
     }
 
-    /// A wrong Admin PIN at this point is a warning, not a ceremony failure: every
-    /// key is already in the card and verified.
-    func testAFailedManifestWriteIsAWarningNotAnAbort() async throws {
+    /// A manifest write the card refuses stops the ceremony too: every write in this
+    /// step is verified, and a write that did not happen is not a degraded card but an
+    /// unprovisioned one (amendment 38).
+    func testAFailedManifestWriteStopsTheCeremony() async throws {
         let card = MockSignerCard()
         let ceremony = makeCeremony(card: card)
         _ = try await runThroughDerivation(ceremony)
         card.failurePoint = .pairingManifest
 
-        _ = try await ceremony.importAndVerify()
-        try ceremony.advance()
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
+            guard case .pairingManifestNotStored(let detail)? = error as? CeremonyError else {
+                return XCTFail("expected pairingManifestNotStored, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("write was refused"), detail)
+        }
 
         XCTAssertNil(ceremony.pairingManifest)
-        XCTAssertTrue(
-            ceremony.report.warnings.contains { $0.contains("pairing manifest could not be stored") },
-            "expected a warning, got \(ceremony.report.warnings)"
-        )
+        XCTAssertEqual(ceremony.step, .keyImport)
         XCTAssertEqual(card.hasKey(in: .signature), true, "the keys are unaffected")
-        XCTAssertEqual(ceremony.step, .pairingExport, "a degraded manifest does not stop the ceremony")
     }
 
     /// The writes and their proof are one step, so there is no ordering left for the

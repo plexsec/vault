@@ -76,10 +76,9 @@ step completed rather than trusting the flow.
       - [ ] The same screen reports the policy read back off the card: touch policy **Fixed** on
             both slots, PW1 status `0x00`, and both PIN retry limits as chosen. Anything else leaves
             the app on this step, and the card must be reset rather than used
-      - [ ] Pairing manifest stored on the card, and read back byte-for-byte ✔
-            - [ ] If the app instead warns that it could **not** be stored, write down
-                  that re-pairing this card later will need the mnemonic. The keys and
-                  the mnemonic are unaffected — only the shortcut is missing
+      - [ ] Pairing manifest stored on the card, and read back byte-for-byte ✔ — a card that cannot
+            store it, or that hands back something else, stops the ceremony on this step rather than
+            finishing without it
       - [ ] No step asked for a second touch, and no screen was left between a write and its proof
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
