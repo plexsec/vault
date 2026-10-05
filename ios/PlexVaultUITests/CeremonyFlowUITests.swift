@@ -8,8 +8,8 @@ import VaultKit
 /// a step produced something the operator needed to read, and the next screen
 /// replaced it in the same render pass. The reported symptom was an empty
 /// mnemonic list; the same defect had silently swallowed the card inventory, the
-/// entropy commitment, the derived address, the read-back comparison, the pairing
-/// QR and the counter value. None of that is visible from unit tests, which is
+/// entropy commitment, the derived address, the read-back comparison and the pairing
+/// QR. None of that is visible from unit tests, which is
 /// why this test drives the actual screens.
 ///
 /// Scrolling to a control is done with `tapWhenVisible`, from `UITestSupport`.

@@ -206,15 +206,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertTrue(ed25519.isEd25519)
         XCTAssertEqual(ed25519.useInfo?.type, 501)
 
-        let baseline = try await ceremony.readCounterBaseline()
-        try ceremony.advance()
-        XCTAssertEqual(baseline, 0)
-
         let report = ceremony.finish()
         XCTAssertTrue(report.readBackVerified)
-        XCTAssertEqual(report.counterBaseline, 0)
-        XCTAssertEqual(transport.signatureCounter, 0)
-        XCTAssertTrue(report.warnings.contains { $0.contains("no hardware signature counter") })
 
         // The whole exchange must have gone through real APDUs, including per-slot
         // addresses.
@@ -226,7 +219,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00db3fff") }, "no key import")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810002b600") }, "no signature-slot read")
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("0047810002a400") }, "no authentication-slot read")
-        XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00ca007a") }, "no counter read")
         // Both UIF objects must have been written.
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00da00d602022000") })
         XCTAssertTrue(transport.receivedAPDUs.contains { $0.hasPrefix("00da00d802022000") })
@@ -316,7 +308,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
         _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
-        _ = try await ceremony.readCounterBaseline()
 
         XCTAssertEqual(
             transport.currentUIF(.signature),

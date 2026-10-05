@@ -109,10 +109,6 @@ final class SigningEndToEndTests: XCTestCase {
         XCTAssertEqual(exported.requestID, try Hex.decode("00112233445566778899aabbccddeeff"))
         XCTAssertEqual(exported.recoveryValueBytes, [UInt8(SimulatedSigningVectors.legacyRecoveryValue)])
         XCTAssertEqual(transport.signatureRequestCount, 1, "one request, one PSO:CDS")
-        // The counter moved by exactly one: one request, one signature. (A second
-        // *session* may legitimately sign again — each one verifies the PIN afresh —
-        // which is why the one-touch rule is enforced by the ceremony, not the card.)
-        XCTAssertEqual(transport.signatureCounter, 1)
         XCTAssertNotNil(ur.string.range(of: "ur:eth-signature/"))
     }
 }

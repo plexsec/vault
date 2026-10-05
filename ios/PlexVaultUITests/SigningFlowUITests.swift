@@ -154,11 +154,6 @@ final class SigningFlowUITests: XCTestCase {
                 .firstMatch.waitForExistence(timeout: 10),
             "the record must say the signature was verified"
         )
-        XCTAssertTrue(
-            app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "1 (one signature)"))
-                .firstMatch.exists,
-            "the counter change must be recorded: one signature, not more"
-        )
     }
 
 }

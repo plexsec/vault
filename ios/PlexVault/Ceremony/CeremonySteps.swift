@@ -46,7 +46,7 @@ struct InventoryStepView: View {
         StepScaffold(
             why: isRePair
                 ? "Read the card before trusting anything on it. This records the applet version and serial number, and confirms both key slots are occupied — the manifest is only worth reading from a card that holds the keys it describes."
-                : "Read the card before changing anything. This records the applet version, the serial number, which key slots are already occupied, and the signature-counter baseline in your provisioning record.",
+                : "Read the card before changing anything. This records the applet version, the serial number, and which key slots are already occupied.",
             caution: !isRePair && viewModel.cardHoldsAnyKey
                 ? "This YubiKey already holds a key. Continuing will erase it."
                 : nil,
@@ -103,7 +103,7 @@ struct ResetStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Terminates and re-activates the OpenPGP applet, which clears the keys in every slot, resets the PINs to their factory defaults and sets the signature counter back to zero. No PIN is needed: the app blocks both PINs and then terminates the applet, exactly as `ykman openpgp reset` does.",
+            why: "Terminates and re-activates the OpenPGP applet, which clears the keys in every slot and resets the PINs to their factory defaults. No PIN is needed: the app blocks both PINs and then terminates the applet, exactly as `ykman openpgp reset` does.",
             caution: "This erases everything already on the OpenPGP applet, in both the signature and authentication slots — and it does so without the Admin PIN, so a card whose Admin PIN is unknown or blocked can be reset too.",
             actionTitle: "Reset applet",
             isBusy: viewModel.busy,
@@ -717,47 +717,7 @@ struct PairingStepView: View {
     }
 }
 
-// MARK: - Step 12: counter baseline
-
-struct CounterStepView: View {
-    @Bindable var viewModel: CeremonyViewModel
-
-    var body: some View {
-        StepScaffold(
-            why: "Reads the YubiKey's hardware signature counter, which must be zero after an import. This number is the baseline your desktop wallet compares against later: any increase means the card signed something you did not ask for.",
-            actionTitle: viewModel.counterBaseline == nil ? "Read counter" : "Continue",
-            isBusy: viewModel.busy,
-            action: {
-                if viewModel.counterBaseline == nil {
-                    Task { await viewModel.readCounterBaseline() }
-                } else {
-                    viewModel.advance()
-                }
-            }
-        ) {
-            if let counter = viewModel.counterBaseline {
-                KeyValueRows(rows: [
-                    ("Signature counter (secp256k1 / signature slot)", "\(counter)"),
-                    ("Ed25519 / authentication slot", "no hardware counter"),
-                ])
-                Label("Baseline recorded.", systemImage: "checkmark.seal.fill")
-                    .font(.footnote).foregroundStyle(.green)
-                Text("""
-                Only the signature slot increments a hardware counter. The Ed25519 key lives in \
-                the authentication slot, so the counter audit covers your secp256k1 chains only. \
-                Ed25519 signatures are still gated by the PIN and a physical touch.
-                """)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } else {
-                Text("No PIN is needed to read the counter, and it exposes no secrets.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-// MARK: - Step 13: teardown
+// MARK: - Step 12: teardown
 
 struct TeardownStepView: View {
     @Bindable var viewModel: CeremonyViewModel

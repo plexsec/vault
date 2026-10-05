@@ -112,8 +112,6 @@ struct CeremonyRootView: View {
             ImportStepView(viewModel: viewModel)
         case .pairingExport:
             PairingStepView(viewModel: viewModel)
-        case .counterBaseline:
-            CounterStepView(viewModel: viewModel)
         case .teardown:
             TeardownStepView(viewModel: viewModel)
         }

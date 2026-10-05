@@ -52,8 +52,7 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
     public var diceRolls: [Int] = []
     public var cardSerial: String?
     public var cardOpenPGPVersion: String?
-    public var counterBaseline: UInt32?
-    /// True once a pairing manifest has been written into the card's private-use data
+    /// True when a pairing manifest has been written into the card's private-use data
     /// object and read back byte-for-byte, with its binding to the card's own keys
     /// checked. There is no false: a manifest that could not be stored stops the
     /// ceremony, so a report that exists at all says true for a provisioning run
@@ -123,7 +122,6 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
             }
         }
 
-        if let counterBaseline { lines.append("signature counter baseline (secp256k1/signature slot): \(counterBaseline)") }
         // The policy and the two retry limits, as the card reported them. They belong on
         // the paper record because they are what the card will enforce years from now,
         // and because the numbers are the operator's own choice (amendments 27, 32).
@@ -131,7 +129,6 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
         if let userPINRetryLimit, let adminPINRetryLimit {
             lines.append("PIN retry limits (PW1 / PW3): \(userPINRetryLimit) / \(adminPINRetryLimit)")
         }
-        lines.append("note: the Ed25519 key has no hardware signature counter; the counter audit covers secp256k1 only.")
         for warning in warnings { lines.append("warning: \(warning)") }
         return lines
     }
@@ -368,8 +365,7 @@ public final class ProvisioningCeremony {
     /// themselves: the operator reads the result and then calls this. Without that
     /// split, everything a step produced — the card inventory, the entropy
     /// commitment, the derived addresses, the read-back comparison, the pairing
-    /// codes and the counter value — was replaced by the next screen in the same
-    /// render pass and never seen.
+    /// codes — was replaced by the next screen in the same render pass and never seen.
     ///
     /// Each step's precondition is checked here, so "read the card, then reset"
     /// and "confirm the wallet shows this address" cannot be skipped by the view
@@ -451,12 +447,6 @@ public final class ProvisioningCeremony {
             }
             guard pairingAddressConfirmedByOperator else {
                 throw CeremonyError.pairingAddressNotConfirmed
-            }
-            step = .counterBaseline
-
-        case .counterBaseline:
-            guard report.counterBaseline != nil else {
-                throw CeremonyError.stepIncomplete(step: .counterBaseline, detail: "the signature counter has not been read yet")
             }
             step = .teardown
 
@@ -585,10 +575,6 @@ public final class ProvisioningCeremony {
         var parts: [String] = []
         for slot in KeySlot.allCases where inventory.holdsKey(in: slot) {
             parts.append("\(slot.displayName.lowercased()) occupied")
-        }
-        if let counter = inventory.signatureCounter { parts.append("counter \(counter)") }
-        if let attributes = inventory.algorithmAttributes[.signature] {
-            parts.append("signature algorithm attributes \(attributes.hexString)")
         }
         if let attributes = inventory.algorithmAttributes[.authentication] {
             parts.append("authentication algorithm attributes \(attributes.hexString)")
@@ -1565,32 +1551,7 @@ public final class ProvisioningCeremony {
         }
     }
 
-    @discardableResult
-    public func readCounterBaseline() async throws -> UInt32 {
-        try requireCurrent(.counterBaseline)
-        let counter = try await card.signatureCounter()
-        report.counterBaseline = counter
-        report.warnings.append(
-            "The Ed25519 key sits in the authentication slot, which has no hardware signature counter; the counter audit covers the secp256k1 key only."
-        )
-        // A non-zero counter means the card has signed. That is a stop condition
-        // before provisioning ("the card may already have signed something") but
-        // the expected state when re-pairing a card that is in use, where the
-        // number is recorded so the operator can compare it against the wallet's
-        // `expected_counter`.
-        if mode == .rePair {
-            addWarning(
-                "Signature counter is \(counter). Compare it against the counter your wallet reports for "
-                    + "this key before sending funds."
-            )
-        } else {
-            guard counter == 0 else { throw CeremonyError.counterNotZero(counter) }
-        }
-        // Deliberately does NOT advance: the operator must record the value either way.
-        return counter
-    }
-
-    // MARK: Step 13 — teardown
+    // MARK: Step 12 — teardown
 
     /// Wipes all secrets and returns the final report. An app restart is
     /// required before another ceremony (enforced by the UI, which is what

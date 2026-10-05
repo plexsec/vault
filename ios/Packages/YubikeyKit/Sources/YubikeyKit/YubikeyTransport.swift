@@ -123,7 +123,6 @@ public enum OpenPGPStatusMapper {
 public enum OpenPGPOperation: String, Sendable {
     case select
     case readApplicationData
-    case readSecuritySupportTemplate
     case verifyUserPIN
     case verifyAdminPIN
     case changeUserPIN
@@ -138,7 +137,6 @@ public enum OpenPGPOperation: String, Sendable {
     case setAlgorithmAttributes
     case importKey
     case readPublicKey
-    case readCounter
     case getChallenge
     /// Reading the private-use data object that holds the pairing manifest. Read
     /// access on that object requires no PIN, which is what makes a re-pair
@@ -146,8 +144,7 @@ public enum OpenPGPOperation: String, Sendable {
     case readPairingManifest
     /// Writing it. Requires PW3, which the ceremony has already verified.
     case writePairingManifest
-    /// `PSO:CDS` — the one operation that consumes a touch, increments the
-    /// signature counter, and must never be attempted twice for one request
-    /// (design.md §5.2 rule 1).
+    /// `PSO:CDS` — the one operation that consumes a touch and must never be
+    /// attempted twice for one request (design.md §5.2 rule 1).
     case computeSignature
 }

@@ -1739,3 +1739,62 @@ for a refused write and for storage that hands back different bytes now assert t
 checks three things: the error and its detail text, that the step stayed at `keyImport` and its
 gate refuses to close, and that both keys are still in the card — because "the keys are fine, the
 card is not" is the state the operator has to understand before resetting it.
+
+## 39. v0.2: the signature counter is not read at all
+
+**Sections:** §4.1 (diagram), §4.2 step 9 (deleted; the small-value test transaction is now step
+9), §4.2 step 7c, §4.3, §5.1 (sequence steps 6, 13, 17), §5.2 rules 3–4 (rewritten in place) and
+rule 8, §6.3, §6.5 (the `00 CA 00 7A 00` row is gone), §7.1, §7.2, §8.3, §9.3, §9.4, §9.5, §10
+items 2b/8/9, §11, Appendix A and B; `SignerCard.signatureCounter`,
+`SigningCardIdentity.signatureCounter`, `CardInventory.signatureCounter`, `CeremonyStep.counterBaseline`,
+`CeremonyReport.counterBaseline`, `SigningReport.counterBeforeSigning/counterAfterSigning/counterDelta`,
+`OpenPGPCard.signatureCounter`, and the `GET DATA 0x7A` read itself; `docs/provisioning-checklist.md`,
+`docs/signing-checklist.md`, `docs/v1-threat-notes.md`, `docs/m0-hardware-verification.md`.
+
+**What changed.** Everything that read, displayed, compared or verified the card's signature
+counter is gone. The provisioning ceremony has no baseline step and records no baseline; the
+signing flow does not read the counter before or after a signature, shows no before → after line,
+and its record has no counter rows; the card inventory no longer reports the number; the app
+issues no `GET DATA 0x7A` at all, so `YubikeyKit` no longer parses `0x93` and the simulated card
+no longer answers for it. §4.2's step 9 is deleted, and the small-value test transaction becomes
+step 9.
+
+**Why.** The audit's premise is that a wallet knows how many signatures it asked for and can
+compare that with the card's count. The premise fails the moment the card is shared: this YubiKey
+is used with other applications, so its count moves for reasons this wallet cannot see, and
+`actual > expected` stops meaning "a signature this wallet did not ask for". A control that fires
+on other applications' signatures is worse than no control, because it teaches the operator to
+ignore it. The rule it was built on also ruled out the alternative reading: §5.2 rule 3 required
+the comparison to be made by a party *other* than the one that displayed the transaction, so the
+app's own before/after numbers were never the control they looked like — the wallet's read was,
+and the wallet's read has the same problem for the same reason.
+
+**What replaces it.** The wallet's verification of the signature it asked for, against the digest
+it sent and the account it holds (§5.1 step 16.5), plus the wallet's own record of what it
+requested. That is the property rule 3 was reaching for — a party other than the signing screen
+decides whether the signature is right — and it is stronger, because it names the digest rather
+than counting events. §§5.2 rules 3 and 4 are rewritten in place rather than deleted, so the many
+"rule 3" / "rules 3–4" references in the code and the other documents keep pointing at something;
+and the threat-table row that recorded the Ed25519 gap as **Medium** (an extra touch on a key no
+counter covered) becomes **Low**, because a signature the wallet did not ask for never reaches
+verification at all — the separate existence of an authentication slot is no longer a detection
+gap, since there is no detection control left for it to be a gap in.
+
+**What is lost, stated plainly.** An extra touch — the social-engineering half of §9.3 — leaves no
+card-side trace any more. What remains is the wallet's own check: a signature over a digest it did
+not send fails verification, and the operator is told not to broadcast. An attacker who can also
+make the wallet accept a substituted digest defeats any card-side count too, so the residual risk
+is unchanged in kind; what changed is that the design no longer claims a detection control that a
+shared card cannot provide. §10 item 8 is rewritten to say the card is shared, which is the
+assumption the old counter rules silently depended on being false.
+
+**What is checked where.** The remaining checks are structural rather than behavioural: the API is
+gone (so nothing can call it), `CeremonyStep` has no counter step (so no screen can appear between
+the pairing codes and the teardown), and `SigningReport` has no counter fields. The tests that
+asserted a recorded baseline, a "must be zero" gate, a delta of one, or a counter read in the
+signing session's APDU trace are deleted rather than rewritten, because they tested a feature that
+no longer exists; the UI walk no longer taps a counter screen. A hardware trace that showed
+`00 CA 00 7A 00` would now be a bug, and m0's counter lines are replaced by that
+statement. This is a genuine reduction in what the off-hardware suite can prove — there is no
+longer anything to assert about a number the app does not read — and it is recorded here rather
+than left implicit.

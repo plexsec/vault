@@ -106,8 +106,6 @@ struct ReportBody: View {
             }
         }
 
-        if let counter = report.counterBaseline { rows.append(("Counter baseline (secp256k1)", "\(counter)")) }
-        rows.append(("Ed25519 counter", "none — authentication slot is not counted"))
         // The two retry limits, as the card reported them back (amendment 27); they are
         // separate numbers because the two passwords are used differently
         // (amendment 32).
@@ -162,7 +160,6 @@ struct ChecklistView: View {
             ("Entropy commitment recorded", report?.entropyCommitmentHex != nil),
             ("Mnemonic transcribed and back-fill check passed", !(report?.keys.isEmpty ?? true)),
             ("Both public keys read back from YubiKey match the derived keys", report?.readBackVerified == true),
-            ("Signature counter baseline is 0 (secp256k1)", report?.counterBaseline == 0),
         ]
     }
 

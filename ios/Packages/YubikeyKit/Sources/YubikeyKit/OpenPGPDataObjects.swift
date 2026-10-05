@@ -13,7 +13,6 @@ public enum OpenPGPDataObject {
     public static let discretionaryData: UInt16 = 0x0073
     public static let applicationRelatedData: UInt16 = 0x006E
     public static let cardholderRelatedData: UInt16 = 0x0065
-    public static let securitySupportTemplate: UInt16 = 0x007A
 
     // Capabilities and algorithm attributes
     public static let extendedCapabilities: UInt16 = 0x00C0
@@ -73,9 +72,6 @@ public enum OpenPGPDataObject {
     // (OpenPGP applet < 3.4), where the signature slot defaults to RSA.
     public static let rsaModulus: UInt16 = 0x0081
     public static let rsaExponent: UInt16 = 0x0082
-
-    // Security support template contents
-    public static let signatureCounter: UInt16 = 0x0093
 }
 
 /// The OpenPGP data objects that belong to one key slot.
@@ -178,11 +174,10 @@ public struct OpenPGPApplicationData: Equatable {
     public var retryCounters: RetryCounters?
     public var fingerprintSignature: [UInt8]?
     public var combinedFingerprints: [UInt8]?
-    public var signatureCounter: UInt32?
 
     public init() {}
 
-    public static func parse(applicationData: [UInt8], securitySupportTemplate: [UInt8]? = nil) throws -> OpenPGPApplicationData {
+    public static func parse(applicationData: [UInt8]) throws -> OpenPGPApplicationData {
         var result = OpenPGPApplicationData()
         let topLevel = try TLVParser.parse(applicationData)
 
@@ -220,14 +215,6 @@ public struct OpenPGPApplicationData: Equatable {
         if result.openPGPVersion == nil, let historical = result.historicalBytes, historical.count >= 4 {
             // Historical bytes for the OpenPGP card carry the version as BCD.
             result.openPGPVersion = "\(historical[2] >> 4).\(historical[2] & 0x0F)"
-        }
-
-        if let sst = securitySupportTemplate {
-            let sstObjects = try TLVParser.parse(sst)
-            if let counter = TLVParser.find(OpenPGPDataObject.signatureCounter, in: sstObjects)?.value,
-               counter.count == 3 {
-                result.signatureCounter = (UInt32(counter[0]) << 16) | (UInt32(counter[1]) << 8) | UInt32(counter[2])
-            }
         }
 
         return result

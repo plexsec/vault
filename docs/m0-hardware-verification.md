@@ -188,8 +188,8 @@ and the ceremony voids itself. If Ed25519 is unsupported entirely, the import is
 rejected and the operator is told which algorithm failed.
 
 **Fallback if the applet cannot hold Ed25519.** Provision secp256k1 only and use
-a second YubiKey for Ed25519 — where, being that card's signature slot, the key
-would also be counter-audited. Every other behaviour in v0.1 is preserved.
+a second YubiKey for Ed25519. Every other behaviour in v0.1 is preserved. (v0.1 noted that the
+second card's key would also be counter-audited; no counter is read any more — amendment 39.)
 
 **Why it is safe to be wrong.** Every failure mode above is a visible rejection
 or a read-back mismatch, never a silently different key: the same argument that
@@ -270,7 +270,7 @@ for occupancy with `GENERATE ASYMMETRIC KEY PAIR` in read mode
 only `6A88` ("referenced data not found") as "slot empty".
 
 **Observed on hardware.** A YubiKey 5C Nano, firmware 5.4.3, OpenPGP applet 3.4,
-factory-fresh (fingerprints `C5`/`C6` all zero, counter 0, default RSA attributes):
+factory-fresh (fingerprints `C5`/`C6` all zero, default RSA attributes):
 
 | APDU | Result |
 |---|---|
@@ -387,7 +387,7 @@ and writable with PW3. That is the combination the feature stands on.
 manifest above were synthetic: the test card was provisioned by something else, so
 the *storage* and the *key binding* are verified, but not that a manifest written
 by a full ceremony is accepted by a real wallet. That is what the small-value test
-transaction of §4.2 step 10 covers, and it needs a card provisioned end to end by
+transaction of §4.2 step 9 covers, and it needs a card provisioned end to end by
 this app — i.e. it is the same hardware gate the pairing export (items 1-8) is
 already behind. Until then, treat "a wallet pairs from the stored manifest" as
 unverified.
@@ -446,7 +446,8 @@ one decides whether a *real* card works at all.
 - [ ] An unanswered touch (pull the key away before touching): which status word? `6985`,
       `6400`, something else? The app maps `6985`/`6400`/`6600` to "the touch did not
       complete" and classifies it as *unknown* rather than as a refusal, because the card
-      may have signed and moved its counter. Record whether the counter moved.
+      may have signed. Nothing on the card reports whether it did — the app reads no counter
+      (amendment 39) — so the check is behavioural: the app must refuse to retry.
 - [ ] Does a wrong PIN still decrement the PW1 retry counter when it is presented as part of
       `sign(digest:userPIN:)`, i.e. is the retry count in `63Cx` consistent with
       `VERIFY` alone?
@@ -480,8 +481,9 @@ feature is usable at all.
       wallet can confirm it is tolerated — the unit tests only prove the bytes and the
       sender recovery are right, which is not the same as the wallet accepting them.
 - [ ] Confirm MetaMask displays the same account address this app showed before signing.
-- [ ] Confirm the counter moved by exactly one for one transaction (the app shows before and
-      after; the wallet's own read is the independent one).
+- [ ] Confirm the wallet verifies the signature against the account and the digest it asked
+      for, and that the app's record says the returned signature verified (no counter is read:
+      amendment 39).
 - [ ] A **wrong** PIN, then sign: the app must report the retry count the card gave, and the
       wallet must never receive a signature.
 
@@ -575,7 +577,7 @@ returns.
       app signs.
 - [ ] Scan the signature back: MetaMask must accept it (no "Signature request ID is missing", no
       recovery failure) and broadcast.
-- [ ] Confirm the counter moved by exactly one, and that the wallet shows the same address the app
+- [ ] Confirm the wallet broadcasts, and that it shows the same address the app
       displayed before signing.
 - [ ] Repeat once with `personal_sign` from a dapp, to confirm the refusal reads as a *policy*
       refusal ("this app signs transactions only") rather than as a parse failure.
@@ -610,7 +612,7 @@ applet are now measured rather than assumed, and both had silently broken provis
       readable, manifest present, and both pairing codes reproduce the addresses the wallet
       shows.
 - [ ] Confirm a signature attempt on the provisioned card actually waits for a touch, and that
-      refusing to touch produces no signature and no counter increment.
+      refusing to touch produces no signature.
 
 ### Probing trap: `gpg-connect-agent` caches the Admin PIN
 

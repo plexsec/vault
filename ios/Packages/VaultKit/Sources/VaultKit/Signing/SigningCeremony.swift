@@ -9,9 +9,8 @@ import Foundation
 /// The order is deliberate: **the request is read first**, so the card is asked for
 /// the one key the wallet named and nothing else. The previous order read the card
 /// first, which meant reading *both* slots — an inventory probes each slot's public
-/// key to report occupancy — plus the manifest and the counter in four separate
-/// sessions, before knowing whether the request was one this app could serve at all
-/// (amendment 33).
+/// key to report occupancy — and spending sessions before knowing whether the request
+/// was one this app could serve at all (amendment 33).
 public enum SigningStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case notStarted = 0
     /// The request arrived, its transaction was parsed, and it names a key this app
@@ -301,7 +300,6 @@ public final class SigningCeremony {
         report.cardAddress = snapshot.addressHex
         report.pinnedPath = pinnedPath.description
         report.cardSerial = identity.serial
-        report.counterBeforeSigning = identity.signatureCounter
         step = .cardRead
     }
 
@@ -465,8 +463,8 @@ public final class SigningCeremony {
     /// were actually signed rather than against whatever is on screen.
     public func sign(userPIN: [UInt8]) async throws -> [UInt8] {
         // Checked before the step: a second attempt is refused whatever state the
-        // ceremony is in, because the rule is about the card's counter, not about
-        // which screen the operator is looking at.
+        // ceremony is in, because the rule is about one request and one signature,
+        // not about which screen the operator is looking at.
         guard !hasAttemptedSignature else { throw SigningError.signatureAlreadyAttempted }
         try require(.approved)
         guard let transaction else { throw SigningError.chainIDMissing }
@@ -480,12 +478,10 @@ public final class SigningCeremony {
         do {
             response = try await transport.sign(digest: digest, userPIN: userPIN)
         } catch let error as CardError {
-            // Whatever went wrong, the counter is read and reported: it is the only
-            // evidence available about whether a signature happened, and the case
-            // where the app never saw the response is exactly the case where the
-            // operator needs to know.
+            // The response is what the app has: the case where it never saw one is
+            // exactly the case where the operator has to be told, and told not to
+            // try again.
             report.signingFailedReason = error.userFacingDescription
-            report.counterAfterSigning = try? await transport.signatureCounter()
             switch error {
             case .pinIncorrect, .pinBlocked, .userPinNotVerified:
                 throw SigningError.pinRejected(reason: error.userFacingDescription)
@@ -494,10 +490,8 @@ public final class SigningCeremony {
             }
         } catch {
             report.signingFailedReason = "\(error)"
-            report.counterAfterSigning = try? await transport.signatureCounter()
             throw SigningError.cardSignatureMalformed("\(error)")
         }
-        report.counterAfterSigning = try? await transport.signatureCounter()
         report.signedAt = clock()
         step = .signed
         return response
@@ -621,9 +615,9 @@ public final class SigningCeremony {
     }
 }
 
-/// What the operator can take away: no secrets, and the facts needed to audit
-/// what the card did. The counter values are here because the counter is the only
-/// evidence that a signature happened at all.
+/// What the operator can take away: no secrets, and the facts of what the card was
+/// asked to do — what was signed, for which account, and whether the signature the
+/// card returned verified against the digest that was displayed.
 public struct SigningReport: Equatable, Sendable {
     public var transport: String = ""
     public var appVersion: String = ""
@@ -648,8 +642,6 @@ public struct SigningReport: Equatable, Sendable {
     public var recoveryValue: String?
     public var signatureBytes = 0
     public var signatureVerified = false
-    public var counterBeforeSigning: UInt32?
-    public var counterAfterSigning: UInt32?
     public var signingFailedReason: String?
     public var interrupted = false
     public var startedAt: Date?
@@ -677,13 +669,5 @@ public struct SigningReport: Equatable, Sendable {
         guard let valueInEther else { return nil }
         let amount = TransactionSummary.native(valueInEther, on: chain)
         return value.map { "\(amount) (\($0) wei)" } ?? amount
-    }
-    /// The counter comparison design.md §5.2 rule 4 asks for. Read by the app, so
-    /// it is *evidence for the operator*, not a gate — the rule requires the
-    /// comparison to be made by a party other than the one that displayed the
-    /// transaction, and that means the wallet.
-    public var counterDelta: Int? {
-        guard let before = counterBeforeSigning, let after = counterAfterSigning else { return nil }
-        return Int(after) - Int(before)
     }
 }

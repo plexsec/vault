@@ -50,8 +50,6 @@ final class RePairTests: XCTestCase {
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
-        _ = try await ceremony.readCounterBaseline()
-        try ceremony.advance()
         let report = ceremony.finish()
         return (report, urs)
     }
@@ -122,30 +120,6 @@ final class RePairTests: XCTestCase {
         XCTAssertEqual(repaired.report.mode, .rePair)
         XCTAssertTrue(repaired.report.readBackVerified)
         XCTAssertEqual(repaired.report.pairingManifestStored, true)
-    }
-
-    func testRePairRecordsTheCountersItFoundRatherThanRequiringZero() async throws {
-        let card = MockSignerCard()
-        _ = try await provisionCard(card)
-        // A card that has signed is the normal case when re-pairing, so a non-zero
-        // counter must be recorded, not treated as the stop condition it is before
-        // provisioning.
-        card.counterValue = 7
-
-        let repaired = try await rePair(card)
-        _ = try repaired.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
-        repaired.confirmPairingAddressMatches(true)
-        try repaired.advance()
-        let counter = try await repaired.readCounterBaseline()
-        XCTAssertEqual(counter, 7)
-        try repaired.advance()
-        let report = repaired.finish()
-
-        XCTAssertEqual(report.counterBaseline, 7)
-        XCTAssertTrue(
-            report.warnings.contains { $0.contains("Compare it against the counter") },
-            "the operator has to be told to compare the counter against the wallet's"
-        )
     }
 
     // MARK: Refusals — every one of them leaves the operator with no codes

@@ -78,7 +78,6 @@ public final class CeremonyViewModel {
     /// Re-pair only: the serial the manifest was read from, for the screen.
     public private(set) var repairedFromSerial: String?
     public private(set) var pairingURStrings: [KeyAlgorithm: String] = [:]
-    public private(set) var counterBaseline: UInt32?
     public private(set) var report: CeremonyReport?
 
     // MARK: Form state
@@ -126,7 +125,6 @@ public final class CeremonyViewModel {
         var rows: [(String, String)] = [("OpenPGP applet", inventory.openPGPVersion)]
         if let manufacturer = inventory.manufacturer { rows.append(("Manufacturer", manufacturer)) }
         if let serial = inventory.serial { rows.append(("Serial", serial)) }
-        if let counter = inventory.signatureCounter { rows.append(("Signature counter", "\(counter)")) }
         for slot in KeySlot.allCases {
             if let attributes = inventory.algorithmAttributes[slot] {
                 rows.append(("\(slot.displayName) algorithm", attributes.hexString))
@@ -272,7 +270,6 @@ public final class CeremonyViewModel {
         repairedKeys = [:]
         repairedFromSerial = nil
         pairingURStrings = [:]
-        counterBaseline = nil
 
         // Form state, including the gates: a stale acknowledgement would let a new
         // ceremony past a step the operator never saw this time.
@@ -494,12 +491,6 @@ public final class CeremonyViewModel {
                 chainCodeAcknowledged: self.acknowledgeChainCodeWarning
             )
             self.pairingURStrings = urs.mapValues(\.string)
-        }
-    }
-
-    public func readCounterBaseline() async {
-        await run { ceremony in
-            self.counterBaseline = try await ceremony.readCounterBaseline()
         }
     }
 

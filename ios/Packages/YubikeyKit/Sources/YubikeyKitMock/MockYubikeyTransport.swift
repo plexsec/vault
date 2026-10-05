@@ -70,7 +70,6 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// what YubiKey firmware 5.4.x reports; `6285` is the other form the
     /// OpenPGP spec allows and that yubikit also accepts.
     public var terminatedSelectStatusWord = StatusWord(sw1: 0x69, sw2: 0x85)
-    public private(set) var signatureCounter: UInt32 = 0
     private let serial: UInt32
     private let openPGPVersion: String
 
@@ -254,14 +253,6 @@ public final class MockYubikeyTransport: YubikeyTransport {
         switch tag {
         case OpenPGPDataObject.applicationRelatedData:
             return ResponseAPDU(data: applicationRelatedData(), status: .success)
-        case OpenPGPDataObject.securitySupportTemplate:
-            let counter: [UInt8] = [
-                UInt8((signatureCounter >> 16) & 0xFF),
-                UInt8((signatureCounter >> 8) & 0xFF),
-                UInt8(signatureCounter & 0xFF),
-            ]
-            let inner = TLV(tag: OpenPGPDataObject.signatureCounter, value: counter).encoded
-            return ResponseAPDU(data: TLV(tag: 0x007A, value: inner).encoded, status: .success)
         case OpenPGPDataObject.algorithmAttributesSignature, OpenPGPDataObject.algorithmAttributesAuthentication:
             guard let slot = Self.slot(forAlgorithmAttributesTag: tag),
                   let attributes = slots[slot]?.algorithmAttributes
@@ -461,10 +452,10 @@ public final class MockYubikeyTransport: YubikeyTransport {
 
     /// `PSO:CDS`. Models the protocol behaviour the app depends on, not the
     /// arithmetic: PW1 must have been verified **in this session**, the signature
-    /// slot must hold a key, an unsatisfied touch policy answers `6985`, and a
-    /// produced signature increments the counter. The bytes are a deterministic
-    /// DER pair derived from the digest — VaultKit's own tests check real
-    /// signatures against published vectors, so this fake stays a fake.
+    /// slot must hold a key, an unsatisfied touch policy answers `6985`, and the
+    /// card remembers the digest it signed. The bytes are a deterministic DER pair
+    /// derived from the digest — VaultKit's own tests check real signatures against
+    /// published vectors, so this fake stays a fake.
     private func computeDigitalSignature(_ command: CommandAPDU) -> ResponseAPDU {
         guard command.data.count == 32 else { return status(0x6A, 0x80) }
         // Security conditions first: that is the usual ISO 7816 order, and the
@@ -482,7 +473,6 @@ public final class MockYubikeyTransport: YubikeyTransport {
             return status(0x69, 0x85)
         }
         guard !userPinBlockedForSigning else { return status(0x69, 0x83) }
-        signatureCounter += 1
         signatureRequestCount += 1
         lastSignedDigest = command.data
         // A *real* signature when one was generated for this digest, so a flow that
@@ -643,7 +633,6 @@ public final class MockYubikeyTransport: YubikeyTransport {
         // reads `01 7F 7F 7F 03 00 03`, which is how the policy write can
         // be told apart from a card that was never configured.
         pw1Status = [0x01]
-        signatureCounter = 0
         // TERMINATE DF wipes the private-use objects along with everything else,
         // which is why the manifest has to be written *after* a reset and why a
         // reset is what "forget the pairing" means for this card.
@@ -663,10 +652,9 @@ public final class MockYubikeyTransport: YubikeyTransport {
         isAppletTerminated = true
     }
 
-    /// Simulates a signature the card made without the desktop knowing, which is
-    /// what the counter audit is designed to catch.
+    /// Simulates a signature the card made without this app knowing.
     public func simulateExternalSignature() {
-        signatureCounter += 1
+        signatureRequestCount += 1
     }
 
     /// What the card reports for DO 0xC4: the PW1 status byte, the three maximum

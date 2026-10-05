@@ -137,10 +137,10 @@ public enum KeyAlgorithm: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    /// The OpenPGP key slot this algorithm is written to. Fixed by design: the
-    /// signature slot is the only one that increments the hardware signature
-    /// counter, so secp256k1 — the algorithm whose chains this scheme audits —
-    /// takes it, and Ed25519 takes the authentication slot.
+    /// The OpenPGP key slot this algorithm is written to. Fixed by design: secp256k1
+    /// takes the signature slot and Ed25519 the authentication slot, so the same key
+    /// appears at the same place on every card this app provisions, and every chain of
+    /// an algorithm is served by its one key.
     public var slot: KeySlot {
         switch self {
         case .secp256k1: return .signature

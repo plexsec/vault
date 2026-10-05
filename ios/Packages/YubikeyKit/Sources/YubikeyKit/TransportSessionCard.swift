@@ -131,10 +131,6 @@ public final class TransportSessionCard: SignerCard {
         try await withSession { try await $0.readPublicKey(slot: slot) }
     }
 
-    public func signatureCounter() async throws -> UInt32 {
-        try await withSession { try await $0.signatureCounter() }
-    }
-
     public func randomBytes(count: Int) async throws -> SensitiveBytes {
         try await withSession { try await $0.randomBytes(count: count) }
     }

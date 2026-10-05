@@ -335,11 +335,6 @@ struct SigningRootView: View {
                     .foregroundStyle(.secondary)
                 AnimatedURView(ur: ur, maxFragmentLength: 120, framesPerSecond: 4)
                     .frame(maxWidth: .infinity)
-                if let before = viewModel.counterBefore, let after = viewModel.counterAfter {
-                    Text("Signature counter on the card: \(before) → \(after)")
-                        .font(.footnote.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
             }
         }
     }
@@ -416,16 +411,7 @@ struct SigningReportView: View {
             ("Signature attempts", "\(report.signatureAttempts)"),
             ("Signature verified", report.signatureVerified ? "yes" : "no"),
             ("Recovery value (v)", report.recoveryValue ?? "—"),
-            ("Counter before", report.counterBeforeSigning.map(String.init) ?? "—"),
-            ("Counter after", report.counterAfterSigning.map(String.init) ?? "—"),
         ]
-        if let delta = report.counterDelta {
-            rows.append((
-                "Counter change",
-                delta == 1 ? "1 (one signature)"
-                    : "\(delta) — more than one signature happened; investigate"
-            ))
-        }
         if let reason = report.signingFailedReason {
             rows.append(("Card reported", reason))
         }

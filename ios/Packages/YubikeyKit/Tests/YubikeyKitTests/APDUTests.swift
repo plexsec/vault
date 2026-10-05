@@ -256,7 +256,6 @@ final class APDUTests: XCTestCase {
         XCTAssertEqual(inventory.openPGPVersion, "3.4")
         XCTAssertEqual(inventory.serial, "DEADBEEF")
         XCTAssertFalse(inventory.holdsKey(in: .signature))
-        XCTAssertEqual(inventory.signatureCounter, 0)
         XCTAssertTrue(inventory.isFactoryFresh)
         XCTAssertTrue(inventory.likelySupportsSecp256k1)
         // A factory-fresh applet reports PW1 status 0x01 ("PIN once per session"),
@@ -460,8 +459,6 @@ final class APDUTests: XCTestCase {
         let expected = try Secp256k1.publicKey(fromPrivateKey: privateKey.materializedCopy())
         XCTAssertEqual(readBack, expected)
         XCTAssertEqual(transport.currentFingerprint(.signature), [UInt8](repeating: 0xAB, count: 20))
-        let counter = try await card.signatureCounter()
-        XCTAssertEqual(counter, 0)
 
         // A second import onto the occupied slot must be refused, not silently
         // overwrite the key the user just provisioned.
@@ -687,18 +684,6 @@ final class APDUTests: XCTestCase {
         }
     }
 
-    func testCounterIsReportedAfterSimulatedExternalSignature() async throws {
-        let transport = MockYubikeyTransport()
-        let card = OpenPGPCard(transport: transport)
-        try await card.open()
-        let initial = try await card.signatureCounter()
-        XCTAssertEqual(initial, 0)
-        transport.simulateExternalSignature()
-        transport.simulateExternalSignature()
-        let after = try await card.signatureCounter()
-        XCTAssertEqual(after, 2)
-    }
-
     /// The same APDU sequence must be produced regardless of which transport is
     /// underneath, because both use the shared `exchange` implementation.
     func testTransportParityAcrossNFCAndUSBCWrappers() async throws {
@@ -728,7 +713,6 @@ final class APDUTests: XCTestCase {
             )
             _ = try await card.readPublicKey(slot: .signature)
             _ = try await card.readPublicKey(slot: .authentication)
-            _ = try await card.signatureCounter()
             return (transport as? MockYubikeyTransport)?.receivedAPDUs ?? []
         }
 

@@ -44,7 +44,6 @@ final class SigningAPDUTests: XCTestCase {
         try await card.verifyUserPIN(userPIN)
         let response = try await card.computeDigitalSignature(digest: digest)
 
-        XCTAssertEqual(transport.signatureCounter, 1)
         XCTAssertEqual(transport.lastSignedDigest, digest)
         // The response is a DER signature this app's own parser accepts.
         let signature = try ECDSASignature.decode(cardResponse: response)
@@ -66,7 +65,6 @@ final class SigningAPDUTests: XCTestCase {
             _ = try await card.computeDigitalSignature(digest: self.digest)
         }
         XCTAssertEqual(error as? CardError, .userPinNotVerified)
-        XCTAssertEqual(transport.signatureCounter, 0, "a refused signature must not count")
     }
 
     /// And the `SignerCard` entry point keeps both in one session.
@@ -139,7 +137,6 @@ final class SigningAPDUTests: XCTestCase {
             _ = try await card.computeDigitalSignature(digest: self.digest)
         }
         XCTAssertEqual(error as? CardError, .touchNotCompleted)
-        XCTAssertEqual(transport.signatureCounter, 0)
         XCTAssertFalse(
             CardError.touchNotCompleted.isDefinitiveCardRejection,
             "an unfinished touch must not be classified as a refusal: the card may have signed"
@@ -154,19 +151,6 @@ final class SigningAPDUTests: XCTestCase {
             _ = try await card.computeDigitalSignature(digest: self.digest)
         }
         XCTAssertEqual(error as? CardError, .pinBlocked)
-        XCTAssertEqual(transport.signatureCounter, 0)
-    }
-
-    /// `PSO:CDS` moves the counter exactly once, which is what makes the counter
-    /// evidence that a signature happened.
-    func testCounterMovesOncePerSignature() async throws {
-        let (transport, card) = try await prepareCard()
-        try await card.verifyUserPIN(userPIN)
-        _ = try await card.computeDigitalSignature(digest: digest)
-        _ = try await card.computeDigitalSignature(digest: [UInt8](repeating: 0x0f, count: 32))
-        XCTAssertEqual(transport.signatureCounter, 2)
-        let counter = try await card.signatureCounter()
-        XCTAssertEqual(counter, 2)
     }
 
     // MARK: - One key, one session (amendment 33)
@@ -209,7 +193,6 @@ final class SigningAPDUTests: XCTestCase {
         let sent = Array(transport.receivedAPDUs.dropFirst(before))
         XCTAssertEqual(identity.publicKey?.count, 33, "the signature slot's key, normalised to compressed")
         XCTAssertEqual(identity.pairingManifest, [0x01, 0x02, 0x03])
-        XCTAssertNotNil(identity.signatureCounter, "the counter comes from the same session")
         XCTAssertNotNil(identity.serial)
 
         let keyReads = sent.filter { $0.hasPrefix("00478100") }
@@ -220,8 +203,7 @@ final class SigningAPDUTests: XCTestCase {
             "the authentication slot's key must not be read: \(sent)"
         )
         // One session, too: a second SELECT would be a second reader session, and on NFC
-        // that is a second tap. (The counter read is `GET DATA 0x7A`, which an inventory
-        // also reads — what makes this not an inventory is the single key probe above.)
+        // that is a second tap.
         XCTAssertEqual(
             sent.filter { $0.hasPrefix("00a40400") }.count, 1,
             "the whole pre-signing read must be one session: \(sent)"

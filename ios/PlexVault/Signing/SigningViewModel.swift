@@ -51,8 +51,6 @@ public final class SigningViewModel {
     public private(set) var chainConfirmationNeeded: String?
     public private(set) var report: SigningReport?
     public private(set) var signatureUR: UR?
-    public private(set) var counterBefore: UInt32?
-    public private(set) var counterAfter: UInt32?
     /// The digest the operator must have seen. Shown, and required back from the
     /// approval, so an approval cannot drift onto a different payload.
     public private(set) var digestHex: String = ""
@@ -194,7 +192,6 @@ public final class SigningViewModel {
             try await ceremony.readCard()
             guard session == self.session else { return }
             self.card = ceremony.card
-            self.counterBefore = ceremony.report.counterBeforeSigning
 
             // The binding check needs the chain id confirmed first, and the
             // confirmation is the operator's, so ask for it rather than assuming.
@@ -287,7 +284,6 @@ public final class SigningViewModel {
             self.userPIN = ""
             try ceremony.verifySignature(cardResponse: response)
             self.signatureUR = try ceremony.exportSignature()
-            self.counterAfter = ceremony.report.counterAfterSigning
             self.report = ceremony.finish()
             self.phase = .finished
         }

@@ -34,17 +34,15 @@ public enum SystemCSPRNG {
 
 /// An OpenPGP key slot.
 ///
-/// The card has three (signature, decryption, authentication), but only two can
-/// produce a signature, and only **one** of those — the signature slot — drives
-/// the hardware signature counter that §5.2's audit depends on. That asymmetry
-/// is the whole reason the algorithm-to-slot assignment is fixed rather than
-/// configurable; see `KeyAlgorithm.slot` and design.md §4.3.
+/// The card has three (signature, decryption, authentication), but only two can produce
+/// a signature, and only those two are used: secp256k1 into the signature slot, Ed25519
+/// into the authentication slot. That fixed assignment is what lets one ceremony cover
+/// every secp256k1 chain and every Ed25519 chain with two keys, where one key per chain
+/// would not; see `KeyAlgorithm.slot` and design.md §4.3.
 public enum KeySlot: String, CaseIterable, Codable, Sendable, Hashable {
     /// CRT 0xB6 / algorithm attributes 0xC1 / fingerprint 0xC7 / UIF 0xD6.
-    /// Counted by `GET DATA 0x7A` → `93`.
     case signature
     /// CRT 0xA4 / algorithm attributes 0xC3 / fingerprint 0xC9 / UIF 0xD8.
-    /// **No** hardware signature counter: `INTERNAL AUTHENTICATE` is not counted.
     case authentication
 
     public var displayName: String {
@@ -52,11 +50,6 @@ public enum KeySlot: String, CaseIterable, Codable, Sendable, Hashable {
         case .signature: return "Signature slot"
         case .authentication: return "Authentication slot"
         }
-    }
-
-    /// Whether operations in this slot increment the OpenPGP signature counter.
-    public var incrementsSignatureCounter: Bool {
-        self == .signature
     }
 }
 
@@ -80,13 +73,13 @@ public protocol SignerCard: AnyObject {
     func inventory() async throws -> CardInventory
 
     /// The card's identity for **one** slot, for a flow that already knows which key
-    /// it is dealing with: the serial, the stored pairing manifest, that slot's public
-    /// key, and the signature counter.
+    /// it is dealing with: the serial, the stored pairing manifest and that slot's
+    /// public key.
     ///
     /// One session and one key, deliberately. `inventory()` would probe the other slot
     /// as well, and on NFC each session is a tap the operator pays for: the signing
     /// flow used to spend four sessions (inventory, manifest, key, counter) and read a
-    /// key it had no use for (amendment 33). Implementations must do all four reads in
+    /// key it had no use for (amendment 33). Implementations must do all three reads in
     /// one session so the tap is paid once.
     ///
     /// A card that refuses the manifest read, or answers with an empty object, reports
@@ -145,12 +138,6 @@ public protocol SignerCard: AnyObject {
     /// `GENERATE ASYMMETRIC KEY PAIR` (P1 = 0x81) for `slot` — reads the public
     /// key back out of the card without a PIN.
     func readPublicKey(slot: KeySlot) async throws -> [UInt8]
-
-    /// `GET DATA 0x7A` -> security support template `93 03 <counter>`.
-    ///
-    /// This is the **signature** slot's counter; the authentication slot has
-    /// none, which is why the audit covers secp256k1 only.
-    func signatureCounter() async throws -> UInt32
 
     /// Writes a single data object (algorithm attributes, PW status, UIF,
     /// fingerprint, creation time).
@@ -211,20 +198,15 @@ public struct SigningCardIdentity: Equatable, Sendable {
     /// The stored pairing manifest, or `nil` when the card has none or refused to
     /// report one — both mean the card was not paired by this app.
     public let pairingManifest: [UInt8]?
-    /// The **signature** slot's hardware counter. `nil` for the authentication slot
-    /// (it has no counter) and when the card refuses to report it.
-    public let signatureCounter: UInt32?
 
     public init(
         serial: String?,
         publicKey: [UInt8]?,
-        pairingManifest: [UInt8]?,
-        signatureCounter: UInt32?
+        pairingManifest: [UInt8]?
     ) {
         self.serial = serial
         self.publicKey = publicKey
         self.pairingManifest = pairingManifest
-        self.signatureCounter = signatureCounter
     }
 }
 
@@ -355,7 +337,7 @@ public enum CardError: Swift.Error, Equatable {
         case .touchNotCompleted:
             return "The YubiKey started signing and did not finish — most often because it was not "
                 + "touched in time. The card may already have produced a signature and counted it, so "
-                + "nothing will be retried here: check the signature counter on the card, then start "
+                + "nothing will be retried here: check the card and the wallet, then start "
                 + "again from the wallet with a new request."
         case .keyImportRejected:
             return "The YubiKey rejected the private key import."
@@ -486,9 +468,7 @@ public struct CardInventory: Equatable, Sendable {
     public var touchPolicy: [KeySlot: UInt8]
     /// Slots that already hold a key.
     public var occupiedSlots: Set<KeySlot>
-    /// `GET DATA 0x7A` -> 0x93 counter, if readable without a PIN.
-    public var signatureCounter: UInt32?
-    /// True when the card looks factory-fresh (no key in any slot, no counter).
+    /// True when the card looks factory-fresh (no key in any slot).
     public var isFactoryFresh: Bool
     /// Slots whose public key could not be read during inventory, with the reason
     /// (status word hex or detail). An empty slot answers 6A88 and is not recorded
@@ -510,7 +490,6 @@ public struct CardInventory: Equatable, Sendable {
         retryCounters: RetryCounters? = nil,
         touchPolicy: [KeySlot: UInt8] = [:],
         occupiedSlots: Set<KeySlot> = [],
-        signatureCounter: UInt32? = nil,
         isFactoryFresh: Bool = true,
         probeFailures: [KeySlot: String] = [:],
         pairingManifest: PairingManifestState = .unsupported
@@ -523,7 +502,6 @@ public struct CardInventory: Equatable, Sendable {
         self.retryCounters = retryCounters
         self.touchPolicy = touchPolicy
         self.occupiedSlots = occupiedSlots
-        self.signatureCounter = signatureCounter
         self.isFactoryFresh = isFactoryFresh
         self.probeFailures = probeFailures
         self.pairingManifest = pairingManifest
@@ -601,7 +579,6 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     /// object, which does not disturb the UIF objects.
     case keyImport
     case pairingExport
-    case counterBaseline
     case teardown
 
     public static func < (lhs: CeremonyStep, rhs: CeremonyStep) -> Bool {
@@ -622,7 +599,6 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .derivation: return "Derive the signing keys"
         case .keyImport: return "Import and verify the YubiKey"
         case .pairingExport: return "Pair with the desktop wallet"
-        case .counterBaseline: return "Record signature counter baseline"
         case .teardown: return "Wipe secrets and finish"
         }
     }
@@ -667,10 +643,10 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
             // manifest in with them).
             return [
                 .cardInventory, .reset, .pinProvisioning, .pinRetries, .entropy, .mnemonic,
-                .derivation, .keyImport, .pairingExport, .counterBaseline, .teardown,
+                .derivation, .keyImport, .pairingExport, .teardown,
             ]
         case .rePair:
-            return [.cardInventory, .rePairRead, .pairingExport, .counterBaseline, .teardown]
+            return [.cardInventory, .rePairRead, .pairingExport, .teardown]
         }
     }
 
@@ -719,7 +695,6 @@ public enum CeremonyError: Swift.Error, Equatable {
     case pairingPolicyNotAcknowledged
     case destructiveResetNotAcknowledged
     case cardNotFactoryFresh
-    case counterNotZero(UInt32)
     case unsupportedRecovery(String)
     case unsupportedAlgorithm(KeyAlgorithm, String)
     case unsupportedAppletVersion(version: String)
@@ -770,8 +745,6 @@ public enum CeremonyError: Swift.Error, Equatable {
             return "This YubiKey already holds a key. Resetting the OpenPGP applet will erase it, so the operation must be explicitly acknowledged."
         case .cardNotFactoryFresh:
             return "This YubiKey is not factory-fresh. Reset the OpenPGP applet first."
-        case .counterNotZero(let value):
-            return "The signature counter is \(value), not 0. The card may already have signed something."
         case .unsupportedRecovery(let detail):
             return "Restore is not possible here: \(detail)."
         case .unsupportedAlgorithm(let algorithm, let detail):

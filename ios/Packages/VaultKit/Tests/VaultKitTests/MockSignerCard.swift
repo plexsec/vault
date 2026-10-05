@@ -20,7 +20,6 @@ final class MockSignerCard: SignerCard {
         case setPINRetries(user: Int, admin: Int)
         case importKey(slot: KeySlot, algorithm: KeyAlgorithm, fingerprint: String)
         case readPublicKey(slot: KeySlot)
-        case signatureCounter
         case randomBytes(count: Int)
         case putDataObject(tag: UInt16)
         case getDataObject(tag: UInt16)
@@ -45,7 +44,6 @@ final class MockSignerCard: SignerCard {
         case applyPolicy
         case keyImport
         case readPublicKey
-        case counter
         case challenge
         case pairingManifest
         /// The card has no private-use data object to write to (an applet that
@@ -62,7 +60,6 @@ final class MockSignerCard: SignerCard {
     // Card state
     var inventoryResult: CardInventory
     var storedPublicKeyOverride: [KeySlot: [UInt8]] = [:]
-    var counterValue: UInt32
     /// Random bytes returned by `randomBytes`. Defaults to all-zero so the
     /// derived keys match the `Expected` values in the tests.
     var challengeBytes: [UInt8] = [UInt8](repeating: 0, count: 32)
@@ -172,12 +169,8 @@ final class MockSignerCard: SignerCard {
         Self.signingFixture.signatures.first { $0.name == name }
     }
 
-    init(
-        inventory: CardInventory = MockSignerCard.factoryFreshCard,
-        counter: UInt32 = 0
-    ) {
+    init(inventory: CardInventory = MockSignerCard.factoryFreshCard) {
         self.inventoryResult = inventory
-        self.counterValue = counter
     }
 
     static let factoryFreshCard = CardInventory(
@@ -190,7 +183,6 @@ final class MockSignerCard: SignerCard {
         // whole job is to make this read `fixed`, and the ceremony reads it back.
         touchPolicy: [.signature: CardPolicy.touchOff, .authentication: CardPolicy.touchOff],
         occupiedSlots: [],
-        signatureCounter: 0,
         isFactoryFresh: true,
         // A YubiKey answers `9000` with no data for a private-use object that has
         // never been written, so a factory-fresh card is `.absent`, not
@@ -213,7 +205,6 @@ final class MockSignerCard: SignerCard {
         // A key present in the injected inventory counts as pre-existing until a
         // reset clears it, mirroring a real card that already holds a key.
         result.occupiedSlots.formUnion(storedPrivateKeys.keys)
-        result.signatureCounter = counterValue
         return result
     }
 
@@ -236,16 +227,14 @@ final class MockSignerCard: SignerCard {
             return SigningCardIdentity(
                 serial: inventoryResult.serial,
                 publicKey: nil,
-                pairingManifest: nil,
-                signatureCounter: nil
+                pairingManifest: nil
             )
         }
         let publicKey = try await readPublicKey(slot: slot)
         return SigningCardIdentity(
             serial: inventoryResult.serial,
             publicKey: publicKey,
-            pairingManifest: manifest,
-            signatureCounter: slot == .signature ? counterValue : nil
+            pairingManifest: manifest
         )
     }
 
@@ -275,7 +264,6 @@ final class MockSignerCard: SignerCard {
         inventoryResult.pairingManifest = supportsPairingManifest ? .absent : .unsupported
         inventoryResult.occupiedSlots = []
         inventoryResult.isFactoryFresh = true
-        counterValue = 0
     }
 
     func setPINs(userPIN: [UInt8], adminPIN: [UInt8]) async throws {
@@ -379,12 +367,6 @@ final class MockSignerCard: SignerCard {
         }
     }
 
-    func signatureCounter() async throws -> UInt32 {
-        calls.append(.signatureCounter)
-        if failurePoint == .counter { throw CardError.transportUnavailable("mock") }
-        return counterValue
-    }
-
     func randomBytes(count: Int) async throws -> SensitiveBytes {
         calls.append(.randomBytes(count: count))
         if failurePoint == .challenge { throw CardError.transportUnavailable("mock") }
@@ -449,9 +431,6 @@ final class MockSignerCard: SignerCard {
             // it, but a test that reaches this point is testing the wrong thing.
             throw CardError.signatureFailed
         }
-        // The card increments its counter when it signs, which is what makes the
-        // counter evidence that a signature happened.
-        counterValue += 1
         let der = returnsHighS ? signature.derHighS : signature.der
         return try Hex.decode(der)
     }

@@ -86,9 +86,6 @@ step completed rather than trusting the flow.
       - [ ] You have acknowledged that the pairing code carries a chain code
             (required by Keystone/MetaMask) and that only the address shown can
             be signed for
-- [ ] **Counter baseline** reads **0** ✔ (secp256k1 / signature slot)
-      - [ ] Noted: the Ed25519 key has **no** hardware counter, so the counter
-            audit below covers secp256k1 chains only
 - [ ] **Teardown** — secrets wiped, provisioning record saved
 - [ ] Restart the app before any further ceremony
 
@@ -114,8 +111,6 @@ stay in the card. It is also the recovery route when the app has been reinstalle
       - [ ] The serial shown matches the card in your hand
 - [ ] **Pairing** — the same acknowledgements as Part 3: two QRs, addresses
       compared against the wallet
-- [ ] **Counter** — the value is *recorded*, not required to be 0 here. Compare it
-      against the counter your wallet reports for this key before sending funds
 - [ ] Nothing to restore afterwards: no secrets were entered, and the card was not
       modified
 
@@ -133,12 +128,12 @@ stay in the card. It is also the recovery route when the app has been reinstalle
       spare
 - [ ] Re-check the steel plates quarterly for legibility
 
-## Part 5 — Ongoing audit (once signing ships in v0.2)
+## Part 5 — Ongoing audit
 
-- [ ] After every signing session, read the YubiKey signature counter and compare
-      with `expected_counter`
-- [ ] `actual > expected` means the card signed something you did not ask for:
-      migrate assets immediately
+- [ ] The wallet verifies every signature it receives, against the digest it sent and the
+      account it holds, and keeps its own record of what it asked for. This app keeps no such
+      record and reads no card-side count: a YubiKey is used with other applications too, so a
+      signature count on the card says nothing about what this wallet asked for
 - [ ] Exactly one touch per transaction. A second request for the same
       transaction means the display device is compromised — stop
 

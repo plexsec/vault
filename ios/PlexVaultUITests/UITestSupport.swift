@@ -452,8 +452,8 @@ extension XCTestCase {
         tapWhenVisible(confirm, in: app, file: file, line: line)
     }
 
-    /// Everything after the mnemonic: derivation, the card, the pairing codes, the
-    /// counter and the teardown. Returns once the record is on screen.
+    /// Everything after the mnemonic: derivation, the card, the pairing codes
+    /// and the teardown. Returns once the record is on screen.
     ///
     /// `expectedEVMAddress` is asserted against the address the pairing screen
     /// shows, so the codes are checked against the address derived independently
@@ -502,9 +502,7 @@ extension XCTestCase {
         tapWhenVisible(confirmed, in: app, file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
 
-        // Counter, then teardown.
-        tapStepAction("Read counter", in: app, file: file, line: line)
-        tapStepAction("Continue", in: app, file: file, line: line)
+        // Teardown.
         tapStepAction("Wipe secrets and finish", in: app, file: file, line: line)
 
         XCTAssertTrue(app.buttons["Provision another wallet"].waitForExistence(timeout: 10),

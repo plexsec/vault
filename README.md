@@ -161,7 +161,8 @@ while the request itself is decoded from the camera stream and never from the sc
   XOR of the YubiKey's hardware RNG (`GET CHALLENGE`) and the iOS CSPRNG, so a
   single backdoored RNG cannot determine the key — recorded as Low in §9.5 of the
   design and in [`docs/v1-threat-notes.md`](docs/v1-threat-notes.md).
-* The Ed25519 key sits in the authentication slot, which has no hardware
-  signature counter, so the counter audit covers secp256k1 chains only. PIN and
-  touch still gate every Ed25519 signature; the trade is recorded in §4.3, §9.5
-  and [`docs/v1-threat-notes.md`](docs/v1-threat-notes.md).
+* The Ed25519 key sits in the authentication slot, whose operations the OpenPGP
+  applet does not count. This app reads no signature counter at all — a YubiKey
+  is shared with other applications, so a count on the card says nothing about
+  what this wallet asked for (amendment 39) — and PIN and touch gate every
+  signature on both keys.

@@ -61,9 +61,11 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
    the key blinks. The app shows the signature as soon as the card answers.
 10. **Scan the signature back into the wallet** (the wallet's *Scan* button). The wallet
     verifies the signature against the account before broadcasting.
-11. **Check the counter.** The app shows the card's signature counter before and after. One
-    transaction must move it by exactly one. The wallet's own counter read is the independent
-    one — do it at the end of a session for anything you care about (design.md §5.2 rules 3–4).
+11. **The wallet verifies the signature it asked for** — against the account it holds and the
+    digest it sent — before it broadcasts. That verification is the control: this app neither
+    reads nor shows the card's signature counter, because a YubiKey is used with other
+    applications too, so a count on the card says nothing about what this wallet asked for
+    (design.md §5.2 rules 3–4, amendment 39).
 
 ## When something goes wrong
 
@@ -71,11 +73,11 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
   are left. Check the PIN in the wallet's records; after three failures PW1 blocks and only a
   reset (which destroys the keys) clears it.
 - **The touch did not come through** (a timeout, or the key moved away). The card may have
-  produced a signature and counted it, so the app does **not** retry and does not offer a
-  second attempt for that request. Read the card's counter, then start again **from the
-  wallet** with a new request.
+  produced a signature, so the app does **not** retry and does not offer a
+  second attempt for that request. Start again **from the wallet** with a new request, and do
+  not accept a signature the wallet did not ask for.
 - **"The signature does not match this card's key."** No QR is shown, and nothing can be
-  scanned. Do not retry; treat the app and the phone as suspect, check the counter, and
+  scanned. Do not retry; treat the app and the phone as suspect, and
   consider migrating the funds (design.md §5.2).
 - **"The request is for a path this YubiKey does not sign."** The wallet offered a sibling
   account from the same extended public key. This card holds one key: select the paired
@@ -91,5 +93,5 @@ the card and never needs the mnemonic — if a screen asks for one, stop.
 The signing record screen shows the transport, the card serial, the account, the pinned path,
 the chain id, the transaction type, the recipient, the value, the decoded function, the
 request id, the digest that was approved, how many signature attempts were made, whether the
-signature verified, the recovery value, and the counter before and after. It contains no
+signature verified and the recovery value. It contains no
 secrets and nothing is stored on the device: close the screen and it is gone.

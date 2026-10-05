@@ -19,7 +19,7 @@ Compared with conventional hardware wallets, this scheme splits the "secure elem
 Existing cold-signing approaches each have shortcomings at one end or the other:
 
 - **Dedicated hardware wallets** (Ledger, Trezor, Coldcard, Keystone): the secure element and trusted display are integrated into one device, but users must trust the vendor's firmware, supply chain, and screen; the screens are small and complex transactions are hard for humans to read.
-- **General-purpose phones as cold wallets** (AirGap Vault, an old phone plus an open-source app): good screen and camera, but the private key resides in a general-purpose OS's storage, with no physical touch confirmation and no hardware counter to resist brute force.
+- **General-purpose phones as cold wallets** (AirGap Vault, an old phone plus an open-source app): good screen and camera, but the private key resides in a general-purpose OS's storage, with no physical touch confirmation.
 - **YubiKey / smart card plugged directly into a computer for signing**: the private key is secure, but there is no independent display; what the user signs is entirely determined by the online host.
 
 The starting point of this scheme is: the YubiKey offers a mature, mass-produced, auditable secp256k1 signing element; the iPhone offers a high-quality, offline-capable trusted display and camera; all that stands between them is a protocol and an app.
@@ -62,10 +62,8 @@ The starting point of this scheme is: the YubiKey offers a mature, mass-produced
 │  (online)          │             │  Signing app       │   ISO 7816 APDU   │  OpenPGP     │
 │  - build tx A      │ ◀────────── │  - parse/show A    │ ◀──────────────── │  - key sk    │
 │  - verify (P,H(A),σ)│  QR (UR)   │  - compute H(A)    │                   │  - PIN, touch│
-│  - broadcast       │             │  - relay σ         │                   │  - sig counter│
+│  - broadcast       │             │  - relay σ         │                   │  - PIN, touch│
 └────────────────────┘             └────────────────────┘                   └──────────────┘
-        ▲                                                                          │
-        └──── periodic direct connection: read sig counter (no PIN), compare expected_counter ──┘
 ```
 
 | Component | Secrets held | What it can do alone if compromised | What it cannot do |
@@ -125,21 +123,19 @@ Prerequisites: a **brand-new or factory-reset** iPhone, no SIM, airplane mode; a
    Four properties are normative:
    - **The manifest is untrusted input.** Codes are produced only after the binding check of step 7b has passed. A manifest that is stale, foreign (a different serial), corrupted or written for another wallet produces a refusal, never a code: pairing a wallet to addresses the card cannot sign for is the failure this design exists to prevent.
    - **Read-only refusals are terminal for that card.** If there is nothing usable to read — the object is empty, or absent because the card was reset or was provisioned before the manifest existed — the app says so and names the way back (the ceremony with the mnemonic). It does not fabricate codes and does not offer to reset the card.
-   - **The counter is recorded, not required to be 0.** §4.2 step 9 stops a *provisioning* ceremony on a non-zero counter because the card may already have signed. A card that is in use is the normal case when re-pairing, so the value is reported and the operator is told to compare it against the wallet's `expected_counter`.
    - **A reset erases the manifest.** `TERMINATE DF` wipes the private-use objects with the keys, so a reset card has nothing left to re-pair from. "Forget the pairing" is therefore a reset, and a card that has been reset cannot be re-paired from stale material (§10 item 13).
 
-8. **Export the public keys.** The app encodes **each** public key as its own UR (`crypto-hdkey`/`hdkey`, see §6.4) and displays two QR codes; the Desktop scans both and imports them as hardware-signer accounts. Every code carries a chain code, and the secp256k1 key is exported at its BIP44 account level with `children` pinned to the card's leaf, so an account-enumerating wallet shows the card's address and no sibling it cannot sign for (amendment 14). The Desktop records each public key `P`, the associated address(es), and `expected_counter = 0`.
-9. **Initial signature-counter baseline.** Read `0x93` from `GET DATA 0x7A` and confirm it is 0. This is an on-device action over NFC or USB-C: it requires no PIN and exposes no secrets, and no Desktop tether is required. This counter belongs to the **signature** slot; the Ed25519 key in the authentication slot has no counter (see §4.3 and §9.5), and the app records that on the provisioning report.
-10. **Small-value test transaction.** The Desktop constructs a small transfer and runs the full §5 flow. Only after signature verification passes and the transaction confirms on-chain may large amounts be transferred in.
+8. **Export the public keys.** The app encodes **each** public key as its own UR (`crypto-hdkey`/`hdkey`, see §6.4) and displays two QR codes; the Desktop scans both and imports them as hardware-signer accounts. Every code carries a chain code, and the secp256k1 key is exported at its BIP44 account level with `children` pinned to the card's leaf, so an account-enumerating wallet shows the card's address and no sibling it cannot sign for (amendment 14). The Desktop records each public key `P` and the associated address(es).
+9. **Small-value test transaction.** The Desktop constructs a small transfer and runs the full §5 flow. Only after signature verification passes and the transaction confirms on-chain may large amounts be transferred in.
 
 ### 4.3 Key Model
 
 - One OpenPGP signing-capable slot holds exactly one key, and a ceremony provisions **two**: the **signature** slot holds an ECDSA secp256k1 key, and the **authentication** slot holds an Ed25519 key. Both come from the one mnemonic, at the fixed paths `m/44'/0'/0'/0/0` and `m/44'/501'/0'/0'`.
 - The slot assignment is by **algorithm, not by chain**. Every secp256k1 chain shares the one key — the app derives and displays both its EVM address and its native-segwit Bitcoin address — and every Ed25519 chain shares the other. Two keys therefore cover the practical chain landscape, where one key per chain would not.
 - Because the path is shared, the same key appears at the same path on every chain of that algorithm. That is deliberate: address reuse and cross-chain linkability are accepted in exchange for covering many chains with one card, and it is why the pairing export pins the derived-child path to the card's single leaf key (§6.4).
-- **Accepted consequence: only the signature slot increments the hardware signature counter** (`GET DATA 0x7A` → `0x93`). The Ed25519 key sits in the authentication slot, and `INTERNAL AUTHENTICATE` is not counted, so the counter audit of §5.2 rules 3–4 covers secp256k1 chains only. PIN and touch authorization still gate both keys. This residual risk is recorded in §9.5 and in `docs/v1-threat-notes.md`; it is a deliberate trade of one control for broad chain coverage, not an oversight.
+- **The hardware signature counter is not read.** The applet counts `PSO:CDS` in `0x93` of `GET DATA 0x7A`, and that counter belongs to the **signature** slot; the Ed25519 key in the authentication slot is not counted at all (`INTERNAL AUTHENTICATE` is not a counted operation). The app does not read, display or compare it: a YubiKey is a shared device — this one is used with other applications, so a count of signatures says nothing about what *this wallet* asked for — and a count the signing app displays about itself is not evidence in any case (§5.2 rules 3–4, amendment 39). PIN and touch authorization still gate both keys, and what replaces the counter as the detection control is the wallet's own verification of the signature it asked for (§5.1 step 16.5).
 - The encryption slot (DEC) is not used.
-- Multiple accounts beyond this are achieved with additional YubiKeys. Re-importing a key into a slot resets the counter and invalidates the old public key; re-pairing is required.
+- Multiple accounts beyond this are achieved with additional YubiKeys. Re-importing a key into a slot resets that slot and invalidates the old public key; re-pairing is required.
 - The mnemonic is the sole backup of **both** keys. Recovery = repeat §4.2 steps 6–9 on a new YubiKey; recovered public keys identical to the originals prove successful recovery.
 
 ---
@@ -170,10 +166,9 @@ holds the only copy of the key.
                                        sign is refused **before** the
                                        card is touched
                                                                      6. Read **that slot's** public
-                                                                        key, the manifest, the
-                                                                        serial and the counter — one
-                                                                        session, one key, no PIN,
-                                                                        no writes
+                                                                        key, the manifest and the
+                                                                        serial — one session, one
+                                                                        key, no PIN, no writes
                                     7. Address derived from the
                                        card's own public key
                                     8. Bind to this card: path,
@@ -190,7 +185,6 @@ holds the only copy of the key.
                                    12. VERIFY PW1 (user PIN) ────────▶
                                    13. PSO:CDS(keccak256(sign-data)) ─▶ LED blinks, awaits touch
                                                                        User touches ──▶ σ = Sign(sk, H)
-                                                                       counter +1
                                    14. ◀────────────────────────── DER (r, s)
                                    15. Normalise low-s (EIP-2), recover the
                                        key, require it to be this card's,
@@ -201,15 +195,14 @@ holds the only copy of the key.
  16.5 **Independent verification** (the wallet, not this app):
       Verify(P, H, σ) and ecrecover(H, σ) == account address
       Any failure → do not broadcast, raise alarm (§5.2)
- 17. expected_counter += 1
- 18. Assemble the signed transaction, broadcast
+ 17. Assemble the signed transaction, broadcast
 ```
 
 The request is read **before** the card, because the request is what names the key: the app
 takes the request, decides from its path which single slot it needs, and then reads that
 slot. That is one key read and one session, where the previous order ran an inventory on the
 way in — which probes *both* slots, because that is what an inventory is for — plus the
-manifest and the counter, in four sessions, before it knew whether the request was one this
+manifest, in four sessions, before it knew whether the request was one this
 app could serve at all (amendment 33). The address that will sign is therefore derived one
 step later than it used to be, and it is compared with the wallet where it always had to be
 compared: on the summary screen, before approval. Steps 4–11 are gates in `SigningCeremony`;
@@ -268,8 +261,15 @@ takes for the app switcher — is redacted rather than left holding the last cam
 1. **One transaction = one `PSO:CDS`.** At the specification level, the app is forbidden from retrying a signature for the same request. If the YubiKey returns any error (wrong PIN, touch timeout, NFC disconnect), the entire flow terminates and restarts from the Desktop (which generates a new `requestId`).
    - *Refined for provisioning* (§4.2, amendment 17): a failure splits into two kinds. A **definitive rejection** — the card answered, and answered no (wrong PIN, unmet preconditions, rejected import) — wrote nothing, so the operator may correct the cause and repeat the step. An **interruption** whose outcome is unknown (a session that ended mid-write) means the card's state is unknown, and the ceremony must return to card inspection before anything else happens. The distinction is enforced in the state machine, not in the view layer.
 2. **Hard rule for users: any single transaction permits exactly one touch.** If the app says "Signing failed, please touch again," the user should treat the app as compromised and stop. This rule must be repeated on the app's first launch, on the Desktop wallet's pairing page, and in the printed quick-start guide.
-3. **The counter is read by a party other than the one that displayed the transaction.** The Desktop, or the iPhone itself over NFC/USB-C, reads `0x93` via `GET DATA 0x7A` (no PIN required). What matters is that the comparison against `expected_counter` is made by something other than the signing screen; a count displayed by the signing app alone is not evidence.
-4. **Counter audit frequency**: at least once at the end of every signing session; for large holdings, once per transaction is recommended. `actual_counter > expected_counter` means the YubiKey produced a signature the Desktop does not know about; migrate assets immediately.
+3. **Nothing reads the card's signature counter any more.** The app does not read, display or
+   compare `0x93`, and the provisioning ceremony does not record a baseline. The reason is the
+   device's role rather than a defect in the applet: a YubiKey is used with other applications as
+   well, so its count of signatures says nothing about what this wallet asked for, and a count the
+   signing app displays about itself is not independent evidence in any case (amendment 39).
+4. **What replaces it.** The wallet verifies the signature it asked for, against the digest it
+   displayed and the account it holds (§5.1 step 16.5), and keeps its own record of what it sent.
+   That check is the control: it is made by a party other than the signing screen, which is what
+   the counter rule was for.
 5. **The iPhone app only displays parsed content and never performs "smart" rewriting.** Undecodable `data` must be shown as raw hex and explicitly labeled "Unable to parse — proceed with caution."
 6. **Address binding.** The app refuses to sign any request whose `address` field does not match the locally paired address, preventing the Desktop from mistakenly sending another account's transaction.
 7. **chainId confirmation.** A chain id that has not been confirmed in this session requires an explicit, named confirmation before anything is signed for it (§5.3 records why this is per session rather than a remembered allowlist: the one thing the app remembers between launches is which reader the YubiKey is on — a single non-secret preference, amendment 31 — and a confirmed chain id is not it). The confirmation names the id, so it cannot be a blanket "yes", and the request's `chain-id` field must agree with the chain id inside the transaction payload.
@@ -278,7 +278,7 @@ takes for the app switcher — is redacted rather than left holding the last cam
 
 7d. **A policy the card does not report is not a policy.** Every write that establishes a security property is verified by reading it back off the card, and a mismatch stops the ceremony rather than producing a card that only looks protected. This is how the touch policy is treated: it is written by the key import — as its last write, because the import itself discards it — and read back from `0x6E` by the read-back step, because an applet that answers `9000` and stores nothing is a real failure mode, not a theoretical one (amendment 26, amendment 32).
 
-8. **A ceremony inherits nothing from the previous one.** Entering setup again — after finishing, aborting, or a re-pair — clears every result the last ceremony produced (inventory, derived keys, read-back, pairing codes, manifest state, counter), and the ceremony screens render from the **current** ceremony's record rather than from whatever the view model happens to still hold. Anything less lets a stale value stand in for a fresh one: a second ceremony that opens on the previous card's inventory offers "Continue" where it must ask for a card read, and a pairing screen showing the previous ceremony's codes offers a wallet keys that may no longer be on the card (amendment 20).
+8. **A ceremony inherits nothing from the previous one.** Entering setup again — after finishing, aborting, or a re-pair — clears every result the last ceremony produced (inventory, derived keys, read-back, pairing codes, manifest state), and the ceremony screens render from the **current** ceremony's record rather than from whatever the view model happens to still hold. Anything less lets a stale value stand in for a fresh one: a second ceremony that opens on the previous card's inventory offers "Continue" where it must ask for a card read, and a pairing screen showing the previous ceremony's codes offers a wallet keys that may no longer be on the card (amendment 20).
 
 9. **NFC session timeout** (about 60 seconds on iOS): if the touch is not completed within the session, it is treated as failure with no automatic retry. This governs a session in which an operation was **already sent**. Beginning a *new* reader session is a separate case: iOS can refuse one because the previous session has not finished shutting down (CoreNFC error 202), which is a transport race rather than a decision about the card, and the transport waits out a cooldown and retries it (amendment 15). Operator cancellation and the system timeout are never retried.
 
@@ -399,7 +399,7 @@ default, are ordinary 65-byte ones.
 
 - Input: the Desktop produces a PSBT (BIP174); each input to be signed must carry `witness_utxo` (segwit v0) or `non_witness_utxo` (legacy), plus `bip32_derivation` pointing to this YubiKey's public key.
 - App checks: every input's scriptPubKey is consistent with the locally derived public key; display each output's address and amount, change markers, fee, and total spend.
-- For each input, compute the sighash (BIP143 for P2WPKH / P2SH-P2WPKH; traditional sighash for legacy) and call `PSO:CDS` one at a time. **Multi-input transactions require multiple touches**; the app states up front "This transaction has N inputs and will require N touches," and the Desktop does `expected_counter += N`. This is the only exception to §5.2 rule 1, and N is fixed and displayed before signing begins.
+- For each input, compute the sighash (BIP143 for P2WPKH / P2SH-P2WPKH; traditional sighash for legacy) and call `PSO:CDS` one at a time. **Multi-input transactions require multiple touches**; the app states up front "This transaction has N inputs and will require N touches," and the wallet records the N touches it asked for, each as its own request and digest. This is the only exception to §5.2 rule 1, and N is fixed and displayed before signing begins.
 - Output: PSBT with `partial_sig` (DER encoding + sighash type).
 - Desktop verification: verify each `partial_sig` against the sighash with the corresponding public key; Sparrow does this at finalize, and a custom Desktop must do it explicitly.
 - Not supported: P2TR (Schnorr), MuSig within multisig; supported as one ECDSA participant in a multisig (P2WSH).
@@ -435,7 +435,6 @@ Uses the Blockchain Commons UR (BC-UR) standard, compatible with the Keystone / 
 | Sign | `00 2A 9E 9A 20 <32-byte digest> 00` | PSO:COMPUTE DIGITAL SIGNATURE. Requires PW1 verified **in the same session**. The OpenPGP card specification has ECDSA signatures returned as a DER `SEQUENCE { INTEGER r, INTEGER s }`, and the app parses that strictly; a bare 64-byte `r‖s` is accepted too, since the two forms cannot be confused, and which one the firmware returns is an M0 item (docs/m0-hardware-verification.md) |
 | Read public key | `00 47 81 00 02 B6 00 00` | GENERATE ASYMMETRIC KEY PAIR, P1=0x81 (read mode), signature slot |
 | Read public key (auth slot) | `00 47 81 00 02 A4 00 00` | Same, addressed at the authentication slot |
-| Read counter | `00 CA 00 7A 00` | Security Support Template, contains `93 03 <counter>` |
 | Read application data | `00 CA 00 6E 00` | Includes fingerprints, algorithm attributes, PW status **and the UIF objects `0xD6`–`0xD9`**, which is what the policy read-back reads — no extra round trip, and no PIN (§4.2 step 3) |
 | Import private key | `00 DB 3F FF Lc 4D ...` | PUT DATA Extended Header List; requires Admin PIN |
 | Write pairing manifest | `00 DA 01 02 Lc <bytes>` | Private-use data object 2. Requires PW3, holds at most 254 bytes (255 answers `6A80`), and is wiped by `TERMINATE DF` — hence written after both the reset and the read-back check |
@@ -465,7 +464,7 @@ Every transport failure is reported with the reason it failed, not as one generi
 | Sparrow | Camera → UR crypto-psbt | Verifies partial_sig at finalize; **effective** | Partial | Recommended |
 | Other Keystone-UR wallets (Rabby, BlueWallet, etc.) | As above | Must be confirmed individually | Must be confirmed individually | Pending verification |
 
-Specification requirement: **any Desktop client claiming compatibility with this scheme must implement §5.1 step 18.5.** Users of third-party wallets should treat §5.2 rule 2 (one touch per transaction) and rule 4 (counter audit) as compensating controls.
+Specification requirement: **any Desktop client claiming compatibility with this scheme must implement §5.1 step 18.5.** Users of third-party wallets should treat §5.2 rule 2 (one touch per transaction) and their own verification of the signature they asked for (§5.1 step 16.5) as the compensating controls.
 
 ### 7.2 Hardware
 
@@ -473,7 +472,7 @@ Specification requirement: **any Desktop client claiming compatibility with this
 - **USB-C and OTP:** the YubiKey's OTP interface registers as a HID keyboard; when it is enabled over USB-C it suppresses the iPhone's on-screen keyboard, so the PIN cannot be entered. Disable it once with `ykman config usb --disable OTP` (this leaves NFC OTP unaffected). The app cannot do this itself: the OTP configuration is managed over the HID interface, which iOS does not expose to apps.
 - **Lightning / 5Ci is no longer supported.** The 5Ci required a vendor MFi accessory SDK that YubiKit 4.x dropped, which made it the project's only external SDK dependency and an availability risk. USB-C CCID replaces it using only Apple frameworks, so a YubiKey 5C NFC is the recommended wired key.
 - iPhone: NFC requires any model supporting CoreNFC tag read/write (iPhone 7 and later). The **USB-C transport requires an iPhone 15 or later**, or a USB-C iPad. A dedicated device with the SIM removed and permanent airplane mode is recommended.
-- Desktop: no longer required for provisioning. For the signing flow it still needs a USB port to read the counter (macOS / Linux / Windows via PC/SC).
+- Desktop: no longer required for provisioning, nor for anything in the signing flow — the QR channel carries everything: the app neither needs a wired reader nor asks for one.
 
 ---
 
@@ -487,11 +486,11 @@ Specification requirement: **any Desktop client claiming compatibility with this
 
 ### 8.2 Recovery
 
-Perform §4.2 steps 2–9 on a new YubiKey; compare the new public key against the recorded fingerprint. If the old YubiKey is still on hand, run `openpgp reset` and then destroy or reuse it.
+Perform §4.2 steps 2–8 on a new YubiKey; compare the new public key against the recorded fingerprint. If the old YubiKey is still on hand, run `openpgp reset` and then destroy or reuse it.
 
 ### 8.3 Audit
 
-- After every signing session: the Desktop reads the counter and compares against `expected_counter`.
+- After every signing session: the wallet confirms that the signature it received verifies against the digest it sent and the account it holds (§5.1 step 16.5), and records what it asked for. This app keeps no such record and reads no card-side count (amendment 39).
 - Quarterly: check that the steel-plate mnemonic is legible; perform one recovery drill (recover onto a spare YubiKey, compare public keys, then reset).
 - App updates: update only after confirming the new version's reproducible-build hash; the update requires the iPhone to touch a computer and is treated as a "generation-phase-level" trust event (see §9). After updating, perform a small-value signature and verify it.
 
@@ -531,7 +530,7 @@ The design targets three properties:
 | Steal the YubiKey and know the PIN | Mitigated, partially in scope — see §9.5 |
 | Coerce the user (duress) | Out of scope |
 
-The enabling constraint is that **the iPhone never holds the private key, and every signature it can induce consumes exactly one PIN entry and one physical touch, and increments a hardware counter.** The iPhone's power is therefore bounded: it can only produce signatures over *some* digest, each costing a user-visible, later-auditable gesture.
+The enabling constraint is that **the iPhone never holds the private key, and every signature it can induce consumes exactly one PIN entry and one physical touch.** The iPhone's power is therefore bounded: it can only produce signatures over *some* digest, each costing a user-visible gesture — and each one verifiable afterwards by the wallet that asked for it (§5.1 step 16.5).
 
 ### 9.3 Core Argument: Why the Desktop Detects a Tampered iPhone
 
@@ -547,7 +546,7 @@ The iPhone cannot forge a signature over `A` without `sk`, and cannot request a 
 1. **Obtain one extra touch** — the first signs the honest `A` (satisfying the Desktop), the second signs the attacker's `B`. This is social engineering: the app must induce the user to touch once more than the transaction requires.
 2. **Exfiltrate `B ‖ σ_B` off the offline iPhone** — via a second channel: an observing camera, a colluding Desktop, or physical contact during a future app update.
 
-Condition 1 is necessarily discovered afterward: the extra touch increments the YubiKey's hardware signature counter, and the Desktop's direct read (`GET DATA 0x7A`) shows `actual_counter > expected_counter`. The overall bar is thus on the same order as "hardware-wallet firmware tampered ∧ host compromised."
+Condition 1 has to be caught by the party that asked for the signature: the wallet verifies σ against `P` and `H(A)`, and a signature over `B` fails that check (§5.1 step 16.5). Nothing on the card reports it — this app does not read the signature counter, and a count would not name *which* signature was extra in any case (amendment 39). The overall bar is thus on the same order as "hardware-wallet firmware tampered ∧ host compromised ∧ the wallet's own verification bypassed."
 
 ### 9.4 Attack Tree
 
@@ -564,7 +563,7 @@ Asset theft
 │   └── iPhone not wiped after generation ── in-app memory wipe; dedicated offline device
 ├── Unauthorized signature
 │   ├── Signing-phase app tampering (show A, sign B) ── Desktop independent verification (§5.1 18.5)
-│   ├── Extra-touch social engineering ── one-touch-per-tx rule; counter audit (§5.2). **Covers secp256k1 chains only:** the Ed25519 key is in the authentication slot, which has no counter (§4.3, §9.5)
+│   ├── Extra-touch social engineering ── one-touch-per-tx rule; the wallet's own verification of the signature it asked for (§5.1 18.5)
 │   ├── PIN brute force ── lockout after the operator-chosen number of attempts (3–10, §4.2 step 3)
 │   └── Stolen YubiKey + known PIN ── no signature without touch; migrate on loss
 ├── User signs an unintended transaction
@@ -585,13 +584,13 @@ Ratings are residual risk after the listed mitigations.
 |---|---|---|---|
 | Malicious Desktop builds a transaction the user does not intend | Compromise of the online Desktop | iPhone full-screen human-readable display; ABI decoding; address + chainId binding | User misreads. **Medium** |
 | Pairing-phase public-key / address substitution | Compromise of the Desktop during §4.2 step 8 | Character-by-character address comparison on both devices; small-value test transaction | **Low** |
-| iPhone app tampered (signing phase) | Compromise of the iPhone app | Desktop independent verification (§5.1 18.5); one-touch-per-tx rule; Desktop counter audit | Needs an extra touch **and** a second exit channel, and is detectable afterward. **Low** |
+| iPhone app tampered (signing phase) | Compromise of the iPhone app | Desktop independent verification (§5.1 18.5); one-touch-per-tx rule | Needs an extra touch **and** a second exit channel, and the extra signature fails the wallet's own verification. **Low** |
 | iPhone app tampered (generation phase) | Compromise of the iPhone app | Offline fresh device; reproducible-build verification; read-back confirms the card holds the key the app derived | Highest single point of app trust; the independent cross-check that bounded it was removed in v0.1. **Medium** |
 | Backdoored or faulty entropy source | Compromise of the YubiKey secure element **and** the iPhone OS RNG | The 256-bit entropy is the XOR of the card's `GET CHALLENGE` and the iOS `SecRandomCopyBytes` (§4.2 step 4); either source alone cannot determine the mnemonic | **Low** — a single compromised RNG no longer yields the key; both independent RNGs must be backdoored, which requires compromising two vendors' stacks at once |
 | Counterfeit YubiKey | Supply-chain substitution | Official channels; Yubico attestation; the read-back comparison fails if the card holds a different key | **Low** |
 | Weak YubiKey internal RNG (nonce `k`) | — | `sk` is generated on the iPhone, not the YubiKey; no property of `k` is relied upon beyond secrecy | Leaked `k` ⇒ leaked `sk` (inherent ECDSA); depends on Yubico's secure element. **Low** |
 | QR channel observed by a camera | Physical observation | Channel content is public (unsigned tx + signature) | **Low** |
-| Extra touch on the **Ed25519** key goes unaudited | Compromise of the iPhone app plus one social-engineered touch | One-touch-per-transaction rule; PIN + touch still required; independent verification of what was signed (v0.2) | No hardware counter exists for the authentication slot, so the *detection* control that covers secp256k1 is absent here. **Medium**, accepted in exchange for chain coverage (see §4.3) |
+| Extra touch on the **Ed25519** key | Compromise of the iPhone app plus one social-engineered touch | One-touch-per-transaction rule; PIN + touch still required; independent verification of what was signed (v0.2) | The extra signature is a signature over *some* digest; the wallet that asked for that digest verifies it, and one it did not ask for never reaches verification (amendment 39). **Low** |
 | User under duress | Physical coercion | — (out of scope) | — |
 | App delisting / iOS upgrade | — | Standard derivation paths; mnemonic recoverable in any BIP39/BIP44 wallet | **Low** |
 
@@ -601,15 +600,15 @@ Ratings are residual risk after the listed mitigations.
 
 1. **Two fixed keys per YubiKey** — one per algorithm — with no in-hardware BIP32 derivation. Every chain of an algorithm shares the same key at the same path, so addresses are reused across chains and are linkable; multiple accounts require multiple YubiKeys or re-import.
 2. **No Taproot / Schnorr support**, due to OpenPGP applet limitations. Ed25519 is supported as a second key, which is what makes the two-slot model cover the practical chain landscape.
-2b. **The Ed25519 key has no hardware signature counter**, because it lives in the authentication slot (§4.3). The counter audit of §5.2 therefore covers secp256k1 chains only; this is an accepted limitation, not a defect that a future firmware fixes without moving the key.
+2b. **Nothing in this app reads the card's signature counter.** The applet counts `PSO:CDS` in `0x93` of `GET DATA 0x7A`, but a YubiKey is used with other applications too, so the number says nothing about what this wallet asked for — and a count shown by the signing app about itself is not independent evidence (amendment 39). Detection rests on the wallet verifying the signature it asked for (§5.1 step 16.5).
 3. **Multi-input PSBTs require multiple touches**, in tension with the "one touch per transaction" rule; mitigated by stating N up front, but this widens the social-engineering surface.
 4. **NFC session time limit** (about 60 seconds). The USB-C CCID transport avoids this entirely and is preferred wherever an iPhone 15+ is available; over NFC, each step of a ceremony needs its own tap because the session cannot span the minutes a ceremony takes.
 5. **App distribution conflicts with the offline requirement**: App Store installation requires connectivity; sideloading requires a computer. Both are one-time compromises to "permanently offline," classified as generation-phase-level trust events.
 6. **The trusted display during the generation phase depends on the app itself; during the signing phase, the Desktop's independent verification provides a backstop.** Generation-phase trust rests on reproducible builds and the read-back comparison; the independent cross-check was removed in v0.1, so this trust cannot be eliminated entirely.
 7. **Dependence on Yubico's closed-source firmware.** The OpenPGP applet's behavior can be black-box verified via APDUs, but the internal implementation is not auditable.
-8. **Counter auditing requires the YubiKey to touch an online device.** Although reading the counter requires no PIN and exposes no secrets, this step runs counter to the intuition of a "cold" device and must be explicitly explained as safe in the documentation. During provisioning the read happens on the offline iPhone itself (§4.2 step 9).
+8. **The card is shared with other applications.** A YubiKey provisioned here can hold other keys and be used by other software, so nothing on the card identifies which application produced a given signature — which is why no card-side counter is treated as evidence about this wallet (amendment 39). The keys this ceremony writes are separate from every other slot the applet does not touch (the encryption slot is never used), but the *device* is not dedicated, and the design does not assume it is.
 
-9. **Signing covers EVM transactions only** (v0.2). `personal_sign` (EIP-191), EIP-712 typed data, Bitcoin PSBTs (§6.3) and Ed25519 chains are refused with an explanation: the first two need their own hashing and their own `v` convention, the third a PSBT engine, and the fourth cannot use the digest-in contract at all (§6.1). Within EVM the chain set is *open*: any chain id in the request is signable once the operator confirms it, and the app's chain table only decides how the chain and its coin are *named* on screen (§5.3) — so the app cannot be the reason a network is unsupported, and equally cannot vouch for one it does not know. The counter-delta audit of §5.2 rules 3–4 remains a wallet-side procedure: the app records the counter before and after a signature, but the comparison that matters is the wallet's.
+9. **Signing covers EVM transactions only** (v0.2). `personal_sign` (EIP-191), EIP-712 typed data, Bitcoin PSBTs (§6.3) and Ed25519 chains are refused with an explanation: the first two need their own hashing and their own `v` convention, the third a PSBT engine, and the fourth cannot use the digest-in contract at all (§6.1). Within EVM the chain set is *open*: any chain id in the request is signable once the operator confirms it, and the app's chain table only decides how the chain and its coin are *named* on screen (§5.3) — so the app cannot be the reason a network is unsupported, and equally cannot vouch for one it does not know. The wallet's verification of the signature it asked for (§5.1 step 16.5) is what bounds this: the app cannot make a signature verify against a digest the wallet did not send.
 
 10. **Dice entropy is non-authoritative in v1** (§4.2 step 4). A backdoored or faulty RNG is mitigated by construction — the entropy is the XOR of the card's hardware RNG and the iOS CSPRNG — so user dice are the one thing that is not fed into the mnemonic. Reproducible builds bound the residual risk further; the independent cross-check that previously provided an additional bound was removed in v0.1.
 
@@ -623,8 +622,8 @@ Ratings are residual risk after the listed mitigations.
 
 ## 11. Roadmap
 
-- **v0.1 (implemented)**: iOS **provisioning app only** — §4.2 steps 2–9 over NFC and one wired transport (USB-C CCID), provisioning **both** algorithms (secp256k1 into the signature slot, Ed25519 into the authentication slot) from one mnemonic. Includes `tools/derive` as a differential-testing oracle (BIP32 + SLIP-0010 + Ed25519, cross-checked against the Swift implementation via committed fixtures), a scripted two-slot card for device-free testing, a mechanical release audit, and BIP39/BIP32/SLIP-0010/RFC 8032/BC-UR conformance tests against published vectors. No signing.
-- **v0.2 (implemented)**: EVM signing flow (§5) — read-only card inspection, `eth-sign-request`/`eth-signature` URs, camera scanning, the transaction summary, `VERIFY PW1` + `PSO:CDS` in one session, low-s normalisation, signature verification and the counter read before and after. The small-value test transaction of §4.2 step 10 is the operator's, and remains outstanding for a real wallet.
+- **v0.1 (implemented)**: iOS **provisioning app only** — §4.2 steps 2–8 over NFC and one wired transport (USB-C CCID), provisioning **both** algorithms (secp256k1 into the signature slot, Ed25519 into the authentication slot) from one mnemonic. Includes `tools/derive` as a differential-testing oracle (BIP32 + SLIP-0010 + Ed25519, cross-checked against the Swift implementation via committed fixtures), a scripted two-slot card for device-free testing, a mechanical release audit, and BIP39/BIP32/SLIP-0010/RFC 8032/BC-UR conformance tests against published vectors. No signing.
+- **v0.2 (implemented)**: EVM signing flow (§5) — read-only card inspection, `eth-sign-request`/`eth-signature` URs, camera scanning, the transaction summary, `VERIFY PW1` + `PSO:CDS` in one session, low-s normalisation and signature verification. The small-value test transaction of §4.2 step 9 is the operator's, and remains outstanding for a real wallet.
 - **v0.3**: Bitcoin PSBT signing (§6.3) and the custom Desktop client with the §5.1 step 18.5 verification and unknown-UR-field alarm.
 - **v0.4**: Publish the reference implementation source (iOS app + Electron/Tauri Desktop); reproducible-build pipeline.
 - **v0.5**: Third-party security audit (focus: §4.2 generation flow, §5.1 step 18.5, UR parser).
@@ -642,7 +641,6 @@ Ratings are residual risk after the listed mitigations.
 | PW1 / PW3 | OpenPGP User PIN / Admin PIN |
 | UR | Uniform Resources, Blockchain Commons' QR data encoding standard |
 | PSBT | Partially Signed Bitcoin Transaction (BIP174) |
-| expected_counter | The expected YubiKey signature count maintained by the Desktop |
 
 ## Appendix B: Provisioning Verification Checklist (Print Version)
 
@@ -654,6 +652,5 @@ Ratings are residual risk after the listed mitigations.
 - [ ] Mnemonic transcribed twice; back-fill check passed
 - [ ] Both public keys read back from the YubiKey and match the derived keys ✔
 - [ ] Both pairing codes scanned; the Desktop shows the same values as the iPhone ✔
-- [ ] Desktop reads YubiKey counter = 0 ✔
 - [ ] Small-value test transaction: Desktop verification passed, confirmed on-chain ✔
 - [ ] No other camera devices in the generation environment ✔

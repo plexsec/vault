@@ -8,11 +8,11 @@ mitigated — so that no reader mistakes a design intent for a shipped control.
 
 | design.md section | v0.1 status |
 |---|---|
-| §4.2 steps 2–9 (provisioning) | implemented |
+| §4.2 steps 2–8 (provisioning) | implemented |
 | §4.3 two-algorithm key model | implemented — secp256k1 (signature slot) + Ed25519 (authentication slot); see deviation 6 |
-| §4.2 step 10 (small-value test transaction) | **not possible** — needs signing (v0.2) |
+| §4.2 step 9 (small-value test transaction) | **not possible** — needs signing (v0.2) |
 | §5 signing flow, `eth-sign-request`/`eth-signature` | **not implemented** (v0.2) |
-| §5.2 rule 4 (counter-delta audit) | **not implemented** — the baseline is recorded, but nothing decrements it yet |
+| §5.2 rule 4 (counter-delta audit) | **withdrawn in v0.2** — no counter is read, displayed or compared (amendment 39); the wallet verifies the signature it asked for instead |
 | §6.3 Bitcoin PSBT | **not implemented** (v0.3) |
 | §7.1 Desktop reference client, §5.1 step 18.5 verification | **not implemented** (v0.3) |
 | §8.2 recovery, §8.3 drill | implemented (restore mode) |
@@ -67,7 +67,10 @@ CoreNFC-capable iPhone, so no ceremony capability is device-gated.
 
 ### 3. Counter read on-device
 
-**Change.** §4.2 step 9 and §5.2 rule 3.
+**Change.** §4.2 step 9 and §5.2 rule 3 — **both superseded by amendment 39 in v0.2: the
+counter is no longer read at all.** The note below is the v0.1 change that made the read
+happen on the iPhone rather than on the Desktop, kept because it is the reason the read was
+considered harmless while it existed.
 
 **Why.** Reading `0x93` needs no PIN and exposes no secrets, and the iPhone can do
 it over either transport. Requiring a Desktop tether for a provisioning-time read
@@ -138,13 +141,12 @@ landscape with the same card. The user-visible cost is address reuse across
 chains of the same algorithm, which is accepted and stated in §4.3.
 
 **Consequence, stated plainly.** The OpenPGP signature counter belongs to the
-**signature** slot. Ed25519 has to live in the authentication slot, whose
-`INTERNAL AUTHENTICATE` does not increment it. So the §5.2 rule 3/4 audit — the
-control that turns "extra touch" social engineering into a detectable event —
-covers secp256k1 chains and **not** Ed25519 chains. PIN and touch still gate
-every Ed25519 signature, and the tampered-display defence (§9.3) is unaffected,
-because that rests on the Desktop verifying what it asked for, not on the
-counter.
+**signature** slot, and the Ed25519 key has to live in the authentication slot, whose
+`INTERNAL AUTHENTICATE` does not increment it. v0.1 recorded that asymmetry as a limitation on
+the §5.2 rule 3/4 audit; that audit no longer exists in any form (amendment 39), so what the
+asymmetry costs today is nothing beyond the note itself: PIN and touch gate every Ed25519
+signature, and the tampered-display defence (§9.3) rests on the wallet verifying what it asked
+for, not on any counter.
 
 **Compensating controls that do exist.** Touch policy `Fixed` is written to the
 authentication slot (UIF `0xD8`) as well as the signature slot, so an Ed25519
@@ -328,13 +330,16 @@ wallet's fault. Ed25519 signing is refused for a deeper reason — the applet ha
 message itself for EdDSA, so the digest-in contract of §6.1 does not hold, and v0.2 does
 not guess.
 
-### The counter is evidence, not a gate
+### The counter is no longer read at all
 
-The app reads the card's signature counter before and after a signature, which is useful
-evidence for the operator. It cannot be the control §5.2 rule 4 describes: the party that
-displays the transaction must not be the party that reads the counter, and here it is the
-same phone. The wallet's independent read remains the control; the app's numbers are a
-convenience and a prompt to do it.
+v0.1 read the card's signature counter around a ceremony, and v0.2 read it before and after a
+signature as convenience evidence for the operator. **Both reads are gone** (amendment 39): a
+YubiKey is used with other applications as well, so its count of signatures says nothing about
+what this wallet asked for, and the party that displays the transaction must not be the party
+that reads the count in any case. What remains as the control is §5.2 rule 4's replacement: the
+wallet verifies the signature it asked for, against the digest it sent and the account it holds
+(§5.1 step 16.5). The app reports what it was asked to sign, how many attempts it made, and
+whether the returned signature verified against the approved digest.
 
 ### Residual risks left over from v0.1 that signing inherits
 
@@ -343,7 +348,7 @@ convenience and a prompt to do it.
   refuses those requests rather than signing the wrong account, and the pairing code pins
   the derivation path — but the wallet may still *show* a sibling before the refusal.
 - The Ed25519 key has no counter (§10 item 2b), and v0.2 does not sign with it, which
-  removes the question for now.
+  removes the question for now. No counter is read anywhere in the app since amendment 39.
 - Firmware is closed source (§10 item 7): the `PSO:CDS` behaviour the app relies on —
   DER output, touch semantics, status words — is black-box verified at best, and
   docs/m0-hardware-verification.md items 13–14 are what stands in for a firmware audit.

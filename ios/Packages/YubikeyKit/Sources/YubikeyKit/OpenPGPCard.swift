@@ -80,10 +80,6 @@ public final class OpenPGPCard: SignerCard {
         try await getData(OpenPGPDataObject.applicationRelatedData, operation: .readApplicationData)
     }
 
-    func securitySupportTemplate() async throws -> [UInt8] {
-        try await getData(OpenPGPDataObject.securitySupportTemplate, operation: .readSecuritySupportTemplate)
-    }
-
     public func getDataObject(_ tag: UInt16) async throws -> [UInt8] {
         try await getData(tag, operation: .readApplicationData)
     }
@@ -347,10 +343,7 @@ public final class OpenPGPCard: SignerCard {
     /// inventory is for and what a flow that only needs the card's identity must not
     /// pay for (amendment 33).
     func cardSerial() async throws -> String? {
-        let parsed = try OpenPGPApplicationData.parse(
-            applicationData: try await applicationData(),
-            securitySupportTemplate: nil
-        )
+        let parsed = try OpenPGPApplicationData.parse(applicationData: try await applicationData())
         return parsed.serial.map { String(format: "%08X", $0) }
     }
 
@@ -369,28 +362,20 @@ public final class OpenPGPCard: SignerCard {
             return SigningCardIdentity(
                 serial: serial,
                 publicKey: nil,
-                pairingManifest: nil,
-                signatureCounter: nil
+                pairingManifest: nil
             )
         }
         let publicKey = try await readPublicKey(slot: slot)
-        // Only the signature slot has a hardware counter; asking the other slot for one
-        // would be a card operation with a known-empty answer.
-        let counter = slot == .signature ? ((try? await signatureCounter()) ?? nil) : nil
         return SigningCardIdentity(
             serial: serial,
             publicKey: publicKey,
-            pairingManifest: manifest,
-            signatureCounter: counter
+            pairingManifest: manifest
         )
     }
 
     public func inventory() async throws -> CardInventory {
         let applicationData = try await applicationData()
-        // The security support template is optional: a card that refuses it
-        // should not block the inventory.
-        let sst = try? await securitySupportTemplate()
-        let parsed = try OpenPGPApplicationData.parse(applicationData: applicationData, securitySupportTemplate: sst)
+        let parsed = try OpenPGPApplicationData.parse(applicationData: applicationData)
 
         var attributes: [KeySlot: [UInt8]] = [:]
         if let value = parsed.algorithmAttributesSignature { attributes[.signature] = value }
@@ -430,8 +415,6 @@ public final class OpenPGPCard: SignerCard {
             }
         }
 
-        let counter = parsed.signatureCounter
-
         // Whether this card can hold a manifest decides whether the pairing codes
         // can ever be produced again without a reset, so it is worth one extra
         // APDU here instead of a surprise at the end of a ceremony. It is not a
@@ -461,8 +444,7 @@ public final class OpenPGPCard: SignerCard {
                 .authentication: parsed.uifAuthentication?.first,
             ].compactMapValues { $0 },
             occupiedSlots: occupied,
-            signatureCounter: counter,
-            isFactoryFresh: occupied.isEmpty && (counter ?? 0) == 0,
+            isFactoryFresh: occupied.isEmpty,
             probeFailures: probeFailures,
             pairingManifest: pairingManifest
         )
@@ -716,17 +698,6 @@ public final class OpenPGPCard: SignerCard {
                 throw error
             }
         }
-    }
-
-    public func signatureCounter() async throws -> UInt32 {
-        let sst = try await securitySupportTemplate()
-        let objects = try TLVParser.parse(sst)
-        guard let counter = TLVParser.find(OpenPGPDataObject.signatureCounter, in: objects)?.value,
-              counter.count == 3
-        else {
-            throw CardError.malformedResponse("security support template had no 0x93 signature counter")
-        }
-        return (UInt32(counter[0]) << 16) | (UInt32(counter[1]) << 8) | UInt32(counter[2])
     }
 
     /// `GET CHALLENGE` (INS 0x84) — the card's hardware random-number generator.

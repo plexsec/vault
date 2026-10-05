@@ -20,7 +20,7 @@ final class SigningCeremonyTests: XCTestCase {
     // MARK: - Fixture plumbing
 
     private func makeCard(highS: Bool = false) -> MockSignerCard {
-        let card = MockSignerCard(counter: 17)
+        let card = MockSignerCard()
         card.loadSigningFixtureKey()
         card.returnsHighS = highS
         card.pairingManifestBytes = makeManifestBytes().encoded()
@@ -178,9 +178,6 @@ final class SigningCeremonyTests: XCTestCase {
         XCTAssertEqual(exported.s.hexString, fixture.s)
         XCTAssertTrue(ceremony.report.signatureVerified)
         XCTAssertEqual(ceremony.report.recoveryValue, "38")
-        XCTAssertEqual(ceremony.report.counterBeforeSigning, 17)
-        XCTAssertEqual(ceremony.report.counterAfterSigning, 18)
-        XCTAssertEqual(ceremony.report.counterDelta, 1)
         XCTAssertEqual(ceremony.report.approvedDigest, digest)
     }
 
@@ -242,7 +239,6 @@ final class SigningCeremonyTests: XCTestCase {
         XCTAssertEqual(ceremony.report.chainDisplay, "Polygon (chain id 137)")
         XCTAssertEqual(ceremony.report.nativeValueDisplay, "1.5 POL (1500000000000000000 wei)")
         XCTAssertTrue(ceremony.report.signatureVerified)
-        XCTAssertEqual(ceremony.report.counterDelta, 1)
         // The signature is real: the mock returned what tools/derive signed over this
         // digest. `s` in the fixture is the raw RFC6979 value, and for this digest it is
         // already ≥ n/2 — so the ordinary Polygon path also exercises EIP-2
@@ -710,7 +706,7 @@ final class SigningCeremonyTests: XCTestCase {
     func testSignatureFromAnotherKeyIsRefused() async throws {
         // The card reports a key it does not sign with: the manifest agrees with
         // the reported key, so the failure has to come from the signature itself.
-        let ceremonyCard = MockSignerCard(counter: 1)
+        let ceremonyCard = MockSignerCard()
         ceremonyCard.loadSigningFixtureKey()
         ceremonyCard.pairingManifestBytes = makeManifestBytes().encoded()
         ceremonyCard.storedPublicKeyOverride[.signature] = try Secp256k1.publicKey(

@@ -91,8 +91,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
         _ = try ceremony.buildPairingURs(style: style, chainCodeAcknowledged: chainCodeAcknowledged)
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
-        _ = try await ceremony.readCounterBaseline()
-        try ceremony.advance()
         return ceremony.finish()
     }
 
@@ -168,25 +166,17 @@ final class ProvisioningCeremonyTests: XCTestCase {
         }
         ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
-        XCTAssertEqual(ceremony.step, .counterBaseline)
-
-        let baseline = try await ceremony.readCounterBaseline()
-        XCTAssertEqual(baseline, 0)
-        try ceremony.advance()
         XCTAssertEqual(ceremony.step, .teardown)
         let report = ceremony.finish()
 
         XCTAssertNotNil(report.completedAt)
         XCTAssertTrue(report.readBackVerified)
-        XCTAssertEqual(report.counterBaseline, 0)
         XCTAssertEqual(report.keys.count, 2)
         XCTAssertEqual(report.key(.secp256k1)?.identity, Expected.evmAddress)
         XCTAssertEqual(report.key(.ed25519)?.identity, Expected.ed25519PublicKey)
         XCTAssertEqual(report.key(.secp256k1)?.pairingURType, "crypto-hdkey")
         XCTAssertTrue(report.pairingIncludedChainCode)
         XCTAssertTrue(ceremony.isFinished)
-        // The Ed25519 slot has no counter, which the report must state.
-        XCTAssertTrue(report.warnings.contains { $0.contains("no hardware signature counter") })
 
         // The card call sequence must match design.md §4.2 exactly, with both
         // slots written in a fixed order.
@@ -209,7 +199,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
             // applet's 254-byte private-use object fails here, not on a card.
             .writePairingManifest(byteCount: 198),
             .readPairingManifest,
-            .signatureCounter,
         ])
         XCTAssertEqual(ceremony.report.pairingManifestStored, true)
         XCTAssertEqual(card.pairingManifestBytes?.count, 198)
@@ -577,7 +566,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
             algorithmAttributes: [.signature: [0x13, 0x2B, 0x81, 0x04, 0x00, 0x22]],
             pwStatusBytes: [0x00, 0x06, 0x00, 0x7F, 0x00, 0x7F],
             occupiedSlots: [.signature],
-            signatureCounter: 7,
             isFactoryFresh: false
         ))
         let ceremony = makeCeremony(card: card)
@@ -608,7 +596,6 @@ final class ProvisioningCeremonyTests: XCTestCase {
             openPGPVersion: "3.4",
             serial: "12345678",
             occupiedSlots: [.authentication],
-            signatureCounter: 0,
             isFactoryFresh: false
         ))
         let ceremony = makeCeremony(card: card)
@@ -682,23 +669,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertNil(ceremony.derivedKeys)
     }
 
-    func testNonZeroCounterBaselineStopsTheCeremony() async throws {
-        let card = MockSignerCard()
-        let ceremony = makeCeremony(card: card)
-        let keys = try await runThroughDerivation(ceremony).keys
-        _ = try await ceremony.importAndVerify()
-        try ceremony.advance()
-        _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
-        ceremony.confirmPairingAddressMatches(true)
-        try ceremony.advance()
-
-        // The card has signed something the desktop does not know about.
-        card.counterValue = 3
-        await XCTAssertThrowsErrorAsync { try await ceremony.readCounterBaseline() } verify: { error in
-            XCTAssertEqual(error as? CeremonyError, .counterNotZero(3))
-        }
-    }
-
+    // MARK: Pairing export (design.md §4.2 step 8)
     // MARK: PIN policy
 
     func testPINPolicyRules() {
@@ -1046,8 +1017,7 @@ final class ProvisioningCeremonyTests: XCTestCase {
         for expected in ["entropy commitment:", "path:", "key fingerprint:",
                          "yubikey serial:", "openpgp applet:", "read-back verified: yes",
                          "[secp256k1]", "[ed25519]",
-                         "evm address:", "bitcoin address:", "identity:",
-                         "signature counter baseline", "no hardware signature counter"] {
+                         "evm address:", "bitcoin address:", "identity:"] {
             XCTAssertTrue(text.contains(expected), "printout missing: \(expected)")
         }
     }
