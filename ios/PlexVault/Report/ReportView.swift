@@ -12,10 +12,15 @@ struct ReportView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let report = viewModel.report {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("Provisioning complete", systemImage: "checkmark.seal.fill")
-                            .font(.headline)
-                            .foregroundStyle(.green)
-                        Text("Keep this record with your steel plate. It contains no secrets.")
+                        Label(
+                            report.mode == .rePair ? "Pairing complete" : "Provisioning complete",
+                            systemImage: "checkmark.seal.fill"
+                        )
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                        Text(report.mode == .rePair
+                            ? "Keep this with the provisioning record: it is the public material the wallet was given, read back out of the YubiKey."
+                            : "Keep this record with your steel plate. It contains no secrets.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -51,22 +56,54 @@ struct ReportView: View {
         // scroll for is a primary action that can be missed. The note belongs to the bar,
         // under the button, where it explains it.
         .safeAreaInset(edge: .bottom) { exitBar }
+        // The app is about to close itself, so the operator is told before it happens, and the
+        // alert is what actually ends the process: the wipe has already run and the flag that
+        // sends the next launch to the pairing process is already stored (amendment 43).
+        .alert("Secrets wiped", isPresented: $viewModel.showExitAlert) {
+            Button("Close the app") { viewModel.exitForPairing() }
+            Button("Stay on the record", role: .cancel) {}
+        } message: {
+            Text("The provisioning record is on this screen. Reopen the app to continue: it goes straight to pairing the wallet, and reads the pairing codes back out of the YubiKey's stored manifest. Nothing was written to or erased from the card.")
+        }
     }
 
     private var exitBar: some View {
         VStack(spacing: 6) {
-            Button {
-                viewModel.abort()
-            } label: {
-                Text("Provision another wallet").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            if viewModel.pairingIsPending {
+                Button {
+                    viewModel.exitForPairing()
+                } label: {
+                    Label("Close the app and pair the wallet", systemImage: "link")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
 
-            Text("Restart the app before provisioning another wallet.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                Text("Pairing is the second process and has its own record. Reopen the app to reach it: it reads the codes back out of the YubiKey (no mnemonic, nothing secret).")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                Button {
+                    viewModel.abort()
+                } label: {
+                    Text("Provision another wallet").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button {
+                    viewModel.abort()
+                } label: {
+                    Text("Provision another wallet").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Text("Restart the app before provisioning another wallet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
         }
         .padding(.horizontal)
         .padding(.top, 8)

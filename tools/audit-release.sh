@@ -11,9 +11,10 @@
 #   2. No network API is linked or referenced. The app must be offline by
 #      construction, not by policy.
 #   3. No secret material is persisted: no writes of mnemonic/PIN/key data and no
-#      use of UserDefaults/Keychain for ceremony secrets. One non-secret preference —
-#      the card connection the operator chose once — is permitted, and the check names
-#      the single file and key rather than ignoring persistence in general.
+#      use of UserDefaults/Keychain for ceremony secrets. Two non-secret values are
+#      permitted — the card connection the operator chose once, and a flag saying a run
+#      stopped at the wipe so the next launch pairs the wallet — and the check names the
+#      two files and their keys rather than ignoring persistence in general.
 #   4. The NSCameraUsageDescription / NFC keys are present, and NFC declares the
 #      OpenPGP AID (without it iOS never surfaces the card).
 #
@@ -102,29 +103,33 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "[3] No secret persistence"
-# One persistence site is permitted, and it is named here rather than excluded by
-# silence: `DeviceChoiceStore` holds which reader the YubiKey is on. That value is not
-# a secret — it selects a channel, not a policy, and a release build has no simulated
-# transport for it to be pointed at (check 1) — and remembering it is the whole point
-# of asking once. Everything else must still be untouched: no key material, no PINs,
-# no pairing material, no ceremony state.
+# Two persistence sites are permitted, and they are named here rather than excluded by
+# silence. `DeviceChoiceStore` holds which reader the YubiKey is on; `PendingPairingStore`
+# holds one Bool saying that a run stopped at the wipe and that the next launch should start
+# in the pairing process (amendment 43). Neither is a secret: the first selects a channel
+# (check 1 asserts that a release build has no simulated transport to point it at), and the
+# second is a routing flag whose *payload* is deliberately nothing — the pairing codes are
+# rebuilt from the card's manifest by the read-only route, and never stored on the phone.
+# Everything else must still be untouched: no key material, no PINs, no pairing material, no
+# ceremony state.
 DEVICE_STORE="$REPO_ROOT/ios/PlexVault/Support/DeviceChoiceStore.swift"
+PENDING_STORE="$REPO_ROOT/ios/PlexVault/Support/PendingPairingStore.swift"
 persist_hits="$(grep -rnE 'UserDefaults|NSUbiquitousKeyValueStore|FileManager\.default\.createFile|SecItemAdd|\.write\(to:' \
       "$REPO_ROOT/ios/PlexVault" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Ceremony" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Signing" 2>/dev/null \
-      | grep -v "^${DEVICE_STORE}:" || true)"
+      | grep -v "^${DEVICE_STORE}:" | grep -v "^${PENDING_STORE}:" || true)"
 persist_hits="$(grep -v '^\s*//' <<<"$persist_hits" || true)"
 if [[ -n "$persist_hits" ]]; then
-  note_fail "persistence API referenced outside the device-choice store:"
+  note_fail "persistence API referenced outside the two named stores:"
   sed 's/^/        /' <<<"$persist_hits"
 else
-  note_ok "the only persistence site is the device-choice store"
+  note_ok "the only persistence sites are the device-choice and pending-pairing stores"
 fi
-# The exception is one key in one file, so assert exactly that: the store exists, it
-# names the key the device screen reads, it stores nothing else, and it does not reach
-# for a secret-bearing API (the keychain) or the filesystem. Without these, deleting the
-# store would turn the check above into a pass for the wrong reason.
+# The exceptions are one key each in one file, so assert exactly that: each store exists,
+# names the key its screen reads, stores nothing else, and does not reach for a
+# secret-bearing API (the keychain) or the filesystem. Without these, deleting a store would
+# turn the check above into a pass for the wrong reason.
 if [[ ! -f "$DEVICE_STORE" ]]; then
   note_fail "the permitted persistence site is missing; the check above proved nothing"
 else
@@ -139,6 +144,31 @@ else
     note_fail "the device-choice store reaches for something other than UserDefaults"
   else
     note_ok "device choice: one UserDefaults key, no keychain, no files"
+  fi
+fi
+# The pending-pairing flag is the second site, and the assertion that matters is what it does
+# *not* hold: no pairing export, no public key, no chain code, no mnemonic, and no record. A
+# store that carried any of those would make the phone hold watch-only material at rest, which
+# is exactly what rebuilding the codes from the card avoids (amendment 43).
+if [[ ! -f "$PENDING_STORE" ]]; then
+  note_fail "the pending-pairing store is missing; the check above proved nothing here"
+else
+  if ! grep -q 'com\.plexsec\.vault\.pending-pairing' "$PENDING_STORE"; then
+    note_fail "the pending-pairing store does not name the expected key"
+  fi
+  pending_keys="$(grep -cE '\.set\(|\.bool\(forKey:|\.removeObject\(forKey:' "$PENDING_STORE" || true)"
+  if [[ "$pending_keys" -gt 3 ]]; then
+    note_fail "the pending-pairing store touches more than one key ($pending_keys accesses)"
+  fi
+  if grep -qE 'SecItem(Add|Copy|Update)|FileManager|NSKeyedArchiver|\.write\(to:' "$PENDING_STORE"; then
+    note_fail "the pending-pairing store reaches for something other than UserDefaults"
+  else
+    note_ok "pending pairing: one UserDefaults key, no keychain, no files"
+  fi
+  if grep -qE 'CeremonyReport|PairingExport|PairingManifest|\.string\(forKey:|chainCode|publicKey|mnemonic' "$PENDING_STORE"; then
+    note_fail "the pending-pairing store carries pairing material; the flag must be the whole payload"
+  else
+    note_ok "pending pairing: a flag and nothing else — no codes, keys or record"
   fi
 fi
 # The only persisted item permitted is the redacted report, which the operator

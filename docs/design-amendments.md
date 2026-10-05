@@ -1976,3 +1976,72 @@ class, so mutating it does not invalidate a SwiftUI view, and nothing else on th
 The view model now mirrors the flag and re-reads it from the ceremony on every step change — the same
 shape as `readBack` and `pairingManifestStored`, and the same lesson as amendment 41: state that the
 screens decide from is copied deliberately and re-synced, never assumed to follow along.
+
+## 43. v0.2: the wipe ends the process, and pairing is the next one
+
+**Sections:** §4.2 (the order paragraph, the wipe paragraph, the pairing paragraph), §9.1's
+key-confidentiality property, §5.2 rule 7's note on persistence, §5.3; `CeremonyStep.wipeSecrets`
+and its screen, `CeremonyViewModel.wipeSecretsAndExit`/`resumePendingPairing`/`exitForPairing`,
+`PendingPairingStore`, `HomeView`'s launch route, `ReportView`'s exit bar,
+`CeremonyReport.printableLines`; `tools/audit-release.sh` check 3;
+`docs/provisioning-checklist.md` Parts 3 and 4.
+
+**What changed.** Amendment 42 moved the wipe in front of the pairing codes but kept one process:
+the app wiped, showed the addresses and the two QR codes, waited for the operator to compare them
+with their wallet, and produced the record at the end. Now the wipe **ends the process**. The
+operator taps "Wipe secrets & Exit"; the app wipes, produces the **provisioning record** (the card
+serials, the read-back, the policy, the retry limits, the backup choice, the entropy commitment),
+tells them in an alert that it is closing and that they must open it again to pair, and then closes
+itself. The next launch goes **straight into the pairing step** — no home screen, no setup screen —
+where the codes are read back out of the card's manifest and the **pairing record** is produced.
+
+**Why two processes.** The operator asked for it, and the reason is the same one that put the wipe
+there in the first place: after the keys are in the cards, the app's memory is the only place the
+wallet exists in a form that can be stolen, and a process that ends is a stronger statement than a
+process that has wiped a few fields. It also makes the two halves of the run match the two things
+they produce: the process that knows what was written to the card produces the record that says so,
+and the process that shows the wallet its account produces the record of what the wallet was told.
+Neither record can claim the other half.
+
+**The pairing process is the read-only route, and stores nothing.** It is `CeremonyMode.rePair` —
+the route of §4.2 step 7c, which exists precisely so that the codes are reproducible from the card
+alone: read the manifest, check it against the keys the card reports for its own slots, show the
+codes. No mnemonic, no PIN, no write, and no secret in memory at any point, which is also why it
+does not carry the setup screen's posture gate: that gate exists for the process that generates keys
+and writes cards. Nothing about the pairing is carried across the process boundary — the flag that
+routes the next launch is a `Bool` with no payload, and the audit now *asserts* that the file which
+holds it mentions no export, no public key, no chain code and no record. The alternative (persisting
+the account-level public key so the codes could be shown without the card) was rejected for exactly
+that reason: it would put a watch-only capability at rest on the phone, which rebuilding the codes
+from the card avoids.
+
+**The second persisted value.** `PendingPairingStore` is one `Bool` under one namespaced key. It is
+set at the wipe, before the app closes, and it is the only thing that survives the process boundary
+(_`synchronize()` is called for that write alone: `exit(0)` does not run the app lifecycle, and
+losing the flag would drop the operator on a home screen that says nothing about the wallet they
+just wrote). It is cleared when the pairing step completes — the operator has compared the wallet's
+addresses with the screen — and when the operator leaves the pairing process deliberately, so a card
+that cannot be re-paired does not drag them back into it on every launch. The audit's persistence
+check now names two files instead of one and asserts what each of them may hold.
+
+**Two records.** The provisioning record and the pairing record are separate artifacts, and each
+says which half of the run it is: a provisioning record whose pairing fields are empty now prints
+"pairing codes: not produced by this run — the pairing run that follows produces its own record",
+and the pairing record prints that it read the codes out of the card's manifest. That is the price
+of the split — the provisioning record can no longer carry the pairing evidence, because the process
+that produced it is gone before the wallet is shown anything — and the design says so in the record
+itself rather than leaving a gap that looks like a mistake.
+
+**The operator-facing copy** changes with it: the step's action is "Wipe secrets & Exit", its
+caution says the app will close, the alert names the next step ("Reopen the app to continue…"), the
+record screen offers "Close the app and pair the wallet" while a pairing is pending, the launcher
+goes to the pairing process, and that process carries a banner saying why it is there. The report
+screen's header distinguishes the two records ("Provisioning complete" / "Pairing complete").
+
+**Tests.** The UI walk is now two walks, and both are asserted: the provisioning walk ends on the
+record the wipe produced (a two-card run asserts both serials on it), and a new test taps through
+the alert and asserts that the app's process actually ends (`wait(for: .notRunning)`), then relaunches
+and asserts that the app opens on the pairing process — no home screen, no posture gate — and on the
+read-only route (no reset, no wipe). The tests that need the card a walk just wrote keep the process
+alive through the alert's "Stay on the record" path, because the simulated card is process-wide
+state; `-reset-pending-pairing` keeps one test's pending pairing from routing the next test's launch.

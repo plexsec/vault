@@ -78,7 +78,6 @@ final class SigningFlowUITests: XCTestCase {
         try advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         try revealAndConfirmMnemonic(app, entropy: Self.entropy)
         completeCeremonyAfterMnemonic(app,
-            expectedEVMAddress: expectedAddress,
             userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         tapStepAction("Provision another wallet", in: app)
 

@@ -64,12 +64,59 @@ final class CeremonyFlowUITests: XCTestCase {
                       "the second card's inventory is due:\n\(app.debugDescription)")
         provisionTheCard(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
 
-        pairAndFinish(app, expectedEVMAddress: Self.expectedEVMAddress)
+        // The wipe ends the provisioning process and produces its record, which names both cards.
+        // Pairing is a separate process with its own record (amendment 43), so this test stops at
+        // the record the run that wrote the cards produced.
+        wipeSecrets(app, exit: false)
 
-        // The record names both cards, in the order they were presented.
         XCTAssertTrue(app.staticTexts["YubiKey 1 of 2 serial"].waitForExistence(timeout: 10),
                       "the record must name the first card:\n\(app.debugDescription)")
         XCTAssertTrue(app.staticTexts["YubiKey 2 of 2 serial"].exists)
+    }
+
+    /// The wipe closes the app, and the next launch goes straight to pairing it (amendment 43).
+    ///
+    /// This is the behaviour an operator asked for: wipe the secrets, let the app end, reopen it
+    /// later and carry on with the wallet. The second process writes nothing and holds no secret —
+    /// it reads the pairing codes back out of the card's stored manifest — so it is not gated on the
+    /// setup screen the provisioning process has to pass.
+    func testTheWipeClosesTheAppAndTheNextLaunchResumesPairing() throws {
+        // No `-reset-pending-pairing`: the value the wipe stores is the subject of the test, and the
+        // second launch has to read it back.
+        let app = launchApp(
+            deviceChoice: "simulated",
+            arguments: ["-deterministic-entropy", Self.zeroEntropyHex],
+            resetPendingPairing: false
+        )
+        openProvisioningFlow(app)
+        advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+        try revealAndConfirmMnemonic(app, entropy: [UInt8](repeating: 0, count: 32))
+        tapStepAction("Derive keys", in: app)
+        tapStepAction("Continue", in: app)
+        tapStepAction("Continue", in: app)   // one YubiKey
+        provisionTheCard(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+
+        // The wipe: the alert explains, and the app closes itself.
+        wipeSecrets(app, exit: true)
+
+        // Reopening it lands in the pairing process, not on the home screen and not on the setup
+        // screen.
+        app.launch()
+        XCTAssertTrue(
+            app.staticTexts["Pairing is still pending"].waitForExistence(timeout: 20),
+            "the app must open on the pairing process:\n\(app.debugDescription)"
+        )
+        XCTAssertFalse(app.buttons["Sign a transaction"].exists, "the home screen must not be the first screen")
+        XCTAssertFalse(app.buttons["begin-ceremony"].exists, "this process generates nothing, so it has no posture gate")
+
+        // And it is the read-only route: the card is read, the manifest is checked, and there is no
+        // reset step anywhere near it.
+        tapStepAction("Read YubiKey", in: app)
+        tapStepAction("Continue", in: app)
+        XCTAssertTrue(app.buttons["Read pairing manifest"].waitForExistence(timeout: 10),
+                      "the pairing process reads the manifest:\n\(app.debugDescription)")
+        XCTAssertFalse(app.buttons["Reset applet"].exists, "pairing must never offer the reset")
+        XCTAssertFalse(app.buttons["Wipe secrets & Exit"].exists, "there is nothing to wipe in this process")
     }
 
     /// The address the deterministic (all-zero entropy) mnemonic derives, computed by the same

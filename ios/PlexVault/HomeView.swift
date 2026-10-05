@@ -25,8 +25,14 @@ struct HomeView: View {
     let ceremonyViewModel: CeremonyViewModel
     let signingViewModel: SigningViewModel
     let deviceChoice: DeviceChoiceStore
+    let pendingPairing: PendingPairingStore
     let presence: CardPresence
     @State private var route: Route
+    /// True while the *launch* route was decided as the pairing process, so the resume happens once
+    /// and only for that decision. Without it, the flag would hijack every later entry into the
+    /// provisioning route — including an operator who deliberately chose "Generate a new wallet" —
+    /// because `resumePendingPairing` would fire again on each appearance (amendment 43).
+    @State private var resumePendingPairingOnOpen: Bool
     /// True while the device screen is the way *into* the app, so it cannot be left
     /// without an answer. Set when the route was decided at construction, and cleared
     /// when the operator comes back to change the choice.
@@ -41,18 +47,27 @@ struct HomeView: View {
 
     /// The first screen is decided here rather than in `onAppear`, so a first run never
     /// renders the home screen for a frame and then replaces it.
+    ///
+    /// Three things can be first: the device choice (nothing can be done without a connection),
+    /// the pairing process (a run that stopped at the wipe and closed the app resumes there rather
+    /// than on a home screen that says nothing about the wallet that is still unpaired —
+    /// amendment 43), and the home screen.
     init(
         ceremonyViewModel: CeremonyViewModel,
         signingViewModel: SigningViewModel,
         deviceChoice: DeviceChoiceStore,
+        pendingPairing: PendingPairingStore,
         presence: CardPresence
     ) {
         self.ceremonyViewModel = ceremonyViewModel
         self.signingViewModel = signingViewModel
         self.deviceChoice = deviceChoice
+        self.pendingPairing = pendingPairing
         self.presence = presence
         let needsChoice = !deviceChoice.hasChosen
-        _route = State(initialValue: needsChoice ? .device : .home)
+        let needsPairing = !needsChoice && pendingPairing.isPending
+        _route = State(initialValue: needsChoice ? .device : (needsPairing ? .provisioning : .home))
+        _resumePendingPairingOnOpen = State(initialValue: needsPairing)
         _deviceIsFirstRun = State(initialValue: needsChoice)
         #if DEBUG
         // `-open-scanner` opens the signing flow straight away. It exists for the one thing
@@ -78,6 +93,16 @@ struct HomeView: View {
                     // the route in step so the home screen does not reappear on top
                     // of a running ceremony.
                     if phase == .setup { route = .home }
+                }
+                // A run that stopped at the wipe resumes in the read-only pairing process, with
+                // no setup screen in between: there is nothing to generate, nothing to write and
+                // no secret to hold, and the operator's next action is the one the wipe sent them
+                // away to take (amendment 43). Only the launch decision resumes; a mode chosen by
+                // hand on this screen keeps its own way in.
+                .task {
+                    guard resumePendingPairingOnOpen else { return }
+                    resumePendingPairingOnOpen = false
+                    ceremonyViewModel.resumePendingPairing()
                 }
         case .signing:
             SigningRootView(viewModel: signingViewModel, onExit: { route = .home })
@@ -121,6 +146,8 @@ struct HomeView: View {
                 }
 
                 WalletKeyManagementSection { mode in
+                    // An explicit choice, so the launch route (if there was one) is not this run's.
+                    resumePendingPairingOnOpen = false
                     ceremonyViewModel.abort()
                     ceremonyViewModel.mode = mode
                     route = .provisioning

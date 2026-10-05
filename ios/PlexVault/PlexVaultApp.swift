@@ -7,6 +7,9 @@ struct PlexVaultApp: App {
     /// The one thing the app remembers between launches, created here so both flows and
     /// the home screen read the same value (`DeviceChoiceStore`).
     @State private var device: DeviceChoiceStore
+    /// The second thing it remembers: that a run stopped at the wipe, so the next launch starts
+    /// in the pairing process (`PendingPairingStore`).
+    @State private var pendingPairing = PendingPairingStore()
     /// Watches the chosen connection's reader, for the one connection whose presence the app
     /// can actually tell (USB-C); see `CardPresence`.
     @State private var presence = CardPresence()
@@ -16,8 +19,10 @@ struct PlexVaultApp: App {
 
     init() {
         let device = DeviceChoiceStore()
+        let pendingPairing = PendingPairingStore()
         _device = State(initialValue: device)
-        _viewModel = State(initialValue: CeremonyViewModel(device: device))
+        _pendingPairing = State(initialValue: pendingPairing)
+        _viewModel = State(initialValue: CeremonyViewModel(device: device, pendingPairing: pendingPairing))
         _signingViewModel = State(initialValue: SigningViewModel(device: device))
     }
 
@@ -27,6 +32,7 @@ struct PlexVaultApp: App {
                 ceremonyViewModel: viewModel,
                 signingViewModel: signingViewModel,
                 deviceChoice: device,
+                pendingPairing: pendingPairing,
                 presence: presence
             )
                 .onChange(of: scenePhase) { _, phase in

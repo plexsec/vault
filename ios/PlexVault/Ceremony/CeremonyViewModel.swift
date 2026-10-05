@@ -49,9 +49,12 @@ public final class CeremonyViewModel {
     public var mode: CeremonyMode = .freshGeneration
 
     private let device: DeviceChoiceStore
+    /// The flag that carries the operator from the provisioning process to the pairing one.
+    private let pendingPairing: PendingPairingStore
 
-    init(device: DeviceChoiceStore) {
+    init(device: DeviceChoiceStore, pendingPairing: PendingPairingStore) {
         self.device = device
+        self.pendingPairing = pendingPairing
     }
 
     // MARK: Ceremony state
@@ -212,6 +215,32 @@ public final class CeremonyViewModel {
 
     // MARK: Lifecycle
 
+    /// True while this run is the pairing process entered because a provisioning run stopped at
+    /// the wipe: the screens say so, and it is what clears the pending flag at the end.
+    public private(set) var isPendingPairingResume = false
+
+    /// Whether a pairing is waiting for the operator. Read by the record screen, which offers the
+    /// way back into it.
+    public var pairingIsPending: Bool { pendingPairing.isPending }
+
+    /// True while the alert that explains the exit is on screen (`ReportView`).
+    public var showExitAlert = false
+
+    /// Enters the read-only pairing process directly, for a run that stopped between the wipe and
+    /// the codes and closed the app (amendment 43).
+    ///
+    /// No setup screen, and therefore no posture acknowledgement: that gate exists for the process
+    /// that generates keys and writes cards, and this one does neither — it reads the manifest off
+    /// the card, checks it against the card's own keys, and shows public material. A no-op unless
+    /// the flag is set, so it is safe to call for every entry into the provisioning route.
+    public func resumePendingPairing() {
+        guard phase == .setup, pendingPairing.isPending else { return }
+        mode = .rePair
+        postureConfirmed = true
+        start()
+        isPendingPairingResume = phase == .running
+    }
+
     public func start() {
         guard phase == .setup else { return }
         errorMessage = nil
@@ -254,6 +283,12 @@ public final class CeremonyViewModel {
     }
 
     public func abort() {
+        // The pairing process is the only one that clears the pending flag. The provisioning run
+        // sets it when it wipes and closes the app, and the record it left on screen must not
+        // undo that by being dismissed — while an operator who leaves the *pairing* process on
+        // purpose (the card is gone, they will pair later) must not be dragged back into it on
+        // every launch (amendment 43).
+        if mode == .rePair { pendingPairing.clear() }
         ceremony?.abort()
         ceremony = nil
         resetTransientState()
@@ -300,6 +335,8 @@ public final class CeremonyViewModel {
         revealTimer?.invalidate()
         revealTimer = nil
         revealSecondsRemaining = 0
+        isPendingPairingResume = false
+        showExitAlert = false
     }
 
     // MARK: Step actions
@@ -394,6 +431,13 @@ public final class CeremonyViewModel {
             try ceremony.advance()
             step = ceremony.step
             report = ceremony.report
+            // The pairing step is the end of the pairing process: the operator has compared the
+            // wallet's addresses with the ones on screen, so the pending pairing has been served
+            // and the next launch starts at home (amendment 43).
+            if mode == .rePair, ceremony.step == .teardown {
+                pendingPairing.clear()
+                isPendingPairingResume = false
+            }
             syncStepOutputs()
         } catch {
             fail(error)
@@ -543,26 +587,58 @@ public final class CeremonyViewModel {
         }
     }
 
-    /// Wipes the mnemonic, the seed and both private keys out of the app's memory, **before**
-    /// the pairing codes are produced. The pairing step needs no secret, so the window in
-    /// which the private keys exist in memory ends here rather than at the end of the run
-    /// (amendment 42).
+    /// Wipes the mnemonic, the seed and both private keys out of the app's memory. This is the
+    /// last thing the provisioning process does before it produces its record and closes the app
+    /// (amendment 43); the pairing process that follows never holds a secret at all.
     ///
-    /// The keys are on the cards by now, and the pairing codes stay reproducible from the
-    /// card's manifest, so nothing is lost: what the app keeps is the public material the
-    /// wallet is about to be given.
+    /// The keys are on the cards by now, and the pairing codes stay reproducible from the card's
+    /// manifest, so nothing is lost: what the app keeps is the public material the wallet is about
+    /// to be given.
     ///
     /// The flag is the screens' copy, re-read from the ceremony rather than kept as the truth:
     /// the ceremony's answer is derived from the secrets themselves, and it is cleared again
     /// when the ceremony wipes everything (amendments 41, 42).
     public private(set) var secretsWiped = false
 
-    public func wipeSecrets() {
-        runSync { ceremony in
+    /// Wipes the secrets and ends the provisioning process, leaving the record of what was
+    /// written and verified on screen (amendment 43).
+    ///
+    /// This is the end of the first of the run's two processes. Pairing the wallet is the second:
+    /// it reads the codes back out of the card's manifest and produces its own record, which is
+    /// why nothing about the pairing is stored — the flag below is the whole handover.
+    ///
+    /// The record is produced **before** the app closes, because the process that can testify to
+    /// the card's serials, the read-back, the policy and the retry limits is this one, and it is
+    /// about to be gone.
+    public func wipeSecretsAndExit() {
+        guard let ceremony else { return }
+        do {
             try ceremony.wipeSecrets()
+        } catch {
+            fail(error)
+            return
         }
-        secretsWiped = ceremony?.secretsWiped ?? false
+        secretsWiped = ceremony.secretsWiped
         guard secretsWiped else { return }
+        clearSecretFormState()
+        // Set before the record is produced and before the alert: if the operator kills the app
+        // while the alert is up, the wipe has happened and the next launch still knows to pair.
+        pendingPairing.markPending()
+        report = ceremony.finish()
+        step = ceremony.step
+        phase = .finished
+        showExitAlert = true
+    }
+
+    /// Ends the process, as the alert told the operator it would. iOS has no way to restart the
+    /// phone from an app, so "reboot" here means this app: it closes, and the next launch starts
+    /// in the pairing process. Deliberately not part of the ceremony, and deliberately reachable
+    /// only from the two places that have just explained it (the alert and the record screen).
+    public func exitForPairing() {
+        exit(0)
+    }
+
+    private func clearSecretFormState() {
         // The view model holds its own copies of the words, the transcription answer and the
         // PIN fields; the ceremony cannot clear those for it.
         mnemonic = []
@@ -573,6 +649,15 @@ public final class CeremonyViewModel {
         userPINConfirmation = ""
         adminPIN = ""
         adminPINConfirmation = ""
+    }
+
+    public func wipeSecrets() {
+        runSync { ceremony in
+            try ceremony.wipeSecrets()
+        }
+        secretsWiped = ceremony?.secretsWiped ?? false
+        guard secretsWiped else { return }
+        clearSecretFormState()
     }
 
     public func buildPairingURs() {

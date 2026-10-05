@@ -21,6 +21,9 @@ struct CeremonyRootView: View {
                 case .running:
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
+                            if viewModel.isPendingPairingResume {
+                                PendingPairingBanner()
+                            }
                             if let message = viewModel.errorMessage {
                                 ErrorBanner(message: message)
                             }
@@ -136,6 +139,26 @@ struct CeremonyRootView: View {
 }
 
 // MARK: - Shared chrome
+
+/// Says why the app opened on a card read instead of the home screen, for the run that stopped at
+/// the wipe and closed itself (amendment 43). The pairing codes are not in memory and never were
+/// stored: they come back out of the card's manifest, which is what this process reads.
+struct PendingPairingBanner: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Pairing is still pending", systemImage: "link")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.blue)
+            Text("The last run wrote the wallet to its YubiKey(s), wiped the secrets and closed the app. Pairing is the second process: hold the YubiKey you provisioned, and the codes are read back out of its stored manifest. Nothing is written to the card.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
 
 /// Consistent step layout: what this step does, why it matters, the action, and
 /// an optional note about what happens next.

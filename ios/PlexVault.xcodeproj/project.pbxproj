@@ -30,6 +30,7 @@
 		AC5A5E23ECF5CC76ADE84E3B /* QRScanModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE62E25333881B08400609F1 /* QRScanModel.swift */; };
 		B388F225C84E42E8309146D5 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C3C7619237808EA2F79806 /* HomeView.swift */; };
 		B40BB0B42016EAAF6CF0067C /* RePairUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA4EE00AE351EC234A4478D0 /* RePairUITests.swift */; };
+		B4739ECC4475D5BA4F3A0C72 /* PendingPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F601AF84AB2EA4E7F7563DE /* PendingPairingStore.swift */; };
 		B7655F1581B34403B621E737 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10824E436C2C10D8ACD8F54A /* QRScannerView.swift */; };
 		B7E578302A889456CF799E43 /* CardPresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD69D256E24B9A5827079FF0 /* CardPresence.swift */; };
 		B931C866D18722F12F38087D /* SigningViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8208006FA19D2CD40A37C2E1 /* SigningViewModel.swift */; };
@@ -67,6 +68,7 @@
 		63784F625FBF780F134CEC0B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlexVaultApp.swift; sourceTree = "<group>"; };
 		6E794EB0F36F45FD9BD807D0 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		6F601AF84AB2EA4E7F7563DE /* PendingPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingPairingStore.swift; sourceTree = "<group>"; };
 		7029409A50A278443DA04717 /* SetupFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupFlowUITests.swift; sourceTree = "<group>"; };
 		8208006FA19D2CD40A37C2E1 /* SigningViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningViewModel.swift; sourceTree = "<group>"; };
 		88C79A02C45351291BF93ED0 /* VaultKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VaultKit; path = Packages/VaultKit; sourceTree = SOURCE_ROOT; };
@@ -182,6 +184,7 @@
 				FD69D256E24B9A5827079FF0 /* CardPresence.swift */,
 				8A04BF02912F01923ADD40F2 /* CardTransports.swift */,
 				CDCE8BB57515BD6A8AFC22DB /* DeviceChoiceStore.swift */,
+				6F601AF84AB2EA4E7F7563DE /* PendingPairingStore.swift */,
 				F8809A236D2A19B5D0D92541 /* QRCodeView.swift */,
 				961B2568A7E9DB1563B80115 /* SecretEntryField.swift */,
 				0BAF22A002332D8E980A70EF /* YubiKeyGlyph.swift */,
@@ -367,6 +370,7 @@
 				DF3F3C2E2F8E9FFE4B726CEA /* DeviceChoiceView.swift in Sources */,
 				B388F225C84E42E8309146D5 /* HomeView.swift in Sources */,
 				11E2325830988AF2E3787DCA /* MockYubikeyTransport.swift in Sources */,
+				B4739ECC4475D5BA4F3A0C72 /* PendingPairingStore.swift in Sources */,
 				36A93EAE33708CE1B102D692 /* PlexVaultApp.swift in Sources */,
 				E779B12C4CFD586022163D58 /* QRCodeView.swift in Sources */,
 				AC5A5E23ECF5CC76ADE84E3B /* QRScanModel.swift in Sources */,

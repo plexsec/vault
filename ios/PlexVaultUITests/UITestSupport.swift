@@ -226,13 +226,19 @@ extension XCTestCase {
     func launchApp(
         deviceChoice: String = "nfc",
         firstRun: Bool = false,
-        arguments: [String] = []
+        arguments: [String] = [],
+        resetPendingPairing: Bool = true
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = arguments
         app.launchArguments += firstRun
             ? ["-reset-device-choice"]
             : ["-device-choice", deviceChoice]
+        // A wipe sets the pending-pairing flag and the value survives the process, so a test that
+        // walks a ceremony to the wipe would otherwise leave every later test launching into the
+        // pairing process instead of the home screen. The test that is *about* that value opts out
+        // and relaunches (amendment 43).
+        if resetPendingPairing { app.launchArguments += ["-reset-pending-pairing"] }
         app.launch()
         return app
     }
@@ -484,15 +490,15 @@ extension XCTestCase {
         tapWhenVisible(confirm, in: app, file: file, line: line)
     }
 
-    /// Everything after the mnemonic: derivation, the card, the wipe, the pairing
-    /// codes and the teardown. Returns once the record is on screen.
+    /// Everything after the mnemonic in the *provisioning* process: derivation, the card(s), the
+    /// wipe, and the record it leaves on screen. Returns with that record showing.
     ///
-    /// `expectedEVMAddress` is asserted against the address the pairing screen
-    /// shows, so the codes are checked against the address derived independently
-    /// of the app.
+    /// It deliberately stops there rather than pairing the wallet: pairing is a second process
+    /// with its own record (amendment 43). A test that needs a provisioned simulated card — for
+    /// signing, or to re-pair — carries on from this screen, because the alert's "stay" path keeps
+    /// the process (and with it the process-wide simulated card) alive.
     func completeCeremonyAfterMnemonic(
         _ app: XCUIApplication,
-        expectedEVMAddress: String,
         userPIN: String,
         adminPIN: String,
         file: StaticString = #filePath,
@@ -513,52 +519,53 @@ extension XCTestCase {
                       "the card-count step is missing:\(app.debugDescription)", file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
 
-        // The card, in its own steps, then the pairing codes.
+        // The card, in its own steps, then the end of this process.
         provisionTheCard(app, userPIN: userPIN, adminPIN: adminPIN, file: file, line: line)
-        pairAndFinish(app, expectedEVMAddress: expectedEVMAddress, file: file, line: line)
+        wipeSecrets(app, exit: false, file: file, line: line)
     }
 
-    /// The last card's Continue, then the wipe that has to precede the pairing codes, then the
-    /// codes, the address comparison, the teardown and the record.
-    func pairAndFinish(
+    /// The wipe that ends the provisioning process: the alert that says the app is closing, and —
+    /// when `exit` is true — the app actually closing itself.
+    ///
+    /// `exit: false` is the tests' path: it keeps the process alive (the simulated card is
+    /// process-wide state, so ending the process would take the freshly written card with it) and
+    /// leaves the record on screen, which is what the provisioning assertions are about.
+    func wipeSecrets(
         _ app: XCUIApplication,
-        expectedEVMAddress: String,
+        exit: Bool,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        // The keys are on the card, so they leave memory before the wallet is shown
-        // anything: the wipe step is the one before the codes (amendment 42). Its first tap
-        // wipes and its second continues, and the assertion in between is the app saying
-        // that it happened.
-        tapStepAction("Wipe secrets", in: app, file: file, line: line)
+        tapStepAction("Wipe secrets & Exit", in: app, file: file, line: line)
+
+        let alert = app.alerts["Secrets wiped"]
         XCTAssertTrue(
-            app.staticTexts["The mnemonic, the seed and both private keys are no longer in memory."]
-                .waitForExistence(timeout: 10),
-            "the wipe must report what it cleared before the step closes", file: file, line: line
+            alert.waitForExistence(timeout: 15),
+            "the exit alert must appear after the wipe:\n\(app.debugDescription)",
+            file: file, line: line
         )
-        tapStepAction("Continue", in: app, file: file, line: line)
-
-        // Pairing: acknowledge the chain code, build the codes, check the address,
-        // then continue.
-        let acknowledge = app.switches["I understand that only the address shown here can be signed for"]
-        XCTAssertTrue(acknowledge.waitForExistence(timeout: 10), "chain-code acknowledgement missing",
-                      file: file, line: line)
-        tapWhenVisible(acknowledge, in: app, file: file, line: line)
-        tapStepAction("Prepare pairing codes", in: app, file: file, line: line)
-
         XCTAssertTrue(
-            app.staticTexts[expectedEVMAddress].waitForExistence(timeout: 10),
-            "the pairing screen must show the derived EVM address", file: file, line: line
+            alert.staticTexts.containing(
+                NSPredicate(format: "label CONTAINS %@", "Reopen the app to continue")
+            ).firstMatch.exists,
+            "the alert must tell the operator to reopen the app to pair",
+            file: file, line: line
         )
-        let confirmed = app.switches["I confirmed my desktop wallet shows these exact values"]
-        XCTAssertTrue(confirmed.waitForExistence(timeout: 5), file: file, line: line)
-        tapWhenVisible(confirmed, in: app, file: file, line: line)
-        tapStepAction("Continue", in: app, file: file, line: line)
 
-        // Teardown: the secrets went before the pairing, so this is the record.
-        tapStepAction("Finish and show the record", in: app, file: file, line: line)
-
-        XCTAssertTrue(app.buttons["Provision another wallet"].waitForExistence(timeout: 10),
-                      "the record must be shown when the ceremony finishes", file: file, line: line)
+        if exit {
+            alert.buttons["Close the app"].tap()
+            XCTAssertTrue(
+                app.wait(for: .notRunning, timeout: 20),
+                "the app must close itself rather than stay running",
+                file: file, line: line
+            )
+        } else {
+            alert.buttons["Stay on the record"].tap()
+            XCTAssertTrue(
+                app.buttons["Provision another wallet"].waitForExistence(timeout: 15),
+                "the provisioning record must be on screen:\n\(app.debugDescription)",
+                file: file, line: line
+            )
+        }
     }
 }

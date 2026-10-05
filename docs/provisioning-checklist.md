@@ -41,7 +41,8 @@ look for a way around it — the ordering gates are the security property.
 
 Follow the app. The checklist below is the same sequence, so you can confirm each
 step completed rather than trusting the flow: the keys are generated first, then each
-YubiKey is reset, configured and written in its own pass, and the pairing codes come last.
+YubiKey is reset, configured and written in its own pass, then the secrets are wiped and the
+app closes itself, and pairing the wallet is the second process that follows.
 
 - [ ] **Posture + rules** acknowledged
 - [ ] **Entropy commitment** (first 8 hex digits of SHA-256 of the entropy read
@@ -91,22 +92,32 @@ YubiKey is reset, configured and written in its own pass, and the pairing codes 
                   step rather than finishing without it
             - [ ] No step asked for a second touch, and no screen was left between a write and its
                   proof
-- [ ] **Wipe the secrets** — the screen between the last card and the pairing codes. One tap clears
-      the mnemonic, the seed and both private keys out of the app's memory, and the screen then says
-      so; the second tap continues
-      - [ ] Read what it wipes: from here on the app holds public material only — the public keys,
-            the chain codes the wallet is about to be given, and the record
+- [ ] **Wipe secrets & Exit** — the end of the **first process**: it clears the mnemonic, the seed and
+      both private keys out of the app's memory, produces the provisioning record, and closes the app
+      - [ ] The record is on screen before the app goes: **save it** (Share or Copy) — it says what
+            was written to which card, and it is the only artifact that can say so
+      - [ ] Read the alert: the app is about to close itself. "Stay on the record" keeps it open if
+            you want to look at the record again
       - [ ] Understood: the words cannot be shown again after this. If the notes above record that
             you **declined** the paper backup, the YubiKey(s) just written are the only copy of both
-            keys, and pairing can still be repeated later from the card's manifest (Part 3b)
+            keys
+- [ ] **Reopen the app to continue pairing** — this is the **second process**, and it is the reason
+      the app closed: it opens straight on the pairing flow (no home screen, no setup screen)
+      - [ ] Hold the YubiKey you just provisioned against the phone and tap **Read YubiKey**
+      - [ ] **Read pairing manifest** — no PIN is needed. The app checks the stored manifest against
+            the keys the card reports for its own slots and refuses if they disagree. A card that was
+            reset, or provisioned before the manifest existed, has nothing to pair from: the way
+            back is a full ceremony with the mnemonic
+      - [ ] Nothing is written to the card in this process, and no mnemonic or PIN is entered
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
       - [ ] The wallet shows the same Ed25519 public key as the app ✔
       - [ ] You have acknowledged that the pairing code carries a chain code
             (required by Keystone/MetaMask) and that only the address shown can
             be signed for
-- [ ] **Finish** — the provisioning record on screen, saved (it contains public data only, and it
-      carries the "secrets wiped from app memory before pairing" line)
+- [ ] **Finish the pairing process** — the **pairing record** on screen, saved next to the
+      provisioning record. Two records, one per process, each saying which half of the run it is
+      (public data only, both of them)
 - [ ] Restart the app before any further ceremony
 
 ## Part 3b — Re-pairing later (read-only, no reset)
@@ -141,8 +152,12 @@ stay in the card. It is also the recovery route when the app has been reinstalle
 ## Part 4 — Afterwards
 
 - [ ] Store the two steel plates in separate, secure locations
-- [ ] Store the provisioning record with the plates (it holds no secrets)
+- [ ] Store the **provisioning record** with the plates (it holds no secrets), and the **pairing
+      record** from the second process with it
 - [ ] Store the record of which YubiKey serial holds which address
+- [ ] If the app is reopened for any reason and opens straight on the pairing flow, that is the
+      pending pairing from the run that just finished: pair it, or leave the flow (the app stops
+      offering it after that)
 - [ ] Run one **recovery drill** on the spare YubiKey (§8.3): repeat Part 3 from
       the mnemonic (Restore mode), confirm the public key matches, then reset the
       spare

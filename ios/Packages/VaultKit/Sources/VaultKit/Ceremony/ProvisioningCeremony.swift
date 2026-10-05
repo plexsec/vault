@@ -143,6 +143,15 @@ public struct CeremonyReport: Equatable, Codable, Sendable {
                 "mnemonic written down: \(mnemonicBackedUp ? "yes" : "NO — this record is the only copy, and the keys exist only in the card(s) above")"
             )
         }
+        // The two processes produce two records, and each says which half of the run it is
+        // (amendment 43): a provisioning record that carries no pairing codes says so rather than
+        // looking like a run that forgot them, and a pairing record names the manifest it was read
+        // from instead of claiming to have written anything.
+        if mode == .rePair {
+            lines.append("pairing codes: read back out of the card's stored manifest by this run")
+        } else if keys.allSatisfy({ $0.pairingURType == nil }) {
+            lines.append("pairing codes: not produced by this run — the pairing run that follows produces its own record")
+        }
 
         for record in keys {
             lines.append("")

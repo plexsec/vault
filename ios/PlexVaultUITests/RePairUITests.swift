@@ -97,7 +97,6 @@ final class RePairUITests: XCTestCase {
         advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
         try revealAndConfirmMnemonic(app, entropy: entropy)
         completeCeremonyAfterMnemonic(app,
-            expectedEVMAddress: expectedEVM,
             userPIN: Self.userPIN, adminPIN: Self.adminPIN)
 
         // Back to setup for the read-only pass. The card is a process-wide mock, so
