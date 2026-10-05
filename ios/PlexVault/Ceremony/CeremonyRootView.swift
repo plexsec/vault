@@ -59,11 +59,6 @@ struct CeremonyRootView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if viewModel.phase == .running {
-                    PrivacyFooter()
-                }
-            }
             // The PIN fields use `.numberPad`, which has no return key: without an
             // explicit dismiss the keyboard covers the lower part of the form and
             // cannot be closed at all.
@@ -257,19 +252,6 @@ struct StepProgressBadge: View {
         Text("\(min(current, total))/\(total)")
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
-    }
-}
-
-struct PrivacyFooter: View {
-    var body: some View {
-        Text("One transaction = one touch. If any screen ever asks for a second touch for the same transaction, treat the app as compromised and stop.")
-            .font(.caption2)
-            .multilineTextAlignment(.center)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(.bar)
     }
 }
 

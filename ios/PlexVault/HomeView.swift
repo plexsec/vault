@@ -99,15 +99,20 @@ struct HomeView: View {
                     // own line box.
                     HStack(alignment: .center) {
                         Text("PlexVault").font(.largeTitle.bold())
+                        VStack(alignment: .leading) {
+                            Text(BuildInfo.version)
+                                .font(.caption)
+                                .foregroundStyle(.blue)
+                            Text(BuildInfo.binarySHA256?.prefix(8) ?? "").font(.caption).foregroundStyle(.secondary)
+                        }
                         Spacer(minLength: 12)
                         deviceButton
                     }
-                    Text(BuildInfo.summary).font(.caption).foregroundStyle(.secondary)
                 }
 
                 RouteCard(
                     title: "Sign a transaction",
-                    detail: "Scan the unsigned transaction, check what it does, and sign it with one touch.",
+                    detail: "Scan a transaction QR code, check what it does, and sign it with YubiKey.",
                     systemImage: "signature",
                     identifier: "route-signing"
                 ) {
@@ -120,10 +125,6 @@ struct HomeView: View {
                     ceremonyViewModel.mode = mode
                     route = .provisioning
                 }
-
-                Text("Signing never writes to the card — every signature needs the PIN and a touch.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
             }
             .padding()
         }
@@ -197,11 +198,11 @@ extension CeremonyMode {
     var setupDetail: String {
         switch self {
         case .freshGeneration:
-            return "New 24-word mnemonic and both signing keys."
+            return "Create new private keys, saving as mnemonic or importing into Yubikeys."
         case .restoreFromMnemonic:
-            return "Re-import both keys from an existing mnemonic into a fresh YubiKey."
+            return "Re-import private keys from an existing mnemonic into fresh YubiKeys."
         case .rePair:
-            return "Export pairing codes to link a wallet. Read-only."
+            return "Show pairing codes to link a wallet."
         }
     }
 

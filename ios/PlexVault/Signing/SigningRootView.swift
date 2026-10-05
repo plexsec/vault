@@ -70,9 +70,6 @@ struct SigningRootView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if viewModel.phase != .finished { PrivacyFooter() }
-            }
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()

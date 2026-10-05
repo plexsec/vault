@@ -189,7 +189,7 @@ struct RetryLimitStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "How many wrong PIN entries each password tolerates before the card blocks it. The card keeps one counter per password and refills it to this number on every correct entry; three is its factory value. The two are set separately because the passwords are not used alike — the User PIN is typed on every signature, the Admin PIN almost never — and the card stores them separately anyway.",
+            why: "How many wrong PIN entries each password tolerates before the YubiKey blocks it. The YubiKey keeps one counter per password and refills it to this number on every correct entry; three is its factory value. The two are set separately because the passwords are not used alike — the User PIN is typed on every signature, the Admin PIN almost never — and the card stores them separately anyway.",
             caution: "Each number is that password's brute-force budget, and also how many typos stand between you and a blocked card. The User PIN is 6 digits and typed often; the Admin PIN is 8 and rarely typed at all. Keep both low.",
             actionTitle: "Set PIN retry limits",
             isBusy: viewModel.busy,
@@ -214,17 +214,16 @@ struct RetryLimitStepView: View {
             KeyValueRows(rows: [
                 ("User PIN (PW1)", "\(userLimit) wrong entries, then blocked"),
                 ("Admin PIN (PW3)", "\(adminLimit) wrong entries, then blocked"),
-                ("Resetting code", "not set by this app, so nothing can unblock with it"),
             ])
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("If every attempt is used up").font(.footnote.weight(.semibold))
                 Text("""
-                **User PIN blocked** — nothing can be signed until it is unblocked, and unblocking needs the Admin PIN (the card's `RESET RETRY COUNTER`), which this version does not do. In practice the card is set up again from the 24 words, which erases both keys.
+                **User PIN blocked** — nothing can be signed until it is unblocked, and unblocking needs the Admin PIN.
 
-                **Admin PIN blocked** — the card can no longer be provisioned or re-paired. The reset step clears it again and needs no PIN, but it also erases both keys.
+                **Admin PIN blocked** — the card can no longer be provisioned or re-paired. The reset step clears it again and needs no PIN, but it also erases all keys.
 
-                The funds are not lost while the 24 words are safe, but the card has to be set up again from them.
+                The funds are not lost while the 24 words mnemonic is safe, but the YubiKey has to be set up again from them.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -243,7 +242,7 @@ struct EntropyStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "The 24 words are generated from 256 bits produced by the YubiKey's hardware random-number generator (GET CHALLENGE). One mnemonic backs up both signing keys. The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
+            why: "The 24 words mnemonic is generated from 256 bits entropy produced by the YubiKey's hardware random-number generator, together with iOS system CSPRNG. The commitment below lets you verify later that the mnemonic you wrote down is the one this device generated.",
             actionTitle: hasCommitment ? "Reveal the mnemonic" : "Generate entropy",
             isEnabled: !hasCommitment || commitmentRecorded,
             action: {
@@ -265,31 +264,8 @@ struct EntropyStepView: View {
                     .font(.footnote)
                     .padding(.top, 4)
 
-                Divider().padding(.vertical, 4)
-
-                Text("Optional dice ritual").font(.footnote.weight(.medium))
-                Text("""
-                Rolling dice does not change the generated words in this version — the \
-                system CSPRNG is authoritative. You may still roll >= 99 times and record \
-                the sequence as a ceremony witness, but it cannot be used to reproduce the \
-                mnemonic afterwards.
-                """)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                HStack(spacing: 6) {
-                    ForEach(1...6, id: \.self) { face in
-                        Button("\(face)") { viewModel.recordDiceRoll(face) }
-                            .buttonStyle(.bordered)
-                    }
-                }
-                if !viewModel.diceRolls.isEmpty {
-                    Text("Rolls recorded: \(viewModel.diceRolls.count)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
             } else {
-                Text("256 bits of entropy will be generated on this device and never leave it.")
+                Text("256 bits of entropy will be generated on this device and never leave it, or be stored.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -338,7 +314,7 @@ struct MnemonicStepView: View {
 
     private var generateView: some View {
         StepScaffold(
-            why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; the YubiKey can be replaced, the words cannot. This one mnemonic restores both keys.",
+            why: "Transcribe these 24 words onto your steel plate now. They are the only backup of the wallet; the YubiKey can be replaced, the words cannot.",
             caution: viewModel.screenIsCaptured
                 ? "Screen recording or mirroring is active. The words cannot be shown."
                 : "No cameras, no screenshots. The words hide themselves again after \(CeremonyViewModel.revealWindowSeconds) seconds.",
@@ -433,7 +409,7 @@ struct DerivationStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Derives both signing keys from the one mnemonic: secp256k1 at \(DerivationPath.secp256k1Default.description) via BIP32, and Ed25519 at \(DerivationPath.ed25519Default.description) via SLIP-0010. The private keys stay in memory until they are imported into the YubiKey.",
+            why: "Derives keys from the mnemonic: secp256k1 at \(DerivationPath.secp256k1Default.description) via BIP32, and Ed25519 at \(DerivationPath.ed25519Default.description) via SLIP-0010. The private keys stay in memory until they are imported into the YubiKey.",
             actionTitle: viewModel.derivedKeys == nil ? "Derive keys" : "Continue",
             action: {
                 if viewModel.derivedKeys == nil {
@@ -460,9 +436,6 @@ struct DerivationStepView: View {
                 }
                 Text("These are the values the read-back check verifies against the YubiKey after import.")
                     .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("Deriving takes a moment: PBKDF2 with 2048 iterations, then BIP32 for secp256k1 and SLIP-0010 for Ed25519.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -484,8 +457,8 @@ struct ImportStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — along with each key's algorithm attributes, fingerprint and creation time, and then the two policies that make the keys safe to hold: a physical touch for every use on both slots, and the User PIN re-entered for every signature. This is the only step that puts key material on the card, and the policy is written last, in the same step, because writing a slot's algorithm attributes resets that slot and the applet drops that slot's touch policy with it.",
-            caution: "Do not remove the YubiKey during this step. The next step reads both keys and both policies back off the card; if it reports a discrepancy, stop and reset the card.",
+            why: "Writes private keys into the YubiKey along with each key's algorithm attributes, fingerprint and creation time, and then the two policies that make the keys safe to hold: a physical touch for every use on both slots, and the User PIN re-entered for every signature.",
+            caution: "Do not remove the YubiKey during this step.",
             actionTitle: "Import keys into YubiKey",
             isBusy: viewModel.busy,
             action: { Task { await viewModel.importKeys() } }
@@ -495,8 +468,8 @@ struct ImportStepView: View {
                     KeySection(
                         title: key.algorithm.displayName,
                         subtitle: key.slot == .signature
-                            ? "\(key.slot.displayName) (CRT B6) — counted by the hardware signature counter"
-                            : "\(key.slot.displayName) (CRT A4) — no hardware signature counter",
+                            ? "\(key.slot.displayName) (CRT B6)"
+                            : "\(key.slot.displayName) (CRT A4)",
                         rows: [
                             ("Algorithm", key.algorithm == .secp256k1
                                 ? "ECDSA secp256k1 (1.3.132.0.10)"
@@ -506,8 +479,6 @@ struct ImportStepView: View {
                         ]
                     )
                 }
-                Text("Both keys are written in one pass, then the touch policy and the PW1 status are written over them; the card must accept each before the ceremony continues. The next step reads all four values back.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -520,7 +491,7 @@ struct ReadBackStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Reads each public key back out of the YubiKey and compares it byte-for-byte against the key derived on this device, and reads the policy back with it: the touch policy on both signing-capable slots, the PW1 status and the PIN retry limits. This is the mandatory check that the card holds the keys — and the policy — you think it does; a key mismatch voids the whole procedure, and a policy the card does not report stops it.",
+            why: "Reads public keys back out of the YubiKey and compares it byte-for-byte against the key derived on this device, and reads the policy back with it.",
             actionTitle: viewModel.readBack.isEmpty ? "Verify read-back" : "Continue",
             isBusy: viewModel.busy,
             action: {
@@ -560,11 +531,6 @@ struct ReadBackStepView: View {
                     subtitle: "The card's own answer, after the last write to those slots",
                     rows: viewModel.policyConfirmationRows
                 )
-                Text("A card the app cannot read this policy back from is not a card that may be used. If any value above is wrong, do not sign with it: reset the OpenPGP applet and start again.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("No PIN is required for this read. The card returns public keys, which are public data.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }

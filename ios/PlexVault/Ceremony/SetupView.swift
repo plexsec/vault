@@ -26,24 +26,6 @@ struct SetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                header
-
-                // Explanatory and reference material is collapsed by default: the
-                // controls a user must operate come first, so the screen does not
-                // require scrolling past prose to reach the primary action.
-                section("What this does") {
-                    DisclosureGroup("How this works", isExpanded: $showExplanation) {
-                        Text("""
-                        Creates a 24-word mnemonic, imports both keys (secp256k1 + \
-                        Ed25519) into the YubiKey, verifies them by read-back, and \
-                        exports the public keys. Offline — it never signs.
-                        """)
-                        .font(.callout)
-                        .padding(.top, 6)
-                    }
-                    .font(.callout.weight(.medium))
-                }
-
                 section("Keys") {
                     keySummaryRow(
                         title: "ECDSA secp256k1",
@@ -53,14 +35,6 @@ struct SetupView: View {
                         title: "Ed25519",
                         detail: "Authentication slot, path \(DerivationPath.ed25519Default.description). Serves Solana, Cardano, Polkadot and other Ed25519 chains."
                     )
-                    Text("Both keys come from one mnemonic. Only the signature slot has a hardware counter.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                section("Device posture") {
-                    Toggle("This iPhone is factory-reset, has no SIM, and is in airplane mode", isOn: $viewModel.postureConfirmed)
-                    Toggle("No cameras or other people can see this screen", isOn: $rulesAcknowledged)
                 }
 
                 section("Non-negotiable rules") {
@@ -72,27 +46,10 @@ struct SetupView: View {
                         rule("If the app ever reports a signature or key mismatch, stop and restart the ceremony on a different device.")
                     }
                 }
-
-                section("Build identity") {
-                    DisclosureGroup(isExpanded: $showBuildIdentity) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            KeyValueRows(rows: [
-                                ("Version", BuildInfo.version),
-                                ("Binary SHA-256", BuildInfo.binarySHA256 ?? "unavailable"),
-                            ])
-                            Text("Compare this hash against the published reproducible-build hash before writing down any words.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.top, 6)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Build identity").font(.callout.weight(.medium))
-                            Text(BuildInfo.shortHash)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                
+                section("Device posture") {
+                    Toggle("This iPhone is factory-reset, has no SIM, and is in airplane mode", isOn: $viewModel.postureConfirmed)
+                    Toggle("No cameras or other people can see this screen", isOn: $rulesAcknowledged)
                 }
             }
             .padding()
@@ -115,30 +72,11 @@ struct SetupView: View {
             .controlSize(.large)
             .disabled(!canBegin)
             .accessibilityIdentifier("begin-ceremony")
-
-            if !canBegin {
-                Text("Tick \"No cameras or other people can see this screen\" to continue.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
         }
         .padding(.horizontal)
         .padding(.top, 8)
         .padding(.bottom, 4)
         .background(.bar)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Minimum-trust air-gapped signer").font(.title3.weight(.semibold))
-            Text("YubiKey 5 (OpenPGP) + offline iPhone")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Label(viewModel.mode.setupTitle, systemImage: viewModel.mode.setupSystemImage)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.tint)
-        }
     }
 
     /// Non-interactive row: both keys are always provisioned, so there is no

@@ -29,9 +29,11 @@ extension XCTestCase {
         let top = (navBar.exists ? navBar.frame.maxY : window.minY) + 8
         let primaryAction = app.buttons["begin-ceremony"]
         // With no pinned action on screen (the running phase puts each step's
-        // action inside the scroll view) fall back to clearing the toolbar and the
-        // privacy footer.
-        let bottom = (primaryAction.exists ? primaryAction.frame.minY : window.maxY - 140) - 12
+        // action inside the scroll view) the band reaches the bottom of the
+        // window: nothing is pinned down there any more, and a margin large
+        // enough to clear the footer that used to be left the last control of a
+        // short page — "Confirm transcription" — a few points below the band.
+        let bottom = (primaryAction.exists ? primaryAction.frame.minY : window.maxY - 12) - 12
         return CGRect(x: window.minX, y: top, width: window.width,
                       height: max(1, bottom - top))
     }
@@ -138,9 +140,71 @@ extension XCTestCase {
 
         // Dismiss the keyboard so the next field is not covered by it. This also
         // exercises the app's own Done button, which the numeric PIN pads need.
-        let done = app.buttons["dismiss-keyboard"]
-        if done.exists { done.tap() }
+        closeKeyboard(in: app, file: file, line: line)
         Thread.sleep(forTimeInterval: 0.2)
+    }
+
+    /// Types into a field, and does not start typing until that field really holds
+    /// the keyboard's focus.
+    ///
+    /// `typeText` does not type into the element it is called on: it types into
+    /// whatever holds the keyboard's focus, and when it cannot establish which
+    /// element that is it synthesizes nothing and fails with "Neither element nor
+    /// any descendant has keyboard focus". The condition is read from the same
+    /// `hasKeyboardFocus` attribute `typeText`'s own lookup uses, because that is
+    /// the only signal that says what the keyboard is attached to — a sleep is not:
+    /// `typeSecret`'s fixed 0.3s settle was measured to be enough on the PIN fields
+    /// and is not enough here.
+    ///
+    /// The tap is repeated until the focus arrives because of the keyboard's own
+    /// input-accessory toolbar: it holds this suite's `dismiss-keyboard`, it sits
+    /// exactly over the second and third back-fill fields on this page, and the page
+    /// is too short to scroll them out from under it. A tap delivered while that
+    /// toolbar is on screen lands on the toolbar, and the field keeps whatever focus
+    /// it had — which is why the field that does not take focus is always the second
+    /// one, and why `closeKeyboard` is called before the first tap.
+    func tapAndType(_ text: String, into field: XCUIElement, in app: XCUIApplication,
+                    file: StaticString = #filePath, line: UInt = #line) {
+        closeKeyboard(in: app, file: file, line: line)
+        let focused = app.textFields.matching(NSPredicate(format: "hasKeyboardFocus == true"))
+        var ready = false
+        for _ in 0..<4 {
+            let holders = focused.allElementsBoundByIndex
+            // By position rather than by identity: the query returns the field the
+            // keyboard is on, and the element the test holds is a fresh lookup of
+            // the same field.
+            if holders.count == 1, abs(holders[0].frame.midY - field.frame.midY) < 2 {
+                ready = true
+                break
+            }
+            tapWhenVisible(field, in: app, file: file, line: line)
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        XCTAssertTrue(
+            ready,
+            "the keyboard never focused \(field) — typing would have gone elsewhere:\n"
+                + app.debugDescription,
+            file: file, line: line
+        )
+        field.typeText(text)
+    }
+
+    /// Closes the keyboard and waits until its accessory toolbar is really gone.
+    ///
+    /// Tapping Done is not enough on its own. The toolbar stays on screen while it
+    /// animates away, and a tap that arrives in that window is swallowed by it — the
+    /// field under it never takes focus, which surfaces later as `typeText` failing
+    /// with "Neither element nor any descendant has keyboard focus".
+    func closeKeyboard(in app: XCUIApplication,
+                       file: StaticString = #filePath, line: UInt = #line) {
+        let done = app.buttons["dismiss-keyboard"]
+        guard done.exists else { return }
+        done.tap()
+        XCTAssertTrue(
+            done.waitForNonExistence(timeout: 3),
+            "the keyboard's toolbar did not close, so it would swallow the next tap",
+            file: file, line: line
+        )
     }
 }
 
@@ -214,12 +278,12 @@ extension XCTestCase {
     ///
     /// This is not `tapWhenVisible`, and the difference is measured rather than
     /// stylistic. A step action is the last element of the step's content, and the
-    /// tall steps (derivation, import, read-back) put it below the fold. Scrolled
-    /// to the end, it settles ~5pt below the band `visibleBand(in:)` reserves for
-    /// the privacy footer — the band would refuse to tap a button that is on
-    /// screen and unobstructed. `isHittable` asks the question that matters here
-    /// (is anything in the way?), and unlike the posture toggles, nothing overlays
-    /// a step action.
+    /// tall steps (derivation, import, read-back) put it below the fold. When the
+    /// page cannot scroll any further the action settles wherever it lands, which
+    /// need not be inside the band `visibleBand(in:)` measures — the band would
+    /// refuse to tap a button that is on screen and unobstructed. `isHittable`
+    /// asks the question that matters here (is anything in the way?), and unlike
+    /// the posture toggles, nothing overlays a step action.
     func tapStepAction(
         _ title: String,
         in app: XCUIApplication,
@@ -232,9 +296,9 @@ extension XCTestCase {
     /// Taps an element that may sit below the fold, scrolling until it is hittable.
     ///
     /// The band-based `tapWhenVisible` is the right helper for controls near the top
-    /// of a screen, but an action that is the last element of a tall page settles a
-    /// few points below the band it reserves for the privacy footer, and the band
-    /// then refuses to tap a button that is plainly on screen and unobstructed.
+    /// of a screen, but an action that is the last element of a page can settle
+    /// outside the band when the page has no room left to scroll, and the band then
+    /// refuses to tap a button that is plainly on screen and unobstructed.
     /// `isHittable` asks the question that matters for those.
     func tapScrolling(
         _ element: XCUIElement,
@@ -377,12 +441,10 @@ extension XCTestCase {
             let field = app.textFields.element(boundBy: position)
             XCTAssertTrue(field.waitForExistence(timeout: 5), "back-fill field \(position) missing",
                           file: file, line: line)
-            tapWhenVisible(field, in: app, file: file, line: line)
-            field.typeText(words[index])
+            tapAndType(words[index], into: field, in: app, file: file, line: line)
         }
 
-        let done = app.buttons["dismiss-keyboard"]
-        if done.exists { done.tap() }
+        closeKeyboard(in: app, file: file, line: line)
         Thread.sleep(forTimeInterval: 0.3)
 
         let confirm = app.buttons["Confirm transcription"]
