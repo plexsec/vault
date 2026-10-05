@@ -1863,3 +1863,62 @@ serials. The UI walk provisions one card, which is what the simulator's one simu
 the keys. Per-card retry limits are deliberately not offered — the limits are one policy decision,
 and the PINs are what differ per card. And nothing here changes what a single card *is*: the same
 two keys, the same fixed paths, the same pairing material, whichever run wrote it.
+
+## 41. v0.2: the second YubiKey was reset and never written
+
+**Sections:** §4.2 step 4b; `ProvisioningCeremony.beginCardPass`,
+`CeremonyViewModel.syncStepOutputs`, `ImportStepView`; `docs/m0-hardware-verification.md` item 20;
+`SimulatedCardTransport` and the UI test walk.
+
+**What was wrong.** With `card count = 2`, the first card was written and verified; the second card
+was reset, given its PINs and its retry limits — and **never written**. The operator saw the second
+card's write step already showing a **Continue** button and the *first* card's read-back, tapped it,
+and the ceremony moved on to the pairing codes. The report named two cards; only one of them held
+the keys.
+
+**Why.** Two pieces of state were per-*run* while being about a *card*:
+
+1. `ProvisioningCeremony` kept `readBackResults`, `pairingManifest` and the report's
+   `readBackVerified` / `touchPolicyVerified` / `pairingManifestStored` flags after a card was
+   written. `advance()` at the next card's write step is gated on exactly those flags, so it closed
+   the step on the previous card's answers.
+2. `CeremonyViewModel` cached `readBack` from that write, and `ImportStepView` decides what to show
+   — and which action to offer — from `!readBack.isEmpty`. So the screen offered "Continue" instead
+   of "Write and verify the YubiKey".
+
+The model tests drove `importAndVerify()` directly and never asked whether the step *could* be closed
+without one, so both defects passed every gate.
+
+**The fix.** A card's pass is now a scope with a beginning. `beginCardPass()` runs when the next
+card's inventory opens and clears the card reading, the read-back, the manifest, the policy flags,
+the retry limits and the per-key `readBackVerified` marks; the view model re-reads those from the
+ceremony on every step change instead of keeping a copy, and clears the inventory it holds and the
+destructive-reset acknowledgement with them. `advance()` at a card's write step therefore refuses
+until **that** card has been read back.
+
+**A second defect the new test then found.** The first card's *inventory* survived into the second
+card's pass on the screens, so the second card's inventory step showed the first card's reading and
+offered Continue: the ceremony would have gone straight to the reset, never reading the second card,
+which means the duplicate check could not run and the manifest would have been built with the first
+card's serial. Clearing the model's inventory in `beginCardPass()` (and the view's copy with it, in
+the same step-change branch) is what fixed it, and `advance()` now refuses a card step whose
+inventory has not happened.
+
+**How it was found, and how it was then checked on the card.** The operator reported it from a real
+YubiKey with the card count at 2. After the fix, a scratch harness on the Mac drove the **app's own**
+ceremony and transport against the attached key (5C NFC, firmware 5.8.0, applet 3.4) for a two-card
+run, provisioning the same physical key twice — the harness reports a second serial for the second
+pass, because that is what the duplicate check reads. After **each** pass the card was asked
+directly, not through the ceremony: both slots occupied, UIF `02 20` on both, PW1 status `00`, the
+198-byte manifest present, and both public keys byte-equal to the keys derived on the Mac. m0 item 20
+records the run, and the entitlement that made it possible (a CLI signed ad-hoc with
+`com.apple.security.smartcard`: `TKSmartCardSlotManager.default` is `nil` without it, which is what
+had blocked this check before).
+
+**What this says about the test suite.** The defect was in the *wiring* between the state machine and
+the screens, which model tests cannot see: they call the method that does the work, so they never ask
+whether the work could have been skipped. The guard is now a two-card UI walk, and the simulated
+reader grew the smallest affordance that makes one possible — `-simulated-cards <n>`, plus an
+explicit "the operator swapped the card" call from the view model at the moment a card's pass ends
+(inferring the swap from what the card holds does not work: the write step reads its own manifest
+back *after* writing it, so "this card looks written" is already true before the pass is over).

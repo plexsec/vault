@@ -124,6 +124,8 @@ public final class CeremonyViewModel {
     }
 
     private var ceremony: ProvisioningCeremony?
+    /// The card index the view model's per-card output was last taken from.
+    private var syncedCardIndex = 0
 
     // MARK: Derived view state
 
@@ -406,8 +408,33 @@ public final class CeremonyViewModel {
 
     /// Pulls in output that only exists once a step has been completed — chiefly
     /// the mnemonic, which is derived when the entropy step completes.
+    ///
+    /// The per-card outputs are re-read from the ceremony every time rather than kept as a
+    /// copy: the ceremony clears them when the next card's pass begins, and a copy that
+    /// survived would let the second card's write step show a "Continue" button on the first
+    /// card's read-back — which is how a YubiKey came to be reset and then never written
+    /// (amendment 41).
     private func syncStepOutputs() {
         guard let ceremony else { return }
+        // A new card is a new card: everything the screens hold about the previous one goes, and
+        // so does the destructive-reset tick, which belongs to the card it was made for.
+        if ceremony.cardIndex != syncedCardIndex {
+            syncedCardIndex = ceremony.cardIndex
+            // The inventory is the one the *screens* keep that the ceremony cannot correct for
+            // them: left in place, the next card's inventory step showed the previous card's
+            // reading and offered "Continue" instead of asking for the card in the operator's
+            // hand (amendment 41).
+            inventory = nil
+            acknowledgeDestructiveReset = false
+            #if DEBUG
+            // The simulated reader holds one card per `-simulated-cards` argument, so it has to
+            // be told that the operator swapped the card. This branch *is* that moment: a card's
+            // pass has just ended and the next YubiKey is being asked for.
+            SimulatedCardTransport.cardWasSwapped()
+            #endif
+        }
+        readBack = ceremony.readBackResults
+        pairingManifestStored = ceremony.pairingManifest != nil
         if step == .mnemonic {
             mnemonic = (try? ceremony.mnemonicForDisplay()) ?? []
             transcriptionChallenge = (try? ceremony.transcriptionChallenge()) ?? []
@@ -549,6 +576,7 @@ public final class CeremonyViewModel {
             try await body(ceremony)
             step = ceremony.step
             report = ceremony.report
+            syncStepOutputs()
         } catch {
             // A failed step may have left a mutating operation half-done. The
             // ceremony decides whether that is the case (`noteInterruption` is a

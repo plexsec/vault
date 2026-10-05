@@ -21,11 +21,10 @@ final class CeremonyFlowUITests: XCTestCase {
     private static let userPIN = "246810"
     private static let adminPIN = "87654321"
 
-    private func launchForCeremony() -> XCUIApplication {
-        let app = launchApp(
-            deviceChoice: "simulated",
-            arguments: ["-deterministic-entropy", Self.zeroEntropyHex]
-        )
+    private func launchForCeremony(cards: Int = 1) -> XCUIApplication {
+        var arguments = ["-deterministic-entropy", Self.zeroEntropyHex]
+        if cards > 1 { arguments += ["-simulated-cards", "\(cards)"] }
+        let app = launchApp(deviceChoice: "simulated", arguments: arguments)
         // The app opens on its home screen; the ceremony screens are behind it.
         openProvisioningFlow(app)
         return app
@@ -34,6 +33,48 @@ final class CeremonyFlowUITests: XCTestCase {
     private func button(_ label: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons[label]
     }
+
+    /// Two YubiKeys in one run: each is read, reset, given its own PINs and written, and the
+    /// record names both.
+    ///
+    /// This is the regression test for the defect a hardware run found with the card count at 2:
+    /// the second card was reset, its write screen showed the **first** card's read-back and a
+    /// Continue button, and tapping it carried the ceremony on without writing anything — so the
+    /// run reported two cards and only one of them held the keys (amendment 41). The assertion is
+    /// behavioural: the second card's write step must ask to be written.
+    func testASecondYubiKeyIsWrittenInTheSameRun() throws {
+        let app = launchForCeremony(cards: 2)
+        advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+        try revealAndConfirmMnemonic(app, entropy: [UInt8](repeating: 0, count: 32))
+
+        tapStepAction("Derive keys", in: app)
+        tapStepAction("Continue", in: app)
+
+        // Two YubiKeys, chosen after the keys exist and before the first card is touched.
+        let count = app.steppers["card-count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 10),
+                      "the card-count step is missing:\n\(app.debugDescription)")
+        count.buttons.element(boundBy: 1).tap()
+        tapStepAction("Continue", in: app)
+
+        // Card 1. `provisionTheCard` asserts the write action by name, so a write step that had
+        // already been closed by the previous card's results fails here rather than passing.
+        provisionTheCard(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+        XCTAssertTrue(app.buttons["Read YubiKey"].waitForExistence(timeout: 15),
+                      "the second card's inventory is due:\n\(app.debugDescription)")
+        provisionTheCard(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+
+        pairAndFinish(app, expectedEVMAddress: Self.expectedEVMAddress)
+
+        // The record names both cards, in the order they were presented.
+        XCTAssertTrue(app.staticTexts["YubiKey 1 of 2 serial"].waitForExistence(timeout: 10),
+                      "the record must name the first card:\n\(app.debugDescription)")
+        XCTAssertTrue(app.staticTexts["YubiKey 2 of 2 serial"].exists)
+    }
+
+    /// The address the deterministic (all-zero entropy) mnemonic derives, computed by the same
+    /// library the app uses, so the test asserts the wiring rather than re-deriving the crypto.
+    private static let expectedEVMAddress = "0x1CDE9225FfE472d7426a0e18A3407635F9fA8FDb"
 
     /// The regression test for the reported bug: after the entropy step, the
     /// mnemonic step must show 24 words.

@@ -846,6 +846,53 @@ final class ProvisioningCeremonyTests: XCTestCase {
         XCTAssertEqual(ceremony.chosenRetryLimits?.admin, CardPolicy.defaultRetryLimit)
     }
 
+    /// The second card's write step cannot be closed on the first card's answers.
+    ///
+    /// Every value the write step proves — the two public keys, the policy, the manifest — is a
+    /// fact about **one** card, so the next card's pass starts with none of them. This is the
+    /// defect a hardware run found: the second YubiKey was reset, the screen showed the first
+    /// card's read-back and a "Continue" button, and tapping it carried the ceremony on without
+    /// writing the card (amendment 41).
+    func testTheSecondCardsWriteCannotBeSkipped() async throws {
+        let card = MockSignerCard()
+        let ceremony = makeCeremony(card: card)
+        _ = try await runThroughDerivation(ceremony, cardCount: 2)
+        try await provisionOneCard(ceremony)
+
+        // The operator swaps in the next card, which is a *different* YubiKey: the mock carries
+        // one serial at a time, so this is the swap.
+        card.inventoryResult.serial = "11111111"
+
+        // Nothing the first card proved is still standing — not even the card reading, so the
+        // ceremony cannot walk past this card's inventory either.
+        XCTAssertNil(ceremony.inventory, "card 1's inventory must not stand in for card 2's")
+        XCTAssertTrue(ceremony.readBackResults.isEmpty)
+        XCTAssertNil(ceremony.pairingManifest)
+        XCTAssertNil(ceremony.report.touchPolicyVerified)
+        XCTAssertNil(ceremony.report.pairingManifestStored)
+        XCTAssertFalse(ceremony.report.readBackVerified)
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepIncomplete(step: .cardInventory, detail: "the YubiKey has not been read yet")
+            )
+        }
+
+        try await reachWriteStep(ceremony)
+        XCTAssertThrowsError(try ceremony.advance()) { error in
+            XCTAssertEqual(
+                error as? CeremonyError,
+                .stepIncomplete(step: .keyImport, detail: "the public keys have not been verified yet")
+            )
+        }
+
+        // And writing card 2 is what closes its step, exactly as for the first card.
+        _ = try await ceremony.importAndVerify()
+        XCTAssertEqual(ceremony.report.cards.count, 2)
+        try ceremony.advance()
+        XCTAssertEqual(ceremony.step, .pairingExport)
+    }
+
     // MARK: Pairing export (design.md §4.2 step 8)
     // MARK: PIN policy
 

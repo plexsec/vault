@@ -515,7 +515,17 @@ extension XCTestCase {
 
         // The card, in its own steps, then the pairing codes.
         provisionTheCard(app, userPIN: userPIN, adminPIN: adminPIN, file: file, line: line)
+        pairAndFinish(app, expectedEVMAddress: expectedEVMAddress, file: file, line: line)
+    }
 
+    /// The pairing codes, the address comparison, the teardown and the record — everything after
+    /// the last card has been written.
+    func pairAndFinish(
+        _ app: XCUIApplication,
+        expectedEVMAddress: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         // Pairing: acknowledge the chain code, build the codes, check the address,
         // then continue.
         let acknowledge = app.switches["I understand that only the address shown here can be signed for"]

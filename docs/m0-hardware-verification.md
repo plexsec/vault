@@ -688,6 +688,33 @@ of this item).
   returned `9000` and produced a readable public key. Recorded so that nobody "fixes" it, and so
   the next person does not spend an hour on `0x99` as I did.
 
+**Resolved (later, same card, same Mac): the app's own transport does reach the card, and the
+ceremony runs end to end on it.** The missing piece was the **entitlement**: `TKSmartCardSlotManager.default`
+is `nil` in an unsigned command-line binary and in an ad-hoc-signed `.app`, but a CLI signed
+ad-hoc *with* `com.apple.security.smartcard` gets a slot manager, and the app's unmodified
+`SmartCardTransport` then opens the session and sends the ceremony's APDUs. Two further details,
+both of which cost a run:
+
+* **One transport per session.** A shared `SmartCardTransport` instance that is `open()`ed again
+  for each operation hangs on the second `beginSession()`; `TransportSessionCard`'s factory shape
+  (a fresh transport per session) is what the card needs, and a harness that hands out one instance
+  looks like a wedged reader.
+* The `--entitlements` file needs only that one key; no sandbox or signing identity is required.
+
+With that, the whole ceremony was run against the YubiKey from this Mac, and a **two-card run**
+(`card count = 2`, the same physical key provisioned twice, the harness reporting a second serial
+for the second pass because that is what the duplicate check reads) wrote and verified **both**
+passes: after each one, the card itself reported both slots occupied, UIF `02 20` on both, PW1
+status `00`, the 198-byte manifest present, and both public keys byte-equal to the keys derived on
+the Mac. That is the evidence behind amendment 41, which fixes the defect this run exposed: with
+`card count = 2` the app reset the second card and then closed its write step on the *first* card's
+read-back, so the second card was never written.
+
+**What the run does not cover.** The same *serial* twice: the harness lies about the serial to stand
+in for a second key, so the "a card this run already wrote is refused" path is exercised by the unit
+tests rather than by the card. And the app's screens: this drives the ceremony and the APDU layer on
+hardware; the screens are covered by the simulator walk, which now also provisions two cards.
+
 **Still not verified: the app's own provisioning on a pristine card.** Three attempts to drive the
 *shipping* code from this Mac failed for transport reasons, every one of them worth knowing:
 

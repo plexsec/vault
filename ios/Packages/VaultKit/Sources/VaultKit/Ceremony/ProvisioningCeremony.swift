@@ -368,6 +368,10 @@ public final class ProvisioningCeremony {
     /// Serials this ceremony has already written. Read at the inventory, because the step
     /// after that inventory resets the card — which would erase the keys just written to it.
     private var provisionedSerials: Set<String> = []
+    /// The serial of the card whose write just completed, for the screen that reports what
+    /// happened on *this* card (the view model reads it instead of caching the last card's
+    /// read-back).
+    public private(set) var lastWrittenCardSerial: String?
     /// Held from the PIN step onwards — the retry write, the import with its policy
     /// write, and the manifest all authenticate with it — and wiped with everything
     /// else.
@@ -525,12 +529,36 @@ public final class ProvisioningCeremony {
 
     /// Where the ceremony goes once a card has been written: the next card's inventory, or
     /// the pairing export when that was the last one.
+    ///
+    /// The next card's pass starts from **nothing**: its read-back, its policy confirmation and
+    /// its manifest are facts about *that* card, and the report's flags are the gate the write
+    /// step is allowed to close on. Leaving the previous card's answers in place meant the
+    /// second card's write step could be closed without a write — which is exactly what happened
+    /// on hardware: the card was reset, the step showed the first card's read-back and a
+    /// "Continue" button, and tapping it carried the ceremony on (amendment 41).
     private func stepAfterCardWritten() -> CeremonyStep {
         if cardIndex + 1 < cardCount {
             cardIndex += 1
+            beginCardPass()
             return .cardInventory
         }
         return .pairingExport
+    }
+
+    /// Clears every answer that belongs to one YubiKey's pass, so the next card's steps cannot
+    /// be satisfied by the previous card's.
+    private func beginCardPass() {
+        inventory = nil
+        cardHeldExistingKey = false
+        readBackResults = [:]
+        pairingManifest = nil
+        report.touchPolicyVerified = nil
+        report.pairingManifestStored = nil
+        report.userPINRetryLimit = nil
+        report.adminPINRetryLimit = nil
+        for index in report.keys.indices {
+            report.keys[index].readBackVerified = false
+        }
     }
 
     /// Records an interruption (transport loss, app backgrounding).
@@ -1181,6 +1209,10 @@ public final class ProvisioningCeremony {
         if let serial = inventory?.serial { provisionedSerials.insert(serial) }
         sessionAdminPIN?.zeroize()
         sessionAdminPIN = nil
+        // This card's serial is what the next card's inventory is checked against, so it is
+        // recorded here rather than when the operator advances — an interruption after this
+        // point still knows which card must not be presented again.
+        lastWrittenCardSerial = inventory?.serial
 
         // Deliberately does NOT advance: the operator has to see the card's own answer —
         // both public keys next to the ones derived here, the policy as the card reports
