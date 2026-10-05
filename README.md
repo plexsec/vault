@@ -47,6 +47,8 @@ ios/
                               PSO:CDS signing
 tools/
   derive/                     independent Python oracle for the differential-testing fixtures
+  hardware/ceremony-probe/     macOS-only probe: runs the app's own ceremony and its own CCID transport
+                              against a real YubiKey (the only way to exercise two cards off-simulator)
   verify.sh                   every off-hardware check in one command
   audit-release.sh            mechanical release checks (no simulated card, no networking, no persistence except the
                               one named non-secret preference)

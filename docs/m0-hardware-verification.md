@@ -701,16 +701,23 @@ both of which cost a run:
   looks like a wedged reader.
 * The `--entitlements` file needs only that one key; no sandbox or signing identity is required.
 
-With that, the whole ceremony was run against the YubiKey from this Mac, and a **two-card run**
-(`card count = 2`, the same physical key provisioned twice, the harness reporting a second serial
-for the second pass because that is what the duplicate check reads) wrote and verified **both**
-passes: after each one, the card itself reported both slots occupied, UIF `02 20` on both, PW1
-status `00`, the 198-byte manifest present, and both public keys byte-equal to the keys derived on
-the Mac. That is the evidence behind amendment 41, which fixes the defect this run exposed: with
-`card count = 2` the app reset the second card and then closed its write step on the *first* card's
-read-back, so the second card was never written.
+All of that is committed as `tools/hardware/ceremony-probe`, which runs the app's ceremony over the
+app's transport and then asks the card **directly** what it holds. It is a probe rather than a
+provisioning tool (it resets the card, prints the mnemonic and declines the backup), and its README
+carries the signing step.
 
-**What the run does not cover.** The same *serial* twice: the harness lies about the serial to stand
+With that, the whole ceremony was run against the YubiKey from this Mac, and a **two-card run**
+(`--cards 2`, the same physical key provisioned twice, the probe reporting a second serial for the
+second pass because that is what the duplicate check reads) wrote and verified **both** passes:
+after each one, the card itself reported both slots occupied, UIF `02 20` on both, PW1 status `00`,
+the 198-byte manifest present, and both public keys byte-equal to the keys derived on the Mac. As a
+third party, `ykman openpgp info` then reported the fingerprints of the *second* pass's keys
+(`039D CB38` / `CA39 F31A`, matching the record this run printed), `On (fixed)` on both slots and
+`Require PIN for signature: Always`. That is the evidence behind amendment 41, which fixes the defect
+this run exposed: with `card count = 2` the app reset the second card and then closed its write step
+on the *first* card's read-back, so the second card was never written.
+
+**What the run does not cover.** The same *serial* twice: the probe lies about the serial to stand
 in for a second key, so the "a card this run already wrote is refused" path is exercised by the unit
 tests rather than by the card. And the app's screens: this drives the ceremony and the APDU layer on
 hardware; the screens are covered by the simulator walk, which now also provisions two cards.
