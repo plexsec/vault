@@ -1638,3 +1638,65 @@ covers the preview's box exactly, with the stacking left to the `ZStack`'s sourc
 picture is really obscured, and whether a real QR code still decodes behind it, needs the phone
 (m0 items 15 and 16) — the display cannot be measured from inside the app (a render readback does
 not include the camera surface), and the UI test harness stops the camera.
+
+## 37. v0.2: the writes and their read-back are one step
+
+**Sections:** §4.2 steps 6, 7 and 7b; `CeremonyStep` (`readBackCheck` and `pairingManifest` are gone
+from `CeremonyMode.path`), `ProvisioningCeremony.importAndVerify`, `ImportStepView`,
+`docs/provisioning-checklist.md`.
+
+**What changed.** The ceremony used to visit three steps while writing the card: `keyImport` (both
+private keys, then the policy), `readBackCheck` (both public keys and the policy read back off it)
+and `pairingManifest` (the chain codes written into the card's private-use object). They are now
+**one step**. `keyImport` writes keys → policy → manifest, then reads the keys, the policy, the
+retry limits and the manifest's bytes and binding back off the card, and advances only once the card
+has reported all of it. The two former steps have no screens of their own, and the window's step
+counter counts one where it counted three.
+
+**Why, in the order the reasons matter.**
+
+1. **A step boundary is where an interruption happens.** The app does not control when the phone
+   locks, when an NFC session ends, or when the operator switches away — and a screen boundary is
+   the most likely moment for all three. The previous design put the gap between a write and its
+   proof exactly there: a card holding keys the app had not yet read back, or a manifest no later
+   re-pair could trust. A card written but unverified is the state this ceremony exists to refuse,
+   and the cheapest way to refuse it is to have no place for it to happen.
+2. **The ordering requirements were expressed as screen order.** Writing a slot's algorithm
+   attributes resets that slot, and the applet discards that slot's touch policy with it, so the
+   policy write must follow the last key write (amendment 26 measured the loss on hardware); and the
+   manifest must follow the read-back, so that the card is never told to advertise a key that has not
+   been verified to be in it. Amendment 32 folded the first two writes into one step; this folds in
+   the manifest write and the read-back, so nothing about the order is a property of the view layer
+   any more. The order now lives in one method (`importAndVerify`) and in the `CeremonyStep.keyImport`
+   doc comment, which is where a future reader has to look anyway.
+3. **The chain codes are written for the same reason the keys are.** A wallet needs the extended
+   public keys, and the card is the only place they can be kept so that a later re-pair needs neither
+   the mnemonic nor a reset. Treating them as a separate step made them a separate intention, which
+   they are not.
+
+**What it costs.** The read-back comparison is no longer its own screen the operator reads before
+pressing Continue: it is on the same screen as the write, and Continue appears only once everything
+has been verified. The information is the same, and it is still shown as the card reports it rather
+than as the app asked for it. What is gone is a separate render pass — and with it the moment where
+the operator was invited to look at a comparison the app had already made. The step also takes longer
+in wall-clock time: four short card sessions for the writes and the reads, where the old import step
+took two and the read-back step two. On NFC that is more time holding the key against the phone, and
+that is the price the design accepts for not having a boundary in the middle.
+
+**How a failure reads now, unchanged.** A key import that fails still leaves the card half provisioned
+and says so, because the applet refuses to overwrite an occupied slot and "retry the import" can never
+work; a public key that reads back different still voids the procedure, wipes every secret and sends
+the operator back to the inspection step; a policy the card does not report still stops the step
+without wiping, and the card is left for the reset because a second write is the blind retry §5.2
+rule 1 forbids. A manifest the card cannot store, or that does not read back byte-for-byte and bind
+to the card's own key, is still a warning and a degraded card in this version — the keys and the
+mnemonic are unaffected — which §4.2 step 7b states as its "degradation, not failure" property.
+
+**What is checked where.** `ProvisioningCeremonyTests` drives the step once and asserts the whole
+outcome (the writes, the read-back, the policy, the manifest, the step it lands on), and the failure
+tests inject at the operation they are about and assert the same errors as before. The ordering test
+that used to compare the positions of `readBackCheck` and `pairingManifest` in the mode's path now
+asserts what replaced it: the import step is followed directly by the export, and calling `advance()`
+on the import step is refused — `importAndVerify` is the only way forward, and it ends with a card the
+ceremony has read back. The UI test walk taps one action ("Write and verify the YubiKey") where it
+tapped three, and asserts the stored-manifest line that only appears once the step has run.

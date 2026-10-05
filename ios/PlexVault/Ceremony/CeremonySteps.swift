@@ -450,18 +450,34 @@ struct DerivationStepView: View {
     }
 }
 
-// MARK: - Step 9: import
+// MARK: - Step 9: write the card and read it back
 
+/// One step, one action: both keys, the policy and the pairing manifest are written,
+/// and then all of it is read back off the card and checked against what was written.
+/// There is no screen between a write and its proof, and nothing can be skipped — the
+/// step only advances once the card has reported every value back (amendment 37).
 struct ImportStepView: View {
     @Bindable var viewModel: CeremonyViewModel
 
+    /// True once the step has run. The read-back is the step's own proof, so its
+    /// presence is what says the card holds the keys.
+    private var written: Bool { !viewModel.readBack.isEmpty }
+
     var body: some View {
         StepScaffold(
-            why: "Writes private keys into the YubiKey along with each key's algorithm attributes, fingerprint and creation time, and then the two policies that make the keys safe to hold: a physical touch for every use on both slots, and the User PIN re-entered for every signature.",
-            caution: "Do not remove the YubiKey during this step.",
-            actionTitle: "Import keys into YubiKey",
+            why: "Writes both private keys into the YubiKey — secp256k1 into the signature slot, Ed25519 into the authentication slot — then the policy that makes them safe to hold (a physical touch for every use on both slots, and the User PIN re-entered for every signature), then the public keys and chain codes your desktop wallet needs. It then reads all of it straight back out of the card.",
+            caution: written
+                ? nil
+                : "Do not remove the YubiKey during this step. Nothing here is optional: a card that does not report back exactly what was written stops the ceremony rather than being used.",
+            actionTitle: written ? "Continue" : "Write and verify the YubiKey",
             isBusy: viewModel.busy,
-            action: { Task { await viewModel.importKeys() } }
+            action: {
+                if written {
+                    viewModel.advance()
+                } else {
+                    Task { await viewModel.importAndVerify() }
+                }
+            }
         ) {
             if let keys = viewModel.derivedKeys {
                 ForEach(keys.all, id: \.algorithm) { key in
@@ -480,33 +496,18 @@ struct ImportStepView: View {
                     )
                 }
             }
-        }
-    }
-}
 
-// MARK: - Step 10: read-back
+            if written {
+                Label("The card reported back everything that was written.", systemImage: "checkmark.seal.fill")
+                    .font(.callout)
+                    .foregroundStyle(.green)
 
-struct ReadBackStepView: View {
-    @Bindable var viewModel: CeremonyViewModel
-
-    var body: some View {
-        StepScaffold(
-            why: "Reads public keys back out of the YubiKey and compares it byte-for-byte against the key derived on this device, and reads the policy back with it.",
-            actionTitle: viewModel.readBack.isEmpty ? "Verify read-back" : "Continue",
-            isBusy: viewModel.busy,
-            action: {
-                if viewModel.readBack.isEmpty {
-                    Task { await viewModel.verifyReadBack() }
-                } else {
-                    viewModel.advance()
-                }
-            }
-        ) {
-            if !viewModel.readBack.isEmpty {
+                // The keys as the card gave them, next to the keys derived here: a
+                // mismatch voids the procedure rather than reaching this screen.
                 ForEach(KeyAlgorithm.allCases, id: \.self) { algorithm in
                     if let result = viewModel.readBack[algorithm] {
                         KeySection(
-                            title: algorithm.displayName,
+                            title: "\(algorithm.displayName) — as the card reports it",
                             subtitle: result.slot.displayName,
                             rows: [
                                 ("Matches derived key", result.matches ? "yes" : "NO"),
@@ -517,11 +518,6 @@ struct ReadBackStepView: View {
                         )
                     }
                 }
-                if viewModel.allReadBacksSucceeded {
-                    Label("The YubiKey holds exactly the derived keys.", systemImage: "checkmark.seal.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.green)
-                }
 
                 // The policy half of the same read. Shown as the card reports it, not
                 // as the app asked for it: this is the check that the touch policy
@@ -531,6 +527,29 @@ struct ReadBackStepView: View {
                     subtitle: "The card's own answer, after the last write to those slots",
                     rows: viewModel.policyConfirmationRows
                 )
+
+                // And the chain codes, which live in the card's private-use object.
+                if let stored = viewModel.pairingManifestStored {
+                    if stored {
+                        Label("The pairing manifest is stored on the YubiKey and read back byte-for-byte.", systemImage: "checkmark.seal.fill")
+                            .font(.callout)
+                            .foregroundStyle(.green)
+                        Text("A later re-pair can read this off the card, so it will not need the mnemonic and will not reset the applet. A reset erases it.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Label("Not stored on this card — the pairing codes are only available now.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                        if let note = viewModel.pairingManifestNote {
+                            Text(note).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("This does not affect the keys or the mnemonic. Re-pairing later will mean running the ceremony again with the mnemonic.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("The Admin PIN is re-entered for each write, in its own card session, and again for each read that needs it. The card is left holding the keys only if it reports them back exactly.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -582,53 +601,6 @@ struct RepairStepView: View {
                 }
             } else {
                 Text("This read needs no PIN. If the card has no stored manifest — it was reset, or provisioned before the manifest existed — there is nothing to re-pair from, and the ceremony with the mnemonic is the only way back.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-// MARK: - Step 7b: pairing manifest
-
-/// Stores the public material a wallet needs in the card itself, so the pairing
-/// codes can be produced again later without resetting the applet — the chain
-/// code is not readable out of a YubiKey, and re-running the ceremony destroys
-/// the keys.
-struct ManifestStepView: View {
-    @Bindable var viewModel: CeremonyViewModel
-
-    var body: some View {
-        StepScaffold(
-            why: "Stores the public keys and chain codes a desktop wallet needs inside the YubiKey's private-use data object, and reads them straight back. This is what makes the pairing codes reproducible later without resetting the applet: a chain code cannot be read out of the card, only out of the mnemonic. Nothing secret is written — it is the same material the wallet is given — and the card's own key is checked against it before anything is advertised.",
-            actionTitle: viewModel.pairingManifestStored == nil ? "Store pairing manifest" : "Continue",
-            isBusy: viewModel.busy,
-            action: {
-                if viewModel.pairingManifestStored == nil {
-                    Task { await viewModel.writePairingManifest() }
-                } else {
-                    viewModel.advance()
-                }
-            }
-        ) {
-            if let stored = viewModel.pairingManifestStored {
-                if stored {
-                    Label("Stored on the YubiKey and read back byte-for-byte.", systemImage: "checkmark.seal.fill")
-                        .font(.callout)
-                        .foregroundStyle(.green)
-                    Text("A later re-pair can read this off the card, so it will not need the mnemonic and will not reset the applet. A reset erases it.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Label("Not stored on this card — the pairing codes are only available now.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                    if let note = viewModel.pairingManifestNote {
-                        Text(note).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("This does not affect the keys or the mnemonic. Re-pairing later will mean running the ceremony again with the mnemonic.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                Text("This write needs the Admin PIN, which is re-verified in this session. The object is readable afterwards with no PIN — that is what makes a re-pair possible without one.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

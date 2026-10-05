@@ -452,9 +452,8 @@ extension XCTestCase {
         tapWhenVisible(confirm, in: app, file: file, line: line)
     }
 
-    /// Everything after the mnemonic: derivation, import, read-back, the manifest
-    /// write, the pairing codes, the counter and the teardown. Returns once the
-    /// record is on screen.
+    /// Everything after the mnemonic: derivation, the card, the pairing codes, the
+    /// counter and the teardown. Returns once the record is on screen.
     ///
     /// `expectedEVMAddress` is asserted against the address the pairing screen
     /// shows, so the codes are checked against the address derived independently
@@ -474,20 +473,14 @@ extension XCTestCase {
         tapStepAction("Derive keys", in: app, file: file, line: line)
         tapStepAction("Continue", in: app, file: file, line: line)
 
-        // Import.
-        tapStepAction("Import keys into YubiKey", in: app, file: file, line: line)
-
-        // Read-back: verify, then continue. The policy is written by the import step
-        // above, so this one action confirms the keys **and** the policy — the step
-        // refuses to advance while the touch policy is unconfirmed (amendment 26).
-        tapStepAction("Verify read-back", in: app, file: file, line: line)
-        tapStepAction("Continue", in: app, file: file, line: line)
-
-        // The manifest write is new in this version: assert it actually happened,
-        // because every later re-pair depends on it.
-        tapStepAction("Store pairing manifest", in: app, file: file, line: line)
+        // The card: one action writes the keys, the policy and the pairing manifest,
+        // and reads all of it back. The step only shows "Continue" once the card has
+        // reported everything back, so reaching it is the assertion that the writes
+        // happened and were verified (amendment 37).
+        tapStepAction("Write and verify the YubiKey", in: app, file: file, line: line)
         XCTAssertTrue(
-            app.staticTexts["Stored on the YubiKey and read back byte-for-byte."].waitForExistence(timeout: 10),
+            app.staticTexts["The pairing manifest is stored on the YubiKey and read back byte-for-byte."]
+                .waitForExistence(timeout: 20),
             "the manifest must be stored and read back", file: file, line: line
         )
         tapStepAction("Continue", in: app, file: file, line: line)

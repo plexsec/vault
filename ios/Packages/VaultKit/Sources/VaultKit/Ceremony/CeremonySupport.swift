@@ -600,30 +600,24 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     case entropy
     case mnemonic
     case derivation
-    /// Writes both private keys **and then the policy** — the touch policy (UIF fixed
-    /// on both signing-capable slots) and the PIN policy (PW1 status `0x00`).
+    /// Writes the whole card — both private keys, the policy that makes them safe to
+    /// use, and the pairing manifest — **and reads all of it back** to check it.
     ///
-    /// The two are one step on purpose. Writing a slot's algorithm attributes resets
-    /// that slot, and the applet drops that slot's touch policy with it, so the policy
-    /// write has to follow the last key write; and a policy step of its own is a step
-    /// that can be moved (amendment 26 measured the loss on hardware, four times;
-    /// amendment 32 merged the writes into this one step so the order cannot be got
-    /// wrong). Nothing later in the ceremony writes to those slots except the
-    /// private-use object, which does not disturb the UIF objects.
+    /// One step rather than three, because the writes and their proofs are one
+    /// operation. Writing a slot's algorithm attributes resets that slot and the applet
+    /// drops that slot's touch policy with it, so the policy write has to follow the
+    /// last key write (amendment 26 measured the loss on hardware, four times; amendment
+    /// 32 merged those two writes into one step so the order cannot be got wrong); the
+    /// manifest has to follow the read-back, so that a card is never told to advertise a
+    /// key that has not been verified to be in it; and a step boundary between any two of
+    /// them is exactly where an interruption — a locked phone, an NFC session ending, the
+    /// operator closing the app — leaves a card holding something the ceremony has not
+    /// confirmed. The read-back covers both public keys byte-for-byte, the UIF objects,
+    /// the PW1 status, the retry limits, and the manifest's bytes and binding.
+    ///
+    /// Nothing later in the ceremony writes to those slots except the private-use
+    /// object, which does not disturb the UIF objects.
     case keyImport
-    /// Reads both public keys back **and the policy with them**: the UIF objects, the
-    /// PW1 status and the retry counters, each against what the ceremony asked for.
-    ///
-    /// A key that does not match voids the procedure (design.md §4.2 step 7); a policy
-    /// the card does not report stops the ceremony, because a card the operator
-    /// believes requires a touch, and which does not, is worse than an unprovisioned
-    /// one (amendment 26).
-    case readBackCheck
-    /// Writes the pairing manifest into the card's private-use data object, so
-    /// that the pairing codes can be produced again later without resetting the
-    /// applet. Sits after the read-back check on purpose: nothing is advertised
-    /// to a wallet until the keys it describes have been verified in the card.
-    case pairingManifest
     case pairingExport
     case counterBaseline
     case teardown
@@ -644,9 +638,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
         case .entropy: return "Generate entropy"
         case .mnemonic: return "Write down the mnemonic"
         case .derivation: return "Derive the signing keys"
-        case .keyImport: return "Import keys into YubiKey"
-        case .readBackCheck: return "Verify the keys and the policy in the card"
-        case .pairingManifest: return "Store the pairing manifest"
+        case .keyImport: return "Import and verify the YubiKey"
         case .pairingExport: return "Pair with the desktop wallet"
         case .counterBaseline: return "Record signature counter baseline"
         case .teardown: return "Wipe secrets and finish"
@@ -658,7 +650,7 @@ public enum CeremonyStep: Int, CaseIterable, Comparable, Codable, Sendable {
     /// anything else happens (design.md §5.2 rule 1 forbids blind retries).
     public var isMutatingCardState: Bool {
         switch self {
-        case .reset, .pinProvisioning, .pinRetries, .keyImport, .pairingManifest: return true
+        case .reset, .pinProvisioning, .pinRetries, .keyImport: return true
         default: return false
         }
     }
@@ -686,17 +678,14 @@ public enum CeremonyMode: String, CaseIterable, Codable, Sendable {
     public var path: [CeremonyStep] {
         switch self {
         case .freshGeneration, .restoreFromMnemonic:
-            // There is no policy step: the policy is written at the end of the key
-            // import and verified by the read-back step that follows it. Writing a
-            // slot's algorithm attributes resets that slot and the applet discards
-            // its touch policy with it, so the policy write must follow the last key
-            // write — verified on hardware and reported for `gpg keytocard` in
-            // ykman#693 (amendment 26); amendment 32 folded the two into one step so
-            // that no ordering exists to get wrong.
+            // The policy is written inside the key-import step and verified by the same
+            // step's read-back, so there is no policy step and no ordering to get wrong
+            // (amendment 26 measured the loss on hardware; amendment 32 folded the
+            // writes together, and amendment 37 folded the read-back and the pairing
+            // manifest in with them).
             return [
                 .cardInventory, .reset, .pinProvisioning, .pinRetries, .entropy, .mnemonic,
-                .derivation, .keyImport, .readBackCheck,
-                .pairingManifest, .pairingExport, .counterBaseline, .teardown,
+                .derivation, .keyImport, .pairingExport, .counterBaseline, .teardown,
             ]
         case .rePair:
             return [.cardInventory, .rePairRead, .pairingExport, .counterBaseline, .teardown]

@@ -110,10 +110,6 @@ struct CeremonyRootView: View {
             DerivationStepView(viewModel: viewModel)
         case .keyImport:
             ImportStepView(viewModel: viewModel)
-        case .readBackCheck:
-            ReadBackStepView(viewModel: viewModel)
-        case .pairingManifest:
-            ManifestStepView(viewModel: viewModel)
         case .pairingExport:
             PairingStepView(viewModel: viewModel)
         case .counterBaseline:

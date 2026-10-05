@@ -184,10 +184,6 @@ public final class CeremonyViewModel {
         inventory?.isDefinitelyUnsupported == true
     }
 
-    public var allReadBacksSucceeded: Bool {
-        KeyAlgorithm.allCases.allSatisfy { readBack[$0]?.matches == true }
-    }
-
     public var pairingPrepared: Bool { !pairingURStrings.isEmpty }
 
     /// The record's entry for one algorithm.
@@ -463,28 +459,17 @@ public final class CeremonyViewModel {
         }
     }
 
-    /// Writes both keys and then the policy. One step: the touch policy has to be
-    /// written after the last key write, and the applet discards it otherwise
-    /// (amendment 26, amendment 32).
-    public func importKeys() async {
+    /// Writes everything this card holds — both keys, the policy and the pairing
+    /// manifest — and then reads all of it back off the card and checks it.
+    ///
+    /// One action and one step (amendment 37): the applet requires the policy to
+    /// follow the last key write, the manifest to follow the read-back, and a step
+    /// boundary between any two of them is where an interruption leaves a card holding
+    /// something the ceremony has not confirmed. The view therefore has nothing to
+    /// sequence, and the results land together.
+    public func importAndVerify() async {
         await run { ceremony in
-            try await ceremony.importKeysAndPolicy()
-        }
-    }
-
-    public func verifyReadBack() async {
-        await run { ceremony in
-            self.readBack = try await ceremony.verifyReadBack()
-        }
-    }
-
-    /// Writes the pairing manifest into the card and reads it straight back.
-    /// Non-fatal by design: the keys are already verified when this runs, so a
-    /// card that cannot store a manifest costs a later re-pair (with the
-    /// mnemonic), not the ceremony.
-    public func writePairingManifest() async {
-        await run { ceremony in
-            _ = try await ceremony.writePairingManifest()
+            self.readBack = try await ceremony.importAndVerify()
             self.pairingManifestStored = ceremony.pairingManifestOutcome?.isStored
             self.pairingManifestNote = ceremony.pairingManifestOutcome.flatMap { outcome in
                 if case .declined(let reason) = outcome { return reason }

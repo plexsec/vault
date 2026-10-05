@@ -68,17 +68,19 @@ step completed rather than trusting the flow.
         - Bitcoin address from this device: `__________________________________`
       - Ed25519 path `m/44'/501'/0'/0'`
         - Public key from this device: `______________________________________`
-- [ ] **Import** completed without a second touch request — the same step also writes the touch
-      policy, **after** the last key (writing a slot's algorithm attributes would otherwise discard
-      it)
-- [ ] **Read-back** verified: the YubiKey's public key matches the derived key ✔
+- [ ] **The card, written and verified in one step** — keys, then the touch/PIN policy after the last
+      key (writing a slot's algorithm attributes would otherwise discard it), then the pairing
+      manifest, then all of it read back off the card. One action, one screen: the step shows
+      "Continue" only once every value has come back
+      - [ ] Both public keys read back and matching the derived keys ✔
       - [ ] The same screen reports the policy read back off the card: touch policy **Fixed** on
-            both slots, PW1 status `0x00`, and both PIN retry limits as chosen. Anything else stops
-            the app here, and the card must be reset rather than used
-- [ ] **Pairing manifest stored** on the card, and read back byte-for-byte ✔
-      - [ ] If the app instead warns that it could **not** be stored, write down
-            that re-pairing this card later will need the mnemonic. The keys and
-            the mnemonic are unaffected — only the shortcut is missing
+            both slots, PW1 status `0x00`, and both PIN retry limits as chosen. Anything else leaves
+            the app on this step, and the card must be reset rather than used
+      - [ ] Pairing manifest stored on the card, and read back byte-for-byte ✔
+            - [ ] If the app instead warns that it could **not** be stored, write down
+                  that re-pairing this card later will need the mnemonic. The keys and
+                  the mnemonic are unaffected — only the shortcut is missing
+      - [ ] No step asked for a second touch, and no screen was left between a write and its proof
 - [ ] **Pairing** — **two** QRs shown (secp256k1 and Ed25519) and scanned
       - [ ] The wallet shows the same EVM/Bitcoin addresses as the app ✔
       - [ ] The wallet shows the same Ed25519 public key as the app ✔

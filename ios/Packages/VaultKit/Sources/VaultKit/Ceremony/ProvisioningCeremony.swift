@@ -402,9 +402,31 @@ public final class ProvisioningCeremony {
             }
             step = .pairingExport
 
-        case .reset, .pinProvisioning, .pinRetries, .keyImport:
+        case .reset, .pinProvisioning, .pinRetries:
             // Action-only steps advance themselves once the card accepts them.
             throw CeremonyError.stepIncomplete(step: step, detail: "this step completes when the YubiKey accepts it")
+
+        case .keyImport:
+            // The card has been written, and the operator's Continue is what closes the
+            // step. All three halves have to be present: the keys by comparison with the
+            // derived ones, the policy as the card reports it, and the manifest step —
+            // which records an outcome whether or not the card could store one.
+            guard report.readBackVerified else {
+                throw CeremonyError.stepIncomplete(step: .keyImport, detail: "the public keys have not been verified yet")
+            }
+            guard report.touchPolicyVerified == true else {
+                throw CeremonyError.stepIncomplete(
+                    step: .keyImport,
+                    detail: "the touch policy has not been confirmed on the card yet"
+                )
+            }
+            guard pairingManifestOutcome != nil else {
+                throw CeremonyError.stepIncomplete(
+                    step: .keyImport,
+                    detail: "the pairing manifest step has not run yet"
+                )
+            }
+            step = .pairingExport
 
         case .entropy:
             guard let entropy else {
@@ -425,31 +447,6 @@ public final class ProvisioningCeremony {
                 throw CeremonyError.stepIncomplete(step: .derivation, detail: "the keys have not been derived yet")
             }
             step = .keyImport
-
-        case .readBackCheck:
-            // Both halves have to be confirmed: the keys by comparison with the
-            // derived ones, the policy by the UIF objects and the PW1 status the
-            // card reports. Neither is optional — the policy check is why the touch
-            // requirement cannot be lost silently (amendment 26).
-            guard report.readBackVerified else {
-                throw CeremonyError.stepIncomplete(step: .readBackCheck, detail: "the public keys have not been verified yet")
-            }
-            guard report.touchPolicyVerified == true else {
-                throw CeremonyError.stepIncomplete(
-                    step: .readBackCheck,
-                    detail: "the touch policy has not been confirmed on the card yet"
-                )
-            }
-            step = .pairingManifest
-
-        case .pairingManifest:
-            guard pairingManifestOutcome != nil else {
-                throw CeremonyError.stepIncomplete(
-                    step: .pairingManifest,
-                    detail: "the pairing manifest step has not run yet"
-                )
-            }
-            step = .pairingExport
 
         case .pairingExport:
             guard pairingURs.count == KeyAlgorithm.allCases.count else {
@@ -1014,34 +1011,54 @@ public final class ProvisioningCeremony {
         }
     }
 
-    // MARK: Step 9 — import (the keys, and then the policy: see CeremonyStep.keyImport)
+    // MARK: Step 9 — write the card and read it back (design.md §4.2 steps 6, 7, 7b)
 
-    /// Writes both keys — secp256k1 into the signature slot, Ed25519 into the
-    /// authentication slot — **and then the policy**, as the last write to those
-    /// slots: touch required for every use on both, and the User PIN re-entered for
-    /// every signature. Each write re-verifies the Admin PIN in its own session (see
-    /// `SignerCard.importKey` and `SignerCard.applyPolicy`).
+    /// Writes everything this card holds — both private keys, the policy that makes
+    /// them safe to use, and the pairing manifest — and then reads all of it back off
+    /// the card and checks it.
     ///
-    /// One step and not two, deliberately. Writing a slot's algorithm attributes
-    /// resets that slot, and the applet drops that slot's touch policy with it, so a
-    /// policy written before the import is written into a slot the import then
-    /// discards — measured four times on hardware (amendment 26). Inside this step the
-    /// order cannot be got wrong, and the read-back step that follows is what confirms
-    /// it stuck (amendment 32).
+    /// One step, so that no screen exists between a write and its proof, and so the
+    /// applet's ordering requirements are not reorderable by the view layer; the order
+    /// and the reason for it are in `CeremonyStep.keyImport`. Each write re-verifies the
+    /// Admin PIN in its own session (`SignerCard.importKey`, `SignerCard.applyPolicy`,
+    /// `SignerCard.writePairingManifest`), because VERIFY state does not survive an NFC
+    /// session boundary.
     ///
-    /// The two halves fail differently, and the difference is the operator's next
-    /// move:
+    /// The failures are distinguished by the operator's next move:
     ///
     /// * a **key** that failed to import leaves the card half provisioned. The applet
-    ///   refuses to overwrite an occupied slot, so "retry the import" can never work
-    ///   and the card has to be reset;
-    /// * a **policy** that failed to write leaves a card holding the right keys and no
-    ///   touch requirement. That stops the ceremony too — a card without the policy it
-    ///   was promised must not be used — but it is not an import failure, so it is
-    ///   reported as itself, and the card is left for the operator's reset step rather
-    ///   than written again: the applet already refused the write once, and a second
-    ///   attempt would be the blind retry design.md §5.2 rule 1 forbids.
-    public func importKeysAndPolicy(creationTime: Date? = nil) async throws {
+    ///   refuses to overwrite an occupied slot, so "retry the import" can never work and
+    ///   the card has to be reset (`importLeftTheCardPartlyProvisioned`);
+    /// * a **key that reads back different** voids the procedure: everything local is
+    ///   wiped and the operator is sent back to the card inspection step
+    ///   (`readBackMismatch`);
+    /// * a **policy** that failed to write, or that the card does not report back, stops
+    ///   the ceremony without wiping (`policyNotApplied`): the keys in the card are the
+    ///   right keys, and the card must not be used because the touch requirement it was
+    ///   promised cannot be read back off it. The applet already refused the write once,
+    ///   so a second write would be the blind retry design.md §5.2 rule 1 forbids, and
+    ///   the way out of that state is the reset step;
+    /// * a **manifest** that cannot be stored, or that does not read back byte-for-byte
+    ///   and bind to the card's own key, is reported as a degraded card rather than an
+    ///   abort: the keys and the mnemonic are unaffected, and only a later re-pair needs
+    ///   the mnemonic (`pairingManifestStored` on the report).
+    @discardableResult
+    public func importAndVerify(creationTime: Date? = nil) async throws -> [KeyAlgorithm: ReadBackResult] {
+        try requireCurrent(.keyImport)
+        try await writeKeysAndPolicy(creationTime: creationTime)
+        try await readBackAndCheckPolicy()
+        _ = try await writePairingManifestAndCheck()
+        // Deliberately does NOT advance: the operator has to see the card's own answer —
+        // both public keys next to the ones derived here, the policy as the card reports
+        // it, and the manifest's outcome — before the step closes. `advance()` is what
+        // checks that all three halves ran, so nothing can move on from a card that was
+        // written but not read back.
+        return readBackResults
+    }
+
+    /// Both key writes and then the policy write: the first half of `importAndVerify`.
+    /// Private because on its own it leaves a written card that has not been verified.
+    private func writeKeysAndPolicy(creationTime: Date? = nil) async throws {
         try requireCurrent(.keyImport)
         guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
@@ -1096,15 +1113,12 @@ public final class ProvisioningCeremony {
         } catch let error as CardError {
             throw CeremonyError.policyNotApplied(detail: error.userFacingDescription)
         }
-
-        advance(to: .readBackCheck)
     }
 
-    // MARK: Step 10 — read-back (mandatory, design.md §4.2 step 7)
-
-    /// Reads both public keys back and compares them with the derived ones, **and
-    /// reads the policy back with them**: the touch policy on both signing-capable
-    /// slots, the PW1 status, and the PIN retry limits the operator chose.
+    /// The read-back half of step 9: both public keys byte-for-byte against the keys
+    /// derived here, and then the policy the card reports — the touch policy on both
+    /// signing-capable slots, the PW1 status, and the PIN retry limits the operator
+    /// chose.
     ///
     /// A mismatch on **either** key voids the entire procedure: everything is wiped
     /// and the operator is sent back to the card inspection step. A policy the card
@@ -1113,9 +1127,10 @@ public final class ProvisioningCeremony {
     /// nothing local is wiped, and the card must not be used because the touch
     /// requirement it was promised cannot be read back off it (amendment 26). The way
     /// out of that state is the reset step, not a second write.
-    @discardableResult
-    public func verifyReadBack() async throws -> [KeyAlgorithm: ReadBackResult] {
-        try requireCurrent(.readBackCheck)
+    ///
+    /// Private because this is the proof of the write that just happened, not a step of
+    /// its own (amendment 37).
+    private func readBackAndCheckPolicy() async throws {
         guard let keys = derivedKeys else { throw CeremonyError.keysNotDerived }
 
         var results: [KeyAlgorithm: ReadBackResult] = [:]
@@ -1164,10 +1179,8 @@ public final class ProvisioningCeremony {
             throw CeremonyError.policyNotApplied(detail: problems.joined(separator: "; "))
         }
         report.touchPolicyVerified = true
-
-        // Deliberately does NOT advance: the read-back comparison is the whole
-        // point of this step and must be seen.
-        return results
+        // Does NOT advance: the caller advances once the manifest has been written and
+        // checked too — the step is one operation (amendment 37).
     }
 
     /// Everything the card has to be reporting for the policy to count as applied.
@@ -1211,17 +1224,7 @@ public final class ProvisioningCeremony {
         return problems
     }
 
-    // MARK: Step 11 — pairing export
-
-    /// Builds **two** URs, one per algorithm, for the desktop wallet to scan.
-    ///
-    /// Both carry a chain code (Keystone/MetaMask require one). secp256k1 is
-    /// exported at its BIP44 account level with the children path pinned to the
-    /// card's leaf, so an account-enumerating wallet shows the card's address.
-    /// `chainCodeAcknowledged` is the operator's acknowledgement of
-    /// `PairingPolicy.chainCodeWarning`.
-    @discardableResult
-    // MARK: Step 7b — pairing manifest (design.md §4.2 step 7b)
+    // MARK: Step 9b — the pairing manifest (design.md §4.2 step 7b)
 
     /// Writes the pairing manifest into the card and reads it straight back.
     ///
@@ -1234,8 +1237,10 @@ public final class ProvisioningCeremony {
     /// value the phone stores is the card connection (amendment 31), so a re-pair on a
     /// fresh install works.
     ///
-    /// Deliberately *after* the read-back check: the card must not be told to
-    /// advertise a key until that key has been verified to be in it.
+    /// Deliberately *after* the read-back: the card must not be told to advertise a
+    /// key until that key has been verified to be in it. It is inside the import step
+    /// rather than after it, so that an interruption cannot leave a card that holds
+    /// verified keys and no manifest without the ceremony knowing (amendment 37).
     ///
     /// Failure here is a warning, not an abort. The keys and the mnemonic — the
     /// things that actually hold funds — are already verified at this point; what
@@ -1243,8 +1248,9 @@ public final class ProvisioningCeremony {
     /// data that came back different from what was written, which is reported as
     /// a warning too, because the re-pair path re-checks the manifest against the
     /// card's live keys and would refuse a manifest that does not match.
-    public func writePairingManifest() async throws -> PairingManifest? {
-        try requireCurrent(.pairingManifest)
+    ///
+    /// Private: the third write of `importAndVerify`.
+    private func writePairingManifestAndCheck() async throws -> PairingManifest? {
         guard let adminPIN = sessionAdminPIN else { throw CeremonyError.missingAdminPIN }
         var pin = adminPIN.materializedCopy()
         defer { VaultKit.wipe(&pin) }
@@ -1263,14 +1269,14 @@ public final class ProvisioningCeremony {
 
         guard let manifest = makePairingManifest() else {
             throw CeremonyError.stepIncomplete(
-                step: .pairingManifest,
+                step: .keyImport,
                 detail: "the pairing export has not been built yet"
             )
         }
         let encoded = manifest.encoded()
 
         do {
-            try await withMutatingStep(.pairingManifest) {
+            try await withMutatingStep(.keyImport) {
                 try await card.writePairingManifest(encoded, adminPIN: pin)
             }
         } catch let error as CardError {
@@ -1357,6 +1363,15 @@ public final class ProvisioningCeremony {
         )
     }
 
+    // MARK: Step 10 — pairing export (design.md §4.2 step 8)
+
+    /// Builds **two** URs, one per algorithm, for the desktop wallet to scan.
+    ///
+    /// Both carry a chain code (Keystone/MetaMask require one). secp256k1 is
+    /// exported at its BIP44 account level with the children path pinned to the
+    /// card's leaf, so an account-enumerating wallet shows the card's address.
+    /// `chainCodeAcknowledged` is the operator's acknowledgement of
+    /// `PairingPolicy.chainCodeWarning`.
     @discardableResult
     public func buildPairingURs(
         style: URTypeStyle,

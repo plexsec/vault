@@ -45,10 +45,7 @@ final class RePairTests: XCTestCase {
         try ceremony.confirmTranscription(entries: try ceremony.transcriptionChallenge().map { ($0, words[$0]) })
         _ = try ceremony.deriveKeys()
         try ceremony.advance()
-        try await ceremony.importKeysAndPolicy()
-        _ = try await ceremony.verifyReadBack()
-        try ceremony.advance()
-        _ = try await ceremony.writePairingManifest()
+        _ = try await ceremony.importAndVerify()
         try ceremony.advance()
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         ceremony.confirmPairingAddressMatches(true)
@@ -280,12 +277,10 @@ final class RePairTests: XCTestCase {
             try await ceremony.setPINs(userPIN: Array("123456".utf8), adminPIN: Array("87654321".utf8))
             try await ceremony.setPINRetries()
         }
-        // `importKeysAndPolicy` carries the policy write, so this one assertion covers
-        // both the import and the policy for the re-pair path (amendment 32).
-        await assertStepOutOfOrder { try await ceremony.importKeysAndPolicy() }
-        await assertStepOutOfOrder {
-            _ = try await ceremony.writePairingManifest()
-        }
+        // `importAndVerify` carries the key writes, the policy and the pairing manifest,
+        // so this one assertion covers all of them for the re-pair path (amendment 32,
+        // amendment 37).
+        await assertStepOutOfOrder { _ = try await ceremony.importAndVerify() }
 
         XCTAssertEqual(card.resetCount, 1, "only the provisioning ceremony reset the card")
         XCTAssertEqual(card.pinChangeCount, 1)
@@ -341,7 +336,7 @@ final class RePairTests: XCTestCase {
         XCTAssertTrue(rePair.allSatisfy { !$0.isMutatingCardState }, "re-pair must not visit a mutating step")
         XCTAssertTrue(rePair.contains(.rePairRead), "the read step must be on the route")
         XCTAssertFalse(rePair.contains(.reset))
-        XCTAssertFalse(rePair.contains(.pairingManifest), "re-pair reads the manifest, it never writes one")
+        XCTAssertFalse(rePair.contains(.keyImport), "re-pair reads the manifest, it never writes one")
 
         // Every mode starts at the same shared first screen, and the progress
         // indicator counts the mode's own route rather than every step that exists.

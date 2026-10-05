@@ -81,17 +81,17 @@ final class ProvisioningIntegrationTests: XCTestCase {
         return (words, keys)
     }
 
-    /// The tail of the ceremony, in the order design.md §4.2 now mandates: import the
-    /// keys and then the policy, and verify all of it off the card.
+    /// The tail of the ceremony as one step: the keys, the policy and the pairing
+    /// manifest are written, and then all of it is read back off the card.
     ///
     /// The policy cannot be written any earlier: writing a slot's algorithm attributes
     /// resets that slot and the applet drops its touch policy with it, so an earlier
-    /// write is silently discarded (amendment 26). It is one step with the import, so
-    /// there is no ordering left to get wrong (amendment 32).
+    /// write is silently discarded (amendment 26). It is one step with the import and
+    /// the read-back, so there is no ordering left to get wrong (amendments 32 and 37).
     @discardableResult
     private func finishProvisioning(_ ceremony: ProvisioningCeremony) async throws -> [KeyAlgorithm: ReadBackResult] {
-        try await ceremony.importKeysAndPolicy()
-        let readBack = try await ceremony.verifyReadBack()
+        let readBack = try await ceremony.importAndVerify()
+        // The step closes on the operator's Continue; the tests are the operator here.
         try ceremony.advance()
         return readBack
     }
@@ -135,7 +135,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(keys.secp256k1.publicKeyHex, Expected.secp256k1PublicKey)
         XCTAssertEqual(keys.ed25519.identity, Expected.ed25519PublicKey)
 
-        try await ceremony.importKeysAndPolicy()
+        let readBack = try await ceremony.importAndVerify()
         // The card really holds both keys: verify against the mock's own state.
         XCTAssertTrue(transport.hasKey(in: .signature))
         XCTAssertTrue(transport.hasKey(in: .authentication))
@@ -147,8 +147,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertTrue(Hex.encode(transport.currentFingerprint(.authentication))
             .hasPrefix(keys.ed25519.fingerprintHex))
 
-        let readBack = try await ceremony.verifyReadBack()
-        try ceremony.advance()
         XCTAssertEqual(readBack[.secp256k1]?.matches, true)
         XCTAssertEqual(readBack[.ed25519]?.matches, true)
         XCTAssertEqual(readBack[.secp256k1]?.cardPublicKeyHex, keys.secp256k1.publicKeyHex)
@@ -165,11 +163,10 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.currentPWStatus.first, 0x00)
         XCTAssertEqual(ceremony.report.touchPolicyVerified, true)
 
-        // The manifest goes to the card itself, through the real APDU layer — this
-        // is the write that makes a later re-pair possible without a reset.
-        let manifest = try await ceremony.writePairingManifest()
-        try ceremony.advance()
-        let stored = try XCTUnwrap(manifest)
+        // The manifest goes to the card itself, through the real APDU layer, inside the
+        // same step — this is the write that makes a later re-pair possible without a
+        // reset.
+        let stored = try XCTUnwrap(ceremony.pairingManifest)
         XCTAssertEqual(transport.storedPairingManifest, stored.encoded())
         // Version 2 carries one master fingerprint per entry: a wallet has two
         // masters (BIP32 and SLIP-0010) and they differ, so a re-pair cannot
@@ -181,6 +178,9 @@ final class ProvisioningIntegrationTests: XCTestCase {
             transport.receivedAPDUs.contains { $0.hasPrefix("00da0102") },
             "the manifest must reach the card as PUT DATA 0x0102"
         )
+
+        // The step closes on the operator's Continue.
+        try ceremony.advance()
 
         let urs = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
@@ -307,14 +307,12 @@ final class ProvisioningIntegrationTests: XCTestCase {
         let transport = MockYubikeyTransport()
         let (ceremony, _) = makeCeremony(transport: transport)
         _ = try await walkToDerivation(ceremony)
-        try await finishProvisioning(ceremony)   // import + policy, then read-back
+        _ = try await finishProvisioning(ceremony)   // import + policy + manifest, then read-back
 
         XCTAssertEqual(transport.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
         XCTAssertEqual(transport.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
 
         // Everything the rest of the ceremony still does to the card.
-        _ = try await ceremony.writePairingManifest()
-        try ceremony.advance()
         _ = try ceremony.buildPairingURs(style: .keystoneLegacy, chainCodeAcknowledged: true)
         try ceremony.confirmPairingAddressMatches(true)
         try ceremony.advance()
@@ -399,8 +397,6 @@ final class ProvisioningIntegrationTests: XCTestCase {
             restoredWords: originalWalk.mnemonic
         )
         let readBack = try await finishProvisioning(restored)
-        _ = try await restored.writePairingManifest()
-        try restored.advance()
 
         for algorithm in KeyAlgorithm.allCases {
             XCTAssertEqual(
@@ -430,9 +426,8 @@ final class ProvisioningIntegrationTests: XCTestCase {
         ))
         let (ceremony, _) = makeCeremony(transport: transport)
         try await walkToDerivation(ceremony)
-        try await ceremony.importKeysAndPolicy()
 
-        await XCTAssertThrowsErrorAsync { try await ceremony.verifyReadBack() } verify: { error in
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() } verify: { error in
             guard case .readBackMismatch = (error as? CeremonyError) else {
                 return XCTFail("expected readBackMismatch, got \(error)")
             }
@@ -448,7 +443,7 @@ final class ProvisioningIntegrationTests: XCTestCase {
         try await walkToDerivation(ceremony)
 
         transport.injectedFailure = .transportError("NFC session invalidated")
-        await XCTAssertThrowsErrorAsync { try await ceremony.importKeysAndPolicy() }
+        await XCTAssertThrowsErrorAsync { _ = try await ceremony.importAndVerify() }
         ceremony.noteInterruption()
         XCTAssertEqual(ceremony.step, .cardInventory, "the card state is unknown and must be re-read")
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("re-inspect") })
