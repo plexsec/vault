@@ -1,52 +1,20 @@
+import Photos
 import SwiftUI
 import UIKit
 import VaultKit
 
-/// Final screen: the redacted provisioning record, plus export and the printed
-/// checklist from design.md Appendix B.
+/// Final screen: the redacted provisioning record, plus export.
 struct ReportView: View {
     @Bindable var viewModel: CeremonyViewModel
 
+    /// Whether the confirmation for "Quit & Reopen App" is up. The action ends the process, so it is
+    /// confirmed rather than fired by a single tap on a screen the operator is still reading.
+    @State private var showingQuitConfirmation = false
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if let report = viewModel.report {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(
-                            report.mode == .rePair ? "Pairing complete" : "Provisioning complete",
-                            systemImage: "checkmark.seal.fill"
-                        )
-                        .font(.headline)
-                        .foregroundStyle(.green)
-                        Text(report.mode == .rePair
-                            ? "Keep this with the provisioning record: it is the public material the wallet was given, read back out of the YubiKey."
-                            : "Keep this record with your steel plate. It contains no secrets.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ReportBody(report: report)
-
-                    VStack(spacing: 8) {
-                        ShareLink(item: report.printableLines().joined(separator: "\n")) {
-                            Label("Share the record", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button {
-                            UIPasteboard.general.string = report.printableLines().joined(separator: "\n")
-                        } label: {
-                            Label("Copy to clipboard", systemImage: "doc.on.doc")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-
-                ChecklistView(report: viewModel.report)
-            }
-            .padding()
+            CeremonyRecordContent(report: viewModel.report)
+                .padding()
         }
         // The way out is pinned, like every other primary action in this app. It used
         // to be the last item of the scroll content — under a report that runs to three
@@ -56,14 +24,14 @@ struct ReportView: View {
         // scroll for is a primary action that can be missed. The note belongs to the bar,
         // under the button, where it explains it.
         .safeAreaInset(edge: .bottom) { exitBar }
-        // The app is about to close itself, so the operator is told before it happens, and the
-        // alert is what actually ends the process: the wipe has already run and the flag that
-        // sends the next launch to the pairing process is already stored (amendment 43).
-        .alert("Secrets wiped", isPresented: $viewModel.showExitAlert) {
-            Button("Close the app") { viewModel.exitForPairing() }
-            Button("Stay on the record", role: .cancel) {}
+        // Quitting is the one way out of a finished run, and it ends the process, so it is asked
+        // about first: the operator is still reading the record. This replaced the alert that used
+        // to fire at the wipe itself — the wipe no longer closes anything (amendment 45).
+        .alert("Quit and reopen the app?", isPresented: $showingQuitConfirmation) {
+            Button("Quit & Reopen", role: .destructive) { viewModel.exitForPairing() }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The provisioning record is on this screen. Reopen the app to continue: it goes straight to pairing the wallet, and reads the pairing codes back out of the YubiKey's stored manifest. Nothing was written to or erased from the card.")
+            Text("The app closes. Reopen it to pair the wallet: the next launch goes straight to pairing and reads the codes back out of the YubiKey's stored manifest. Nothing was written to or erased from the card.")
         }
     }
 
@@ -71,35 +39,20 @@ struct ReportView: View {
         VStack(spacing: 6) {
             if viewModel.pairingIsPending {
                 Button {
-                    viewModel.exitForPairing()
+                    showingQuitConfirmation = true
                 } label: {
-                    Label("Close the app and pair the wallet", systemImage: "link")
+                    Label("Quit & Reopen App", systemImage: "link")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
-                Text("Pairing is the second process and has its own record. Reopen the app to reach it: it reads the codes back out of the YubiKey (no mnemonic, nothing secret).")
+                Text("Pairing is the second process and has its own record. Quitting and reopening the app goes straight to it: it reads the codes back out of the YubiKey (no mnemonic, nothing secret).")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-
-                Button {
-                    viewModel.abort()
-                } label: {
-                    Text("Provision another wallet").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
             } else {
-                Button {
-                    viewModel.abort()
-                } label: {
-                    Text("Provision another wallet").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-
-                Text("Restart the app before provisioning another wallet.")
+                Text("The run is complete. Quit the app and reopen it to provision another wallet.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -109,6 +62,126 @@ struct ReportView: View {
         .padding(.top, 8)
         .padding(.bottom, 4)
         .background(.bar)
+    }
+}
+
+/// The record itself — the mode's heading, the rows and the export buttons — without the screen it
+/// sits on.
+///
+/// Two screens show it now: `ReportView`, which is the provisioning process's record and carries
+/// the confirmed exit, and the pairing process's merged Finish step, which shows the record in
+/// place of a screen of its own and returns to the home screen from there (amendment 46).
+struct CeremonyRecordContent: View {
+    let report: CeremonyReport?
+
+    /// The outcome of the last "Save to Photos", shown in an alert. `nil` when none is up.
+    @State private var saveOutcome: String?
+    @State private var showingSaveOutcome = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let report {
+                CeremonyRecordPage(report: report)
+
+                VStack(spacing: 8) {
+                    Button {
+                        saveToPhotos(report)
+                    } label: {
+                        Label("Save to Photos", systemImage: "photo.on.rectangle.angled")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        UIPasteboard.general.string = report.printableLines().joined(separator: "\n")
+                    } label: {
+                        Label("Copy to clipboard", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .alert("Save to Photos", isPresented: $showingSaveOutcome) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(saveOutcome ?? "")
+        }
+    }
+
+    /// Saves the record to the photo library as an image of the **whole** record, not the part that
+    /// fits on screen: the record is three screens of keys, addresses and serials, and a capture of
+    /// the viewport would be missing most of what the operator is filing.
+    ///
+    /// Add-only (`PHPhotoLibrary` `.addOnly`): the app never reads the library, and what it writes is
+    /// the public material the operator is already told to keep.
+    private func saveToPhotos(_ report: CeremonyReport) {
+        guard let image = Self.recordImage(report) else {
+            reportOutcome("The record could not be rendered as an image.")
+            return
+        }
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized else {
+                reportOutcome("Photos access is off. Allow “Add Photos Only” for PlexVault in Settings, then try again.")
+                return
+            }
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            } completionHandler: { success, _ in
+                reportOutcome(success
+                    ? "The record was saved to Photos."
+                    : "The record could not be saved to Photos.")
+            }
+        }
+    }
+
+    /// The authorization callback and the change callback arrive on their own queues; the alert is
+    /// main-actor UI.
+    private func reportOutcome(_ message: String) {
+        DispatchQueue.main.async {
+            saveOutcome = message
+            showingSaveOutcome = true
+        }
+    }
+
+    /// The record as an image: the heading and the rows at a fixed width on white, in light
+    /// appearance, so a saved record reads the same whatever theme the phone is in.
+    @MainActor
+    private static func recordImage(_ report: CeremonyReport) -> UIImage? {
+        let page = CeremonyRecordPage(report: report)
+            .padding(24)
+            .frame(width: 720, alignment: .leading)
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+        let renderer = ImageRenderer(content: page)
+        renderer.scale = 3
+        return renderer.uiImage
+    }
+}
+
+/// The record as a page — the heading and the rows, with no controls — shared by the on-screen
+/// record and the image that `Save to Photos` writes.
+struct CeremonyRecordPage: View {
+    let report: CeremonyReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(
+                    report.mode == .rePair ? "Pairing complete" : "Provisioning complete",
+                    systemImage: "checkmark.seal.fill"
+                )
+                .font(.headline)
+                .foregroundStyle(.green)
+                Text(report.mode == .rePair
+                    ? "Keep this with the provisioning record: it is the public material the wallet was given, read back out of the YubiKey."
+                    : "Keep this record with your steel plate. It contains no secrets.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            ReportBody(report: report)
+        }
     }
 }
 
@@ -189,74 +262,3 @@ struct ReportBody: View {
     }
 }
 
-/// design.md Appendix B as a live checklist: the items the app can attest to are
-/// ticked automatically, and the ones that require a human or another device are
-/// left for the operator to tick.
-struct ChecklistView: View {
-    let report: CeremonyReport?
-    @State private var manual: Set<String> = []
-
-    private var automated: [(String, Bool)] {
-        [
-            ("YubiKey reset (applet terminated and re-activated)", report?.cardOpenPGPVersion != nil),
-            // Ticked by the read-back that confirmed the card reports the policy, not by
-            // the mere existence of a report: a policy the card does not report is not a
-            // policy (amendment 26).
-            ("Touch policy fixed and PW1 status 0x00 read back from the card", report?.touchPolicyVerified == true),
-            (
-                "PIN retry limits set and read back (User / Admin)",
-                report?.userPINRetryLimit != nil && report?.adminPINRetryLimit != nil
-            ),
-            ("Mnemonic checked against the written copy, or the backup declined", report?.mnemonicBackedUp != nil),
-            (
-                "Secrets wiped from memory before the pairing codes were produced",
-                report?.secretsWipedBeforePairing == true
-            ),
-            ("Entropy commitment recorded", report?.entropyCommitmentHex != nil),
-            ("Mnemonic transcribed and back-fill check passed", !(report?.keys.isEmpty ?? true)),
-            ("Both public keys read back from YubiKey match the derived keys", report?.readBackVerified == true),
-        ]
-    }
-
-    private let manualItems = [
-        "iPhone factory-reset, no SIM, airplane mode",
-        "App build hash matches the published reproducible-build hash",
-        "Mnemonic engraved on steel, two copies in separate locations",
-        "No cameras in the generation environment",
-        "Small-value test transaction verified and confirmed on-chain",
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Appendix B checklist").font(.subheadline.weight(.semibold))
-
-            ForEach(Array(automated.enumerated()), id: \.offset) { _, item in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: item.1 ? "checkmark.square.fill" : "square")
-                        .foregroundStyle(item.1 ? .green : .secondary)
-                    Text(item.0).font(.footnote)
-                }
-            }
-
-            Divider()
-
-            ForEach(manualItems, id: \.self) { item in
-                Button {
-                    if manual.contains(item) { manual.remove(item) } else { manual.insert(item) }
-                } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: manual.contains(item) ? "checkmark.square.fill" : "square")
-                            .foregroundStyle(manual.contains(item) ? .green : .secondary)
-                        Text(item).font(.footnote).multilineTextAlignment(.leading)
-                        Spacer(minLength: 0)
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-}

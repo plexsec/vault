@@ -528,4 +528,51 @@ final class ProvisioningIntegrationTests: XCTestCase {
         XCTAssertEqual(ceremony.step, .cardInventory, "the card state is unknown and must be re-read")
         XCTAssertTrue(ceremony.report.warnings.contains { $0.contains("re-inspect") })
     }
+
+    /// A provisioned applet survives a snapshot and a JSON round trip — keys, PINs, touch policy,
+    /// retry configuration and the pairing manifest — which is what lets the DEBUG app put the
+    /// simulated card down between launches instead of provisioning it again. The encoding is the
+    /// one `SimulatedCardStore` uses, so the value that crosses the persistence boundary is the one
+    /// checked here.
+    func testTheAppletSurvivesASnapshotAndRestore() async throws {
+        let transport = MockYubikeyTransport()
+        let (ceremony, _) = makeCeremony(transport: transport)
+        try await walkToDerivation(ceremony)
+        _ = try await finishProvisioning(ceremony)
+
+        let snapshot = transport.persistentState
+        let decoded = try JSONDecoder().decode(
+            MockYubikeyTransport.PersistentState.self,
+            from: try JSONEncoder().encode(snapshot)
+        )
+        XCTAssertEqual(decoded, snapshot, "the snapshot must round-trip through JSON unchanged")
+
+        // Into a factory-fresh card, the way a relaunch does.
+        let restored = MockYubikeyTransport()
+        restored.persistentState = decoded
+
+        XCTAssertEqual(restored.persistentState, snapshot)
+        XCTAssertTrue(restored.hasKey(in: .signature))
+        XCTAssertTrue(restored.hasKey(in: .authentication))
+        XCTAssertEqual(restored.storedPrivateKey(.signature), transport.storedPrivateKey(.signature))
+        XCTAssertEqual(restored.storedPrivateKey(.authentication), transport.storedPrivateKey(.authentication))
+        XCTAssertEqual(restored.currentFingerprint(.signature), transport.currentFingerprint(.signature))
+        XCTAssertEqual(restored.currentUIF(.signature), OpenPGPTouchPolicy.fixedEncoded)
+        XCTAssertEqual(restored.currentUIF(.authentication), OpenPGPTouchPolicy.fixedEncoded)
+        XCTAssertEqual(restored.storedPairingManifest, transport.storedPairingManifest)
+        XCTAssertEqual(restored.currentPWStatus, transport.currentPWStatus)
+        XCTAssertEqual(restored.currentRetryLimits.user, transport.currentRetryLimits.user)
+        XCTAssertEqual(restored.currentRetryLimits.admin, transport.currentRetryLimits.admin)
+
+        // A card put back in the reader is not "already verified": signing must be refused until
+        // PW1 is verified in a fresh session, which is what a real card does at a session boundary.
+        let card = OpenPGPCard(transport: restored)
+        try await card.open()
+        do {
+            _ = try await card.computeDigitalSignature(digest: [UInt8](repeating: 0, count: 32))
+            XCTFail("a restored card must not inherit PIN verification from the snapshot")
+        } catch {
+            // Expected: 6982, conditions of use not satisfied.
+        }
+    }
 }

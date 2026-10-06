@@ -79,7 +79,7 @@ final class SigningFlowUITests: XCTestCase {
         try revealAndConfirmMnemonic(app, entropy: Self.entropy)
         completeCeremonyAfterMnemonic(app,
             userPIN: Self.userPIN, adminPIN: Self.adminPIN)
-        tapStepAction("Provision another wallet", in: app)
+        leaveRecordForHome(app)
 
         // 2. Back at the home screen, choose the signing flow.
         let signingRoute = app.buttons["route-signing"]

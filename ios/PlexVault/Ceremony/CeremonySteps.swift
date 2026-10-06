@@ -783,13 +783,13 @@ struct PairingStepView: View {
 
 // MARK: - The wipe that ends the provisioning process (design.md §4.2, the paragraph before step 8)
 
-/// The end of the first of a run's two processes: the secrets go, the record of what was written
-/// is produced, and the app closes itself — pairing the wallet is a second process, which rebuilds
-/// the codes from the card's manifest (amendment 43).
+/// The end of the first of a run's two processes: the secrets go, and the record of what was written
+/// is produced. Pairing the wallet is a second process, which rebuilds the codes from the card's
+/// manifest and is reached by quitting and reopening the app from the record screen (amendment 43).
 ///
-/// One tap rather than the usual two, because there is nothing to read on this screen afterwards:
-/// the record it produces is the next screen, and the alert behind it says what happens to the
-/// app.
+/// The action is the wipe alone. It used to be "Wipe secrets & Exit", which was wrong on its face:
+/// this screen closes nothing — the record it produces is the next screen, and that screen carries
+/// the one action that ends the process, behind its own confirmation (amendment 45).
 struct WipeSecretsStepView: View {
     @Bindable var viewModel: CeremonyViewModel
 
@@ -797,16 +797,16 @@ struct WipeSecretsStepView: View {
 
     var body: some View {
         StepScaffold(
-            why: "Clears the mnemonic, the seed and both private keys out of this app's memory, produces the provisioning record, and then closes the app. Everything that needs a secret is finished: what is left is the public material the wallet is given, and that is rebuilt from the YubiKey when you pair it.",
-            caution: "One-way, and the app will close: the words and the keys cannot be shown again, and reopening the app goes straight to pairing. \(cards) the only copy of both keys unless you wrote the mnemonic down.",
-            actionTitle: "Wipe secrets & Exit",
+            why: "Clears the mnemonic, the seed and both private keys out of this app's memory, and produces the provisioning record. Everything that needs a secret is finished: what is left is the public material the wallet is given, and that is rebuilt from the YubiKey when you pair it.",
+            caution: "One-way: the words and the keys cannot be shown again. \(cards) the only copy of both keys unless you wrote the mnemonic down.",
+            actionTitle: "Wipe secrets",
             isBusy: viewModel.busy,
-            action: { viewModel.wipeSecretsAndExit() }
+            action: { viewModel.wipeSecretsAndShowRecord() }
         ) {
             VStack(alignment: .leading, spacing: 8) {
-                Label("The app closes itself; open it again to pair the wallet.", systemImage: "arrow.triangle.2.circlepath")
+                Label("The record is produced next; pairing is a separate process.", systemImage: "link")
                     .font(.callout)
-                Text("Pairing is a separate process and produces its own record: it reads the pairing keys back out of the YubiKey's stored manifest — no mnemonic, nothing secret — and shows the codes for the wallet to scan. Nothing is written to or erased from the card here.")
+                Text("Pairing produces its own record: it reads the pairing keys back out of the YubiKey's stored manifest — no mnemonic, nothing secret — and shows the codes for the wallet to scan. Quit the app from the record screen and reopen it to reach it. Nothing is written to or erased from the card here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -816,17 +816,24 @@ struct WipeSecretsStepView: View {
 
 // MARK: - Step 12: teardown
 
+/// The pairing process's last step, and its record. There is no separate pairing-record screen:
+/// the record is shown here, and Finish returns to the home screen. The provisioning process's
+/// record is the screen that follows its wipe (`ReportView`), which carries the one confirmed exit
+/// (amendments 43, 45, 46).
 struct TeardownStepView: View {
     @Bindable var viewModel: CeremonyViewModel
+    let onFinish: () -> Void
 
     var body: some View {
         StepScaffold(
-            why: "Produces the pairing record: the public keys, paths and chain codes this YubiKey's stored manifest describes, once it has been checked against the keys the card reports for itself. The app holds no secrets at this point — the provisioning process wiped them and closed itself before this one started.",
-            actionTitle: "Finish and show the record",
-            action: { viewModel.finish() }
+            why: "This is the pairing record: the public keys, paths and chain codes this YubiKey's stored manifest describes, checked against the keys the card reports for itself. The app holds no secrets at this point — the provisioning process wiped them before this one started.",
+            actionTitle: "Finish",
+            action: {
+                viewModel.finishPairing()
+                onFinish()
+            }
         ) {
-            Text("Nothing secret is written to disk at any point in this app. The record below contains only public data.")
-                .font(.callout)
+            CeremonyRecordContent(report: viewModel.report)
         }
     }
 }

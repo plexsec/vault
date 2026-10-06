@@ -91,7 +91,10 @@ open PlexVault.xcodeproj
 The app requires Xcode 26.6 / iOS 26 SDK, a physical iPhone (CoreNFC has no
 simulator), and either a YubiKey 5 NFC (contactless) or a YubiKey 5C NFC
 (iPhone 15+ for the wired path). A DEBUG-only simulated card lets the whole
-ceremony be exercised with no hardware present.
+ceremony be exercised with no hardware present. It keeps its PINs, keys and stored objects
+between launches, so a wallet provisioned against it survives a relaunch instead of having to be
+written again; tap **Reset card** on the Simulated row of the Card connection screen, or pass the
+DEBUG-only `-reset-simulated-card` argument, to start from a factory-fresh card.
 
 **Running the UI tests on a phone** is the same command with a device destination —
 the test target carries the personal team and a generated `Info.plist` for exactly

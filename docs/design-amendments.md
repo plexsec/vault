@@ -2045,3 +2045,167 @@ and asserts that the app opens on the pairing process — no home screen, no pos
 read-only route (no reset, no wipe). The tests that need the card a walk just wrote keep the process
 alive through the alert's "Stay on the record" path, because the simulated card is process-wide
 state; `-reset-pending-pairing` keeps one test's pending pairing from routing the next test's launch.
+
+## 44. v0.2: the DEBUG simulated card keeps its state between launches
+
+**Sections:** §5.2 rule 7, §5.3; `MockYubikeyTransport.PersistentState`,
+`SimulatedCardTransport`/`SimulatedCardStore`; `tools/audit-release.sh` check 3;
+`ios/PlexVaultUITests` (`UITestSupport.launchApp`, `RePairUITests`).
+
+**What changed.** The DEBUG simulated card used to be process-wide state only: it modelled a real
+YubiKey's persistence *within* a run — the same applet behind every session, so a PIN set in one step
+was still set in the next — but forgot everything at process exit. Every relaunch therefore handed
+the ceremony a factory-fresh card, and a developer who wanted to sign against the wallet they had
+paired had to run the whole provisioning ceremony again. The simulated applet now saves its durable
+state — the PINs, the retry configuration and counters, both key slots, the stored data objects and
+the terminated flag — and restores it on the next launch. `MockYubikeyTransport` grew a
+`PersistentState` snapshot (a value type, not persistence), and the app's DEBUG bridge saves it in
+`UserDefaults` under one namespaced key per card.
+
+**Why a value type, and not persistence in the mock.** `MockYubikeyTransport` is also the card the
+package tests script, and a mock that wrote to disk when it was constructed would make those tests
+order-dependent and leak state between runs. The snapshot is inert — encode it, decode it, apply it —
+and only the DEBUG app target persists it. A restored card clears the session state a real card loses
+at a session boundary (selection and the PIN verifications), so it cannot inherit "already verified"
+from whoever wrote the snapshot; `challengeBytes` is deliberately not in it, because it is per-run
+entropy rather than card configuration.
+
+**The exception is stated, not slipped in.** This is the third persistence site in the app, and the
+audit names it: check 3 now permits `Debug/SimulatedCardTransport.swift`, asserts the file is
+`#if DEBUG`-guarded and lives under the Debug directory, names its key prefix, and reaches for no
+secret-bearing API. Check 1 already asserts a release bundle contains no simulated card at all, so
+this state cannot ship. The two design.md sentences that enumerate what the app stores now say
+"a release build" and name the simulated store as DEBUG-only, so a reader is not told "two" where the
+audit says three.
+
+**The reset is reachable from the device screen.** The "Simulated (debug)" row carries a
+"Reset card" button (a confirmation first, then `SimulatedCardTransport.resetCard()`), and the
+device screen is the only place the simulated card is visible outside a ceremony. The reset has to
+empty the card *in the reader*, not just the saved copy: the cards are process-wide, so a button
+wired straight to `SimulatedCardStore.resetAll()` would leave the provisioned applet answering until
+the next launch. `resetCard()` therefore does both — clears the store, drops the reader back to the
+first card, and applies a factory `PersistentState` to each (re-applying `-deterministic-entropy`, so
+a test harness comes back unchanged).
+
+**Tests.** `ProvisioningIntegrationTests.testTheAppletSurvivesASnapshotAndRestore` provisions a card
+through the real ceremony, round-trips the snapshot through JSON into a factory-fresh mock, and
+asserts the keys, fingerprints, policy, retry configuration and pairing manifest come back — and that
+the restored card still refuses to sign before PW1 is verified. `RePairUITests`'
+`testTheProvisionedCardSurvivesARelaunch` is the end-to-end one: provision the simulated card, end
+the process, relaunch *without* `-reset-simulated-card`, and re-pair from the card alone.
+`DeviceChoiceUITests.testTheSimulatedRowResetsTheCardInTheReader` proves the in-memory half: it
+provisions the card, resets it from the device screen, and asserts the next re-pair is refused for
+want of a manifest. Every other UI walk now launches with `-reset-simulated-card`, because the card
+one test wrote would otherwise be the card the next test starts on.
+
+## 45. v0.2: the record screen owns the exit, and the wipe is only the wipe
+
+**Sections:** §4.2 (the order paragraph, the wipe paragraph), §9.1's key-confidentiality property;
+`WipeSecretsStepView`, `CeremonyViewModel.wipeSecretsAndShowRecord`/`exitForPairing`, `ReportView`;
+`ios/PlexVaultUITests` (`wipeSecrets`, `leaveRecordForHome`).
+
+**What changed.** Three things, all on the last two screens of a run:
+
+1. The wipe step's action is **"Wipe secrets"**, not "Wipe secrets & Exit". It never ended the
+   process — it wiped, produced the record and put an alert in front of it — so the name claimed
+   something the screen did not do.
+2. The exit is a **single action on the record screen**: "Quit & Reopen App", behind a confirmation
+   whose message says what happens next ("Reopen it to pair the wallet: the next launch goes
+   straight to pairing…"). It replaces both the "Secrets wiped" alert that fired at the wipe and
+   the record screen's "Close the app and pair the wallet", which ended the process on one tap with
+   no confirmation at all.
+3. **"Provision another wallet" is gone.** A run ends by quitting; the record says so, and the
+   toolbar's Abort remains the only in-app way back into the flow.
+
+**Why.** The operator's complaint was exact: the wipe button was named for an exit it did not
+perform, while the screen that *did* have the exit fired it without asking. The old shape also put
+the exit where the operator had the least context — an alert over a screen they had not read yet —
+and the new one puts it under the record, with the confirmation spelling out that the next launch
+pairs the wallet. Removing "Provision another wallet" follows from the same reading: it returned to
+setup with the wipe already done and the pending-pairing flag still set, so what it offered was not
+the fresh run its name promised. Quitting and reopening is.
+
+**Consequence recorded in the spec.** design.md's wipe paragraph, the §4.2 order paragraph and
+§9.1's key-confidentiality property said the app "closes itself" at the wipe. They now say the
+process is ended *from the record screen*, by that one confirmed action; the two-process boundary
+itself is unchanged (amendment 43). The pending-pairing flag is still set at the wipe, before the
+record is produced, so an app the system reclaims on the record screen still resumes into pairing on
+the next launch.
+
+**Tests.** `UITestSupport.wipeSecrets` now asserts the record's "Quit & Reopen App" appears, cancels
+the confirmation once to prove it gates the exit, then confirms and waits for the process to end.
+Every test that used the deleted button returns home through the toolbar Abort
+(`UITestSupport.leaveRecordForHome`), which is also what an operator has.
+
+## 46. v0.2: the pairing process shows its record on the Finish step, and Finish goes home
+
+**Sections:** §4.2 (the order paragraph); `TeardownStepView`, `CeremonyViewModel.finishPairing`,
+`ReportView`/`CeremonyRecordContent`, `CeremonyRootView`; `ios/PlexVaultUITests` (`RePairUITests`),
+`docs/provisioning-checklist.md` Part 3b.
+
+**What changed.** The pairing process's last two screens were a "Finish" step with a "Finish and show
+the record" button, then a separate record screen with no action on it — a dead end, because the
+pairing route had nothing left to exit to. They are one step now: the Finish step carries the pairing
+record (`CeremonyRecordContent`, the same view `ReportView` renders for the provisioning record) and
+its action is **"Finish"**, which completes the ceremony and returns to the home screen. The
+provisioning process is unchanged: its record screen (`ReportView`, reached at the wipe) still carries
+the one confirmed exit, "Quit & Reopen App" (amendment 45).
+
+`CeremonyViewModel.finish()` — which set `phase = .finished` — became `finishPairing()`, which
+completes and wipes the ceremony without routing to a record screen; `phase = .finished` is now
+reached only from the wipe.
+
+**Why.** The record screen was designed as the provisioning process's artifact — the thing the
+operator saves before the app closes — but the pairing process inherited it too, and for the pairing
+process there is no exit to make: the home screen is available and the record is public data. A step
+whose only action led to a screen with no action was a tap of ceremony with no decision in it.
+Merging it also means the record cannot be lost: it is on the screen whose action leaves the step,
+not on a screen the operator might never scroll to.
+
+**design.md needs no change here.** The §4.2 order paragraph already says the second process "reads
+the pairing codes back out of the card's manifest, shows them to the wallet and produces its own
+record"; it now does so on the Finish step, and whether that record has a screen of its own is not
+something the spec constrains. The two records, the two processes and the wipe-before-pairing order
+are all unchanged (amendment 43).
+
+**Also removed: the in-app Appendix B checklist.** The record content used to end with
+`ChecklistView`, a live rendering of the printed checklist (design.md Appendix B /
+`docs/provisioning-checklist.md`) whose items were ticked from the report. It is gone: the record is
+what the operator files, the checklist is a procedure they work through on paper, and an in-app
+mirror of five manual items was a second place for the two to disagree without adding an attestation
+the report did not already carry. The printed checklist is unchanged.
+
+**Tests.** `RePairUITests.testRePairingAProvisionedCardShowsTheCodesAndTheAddress` now walks past the
+codes: it confirms the addresses, continues to the Finish step, asserts the pairing record is on it
+("Pairing complete"), taps "Finish" and asserts the home screen. It is the only test that reaches the
+pairing teardown; `CeremonyFlowUITests.testTheWipeClosesTheAppAndTheNextLaunchResumesPairing` still
+covers the provisioning record screen and its confirmed exit.
+
+## 47. v0.2: the record is saved to Photos, not shared
+
+**Sections:** `CeremonyRecordContent`/`CeremonyRecordPage`, `ios/project.yml` and the generated
+`ios/PlexVault/Info.plist`, `tools/audit-release.sh` check 4; `docs/provisioning-checklist.md`
+Parts 3 and 3b.
+
+**What changed.** The record's export row was a `ShareLink` ("Share the record") beside a copy
+button. Share is gone: the button renders the record to an image with `ImageRenderer` and writes it
+to the photo library with add-only authorization ("Save to Photos"). `NSPhotoLibraryAddUsageDescription`
+was added to the app's Info.plist, and the release audit's check 4 asserts it, the same way it asserts
+the camera and NFC strings.
+
+**Why.** The record is a thing to keep — the screen says so — and the share sheet made "keep it" a
+question of picking a destination from a list. Photos is where an operator actually files an image,
+and what is written is the **whole** record rather than the viewport: the record runs to three screens
+of keys, addresses and serials, so a capture of the phone's screen would be missing most of it. That
+is also why this is not `UIScreen` capture.
+
+**The permission is add-only, and stated.** The app requests `.addOnly`, never reads the library, and
+the usage string says so. The record carries no secrets — it is the public material the operator is
+told to keep (`ReportBody`, `CeremonyReport`) — so this is not a new place a secret can leave: it is
+the same output the share sheet already produced, written where the operator asked for it. design.md
+needs no change: it never described how the record is exported, and its privacy claims are about
+secrets and networking, neither of which this touches (check 2 still passes with PhotoKit linked).
+
+**Tests.** `RePairUITests.testRePairingAProvisionedCardShowsTheCodesAndTheAddress` asserts the
+"Save to Photos" button is on the pairing record. The write itself needs the system permission sheet,
+which the suite does not drive.

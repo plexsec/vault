@@ -223,9 +223,6 @@ public final class CeremonyViewModel {
     /// way back into it.
     public var pairingIsPending: Bool { pendingPairing.isPending }
 
-    /// True while the alert that explains the exit is on screen (`ReportView`).
-    public var showExitAlert = false
-
     /// Enters the read-only pairing process directly, for a run that stopped between the wipe and
     /// the codes and closed the app (amendment 43).
     ///
@@ -336,7 +333,6 @@ public final class CeremonyViewModel {
         revealTimer = nil
         revealSecondsRemaining = 0
         isPendingPairingResume = false
-        showExitAlert = false
     }
 
     // MARK: Step actions
@@ -600,17 +596,17 @@ public final class CeremonyViewModel {
     /// when the ceremony wipes everything (amendments 41, 42).
     public private(set) var secretsWiped = false
 
-    /// Wipes the secrets and ends the provisioning process, leaving the record of what was
-    /// written and verified on screen (amendment 43).
+    /// Wipes the secrets and produces the provisioning record, leaving it on screen (amendment 43).
     ///
     /// This is the end of the first of the run's two processes. Pairing the wallet is the second:
     /// it reads the codes back out of the card's manifest and produces its own record, which is
     /// why nothing about the pairing is stored — the flag below is the whole handover.
     ///
-    /// The record is produced **before** the app closes, because the process that can testify to
-    /// the card's serials, the read-back, the policy and the retry limits is this one, and it is
-    /// about to be gone.
-    public func wipeSecretsAndExit() {
+    /// The record is produced here, before the card can be put down, because the process that can
+    /// testify to the card's serials, the read-back, the policy and the retry limits is this one.
+    /// The app does **not** close itself from this step: the record screen carries the one action
+    /// that ends the process ("Quit & Reopen App"), behind its own confirmation (amendment 45).
+    public func wipeSecretsAndShowRecord() {
         guard let ceremony else { return }
         do {
             try ceremony.wipeSecrets()
@@ -621,19 +617,19 @@ public final class CeremonyViewModel {
         secretsWiped = ceremony.secretsWiped
         guard secretsWiped else { return }
         clearSecretFormState()
-        // Set before the record is produced and before the alert: if the operator kills the app
-        // while the alert is up, the wipe has happened and the next launch still knows to pair.
+        // Set before the record is produced: if the process ends from the record screen — the
+        // operator quits, the system reclaims the app — the wipe has happened and the next launch
+        // still knows to pair.
         pendingPairing.markPending()
         report = ceremony.finish()
         step = ceremony.step
         phase = .finished
-        showExitAlert = true
     }
 
-    /// Ends the process, as the alert told the operator it would. iOS has no way to restart the
-    /// phone from an app, so "reboot" here means this app: it closes, and the next launch starts
-    /// in the pairing process. Deliberately not part of the ceremony, and deliberately reachable
-    /// only from the two places that have just explained it (the alert and the record screen).
+    /// Ends the process, as the record screen's confirmation told the operator it would. iOS has no
+    /// way to restart the phone from an app, so "reopen" here means this app: it closes, and the
+    /// next launch starts in the pairing process. Deliberately not part of the ceremony, and
+    /// deliberately reachable only from the place that has just explained it.
     public func exitForPairing() {
         exit(0)
     }
@@ -670,11 +666,16 @@ public final class CeremonyViewModel {
         }
     }
 
-    public func finish() {
+    /// Completes the pairing ceremony and leaves the record on the step that called it.
+    ///
+    /// The pairing process shows its record **inside** the Finish step and returns to the home
+    /// screen from there, so this deliberately does not set `phase = .finished`: that phase is the
+    /// provisioning process's record screen, reached at the wipe (amendment 46). The ceremony is
+    /// completed and wiped exactly as before.
+    public func finishPairing() {
         guard let ceremony else { return }
         report = ceremony.finish()
         step = ceremony.step
-        phase = .finished
         hideMnemonic()
         mnemonic = []
     }

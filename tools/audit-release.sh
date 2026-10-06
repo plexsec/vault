@@ -13,9 +13,11 @@
 #   3. No secret material is persisted: no writes of mnemonic/PIN/key data and no
 #      use of UserDefaults/Keychain for ceremony secrets. Two non-secret values are
 #      permitted — the card connection the operator chose once, and a flag saying a run
-#      stopped at the wipe so the next launch pairs the wallet — and the check names the
-#      two files and their keys rather than ignoring persistence in general.
-#   4. The NSCameraUsageDescription / NFC keys are present, and NFC declares the
+#      stopped at the wipe so the next launch pairs the wallet — plus one DEBUG-only store
+#      that saves the *simulated* card's state so a developer does not re-provision the fake
+#      wallet on every launch. The check names all three files and their keys rather than
+#      ignoring persistence in general, and asserts the simulated store cannot ship.
+#   4. The camera, photo-library-add and NFC keys are present, and NFC declares the
 #      OpenPGP AID (without it iOS never surfaces the card).
 #
 # Usage: tools/audit-release.sh [path/to/PlexVault.app]
@@ -103,28 +105,31 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "[3] No secret persistence"
-# Two persistence sites are permitted, and they are named here rather than excluded by
+# Three persistence sites are permitted, and they are named here rather than excluded by
 # silence. `DeviceChoiceStore` holds which reader the YubiKey is on; `PendingPairingStore`
 # holds one Bool saying that a run stopped at the wipe and that the next launch should start
-# in the pairing process (amendment 43). Neither is a secret: the first selects a channel
-# (check 1 asserts that a release build has no simulated transport to point it at), and the
-# second is a routing flag whose *payload* is deliberately nothing — the pairing codes are
-# rebuilt from the card's manifest by the read-only route, and never stored on the phone.
-# Everything else must still be untouched: no key material, no PINs, no pairing material, no
-# ceremony state.
+# in the pairing process (amendment 43); `SimulatedCardTransport.swift` holds the DEBUG-only
+# simulated card's own state. None is a real secret: the first selects a channel (check 1
+# asserts that a release build has no simulated transport to point it at), the second is a
+# routing flag whose *payload* is deliberately nothing — the pairing codes are rebuilt from
+# the card's manifest by the read-only route, and never stored on the phone — and the third
+# belongs to a fake applet that is excluded from Release altogether. Everything else must
+# still be untouched: no key material, no PINs, no pairing material, no ceremony state.
 DEVICE_STORE="$REPO_ROOT/ios/PlexVault/Support/DeviceChoiceStore.swift"
 PENDING_STORE="$REPO_ROOT/ios/PlexVault/Support/PendingPairingStore.swift"
+SIMULATED_STORE="$REPO_ROOT/ios/PlexVault/Debug/SimulatedCardTransport.swift"
 persist_hits="$(grep -rnE 'UserDefaults|NSUbiquitousKeyValueStore|FileManager\.default\.createFile|SecItemAdd|\.write\(to:' \
       "$REPO_ROOT/ios/PlexVault" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Ceremony" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Signing" 2>/dev/null \
-      | grep -v "^${DEVICE_STORE}:" | grep -v "^${PENDING_STORE}:" || true)"
+      | grep -v "^${DEVICE_STORE}:" | grep -v "^${PENDING_STORE}:" \
+      | grep -v "^${SIMULATED_STORE}:" || true)"
 persist_hits="$(grep -v '^\s*//' <<<"$persist_hits" || true)"
 if [[ -n "$persist_hits" ]]; then
-  note_fail "persistence API referenced outside the two named stores:"
+  note_fail "persistence API referenced outside the three named stores:"
   sed 's/^/        /' <<<"$persist_hits"
 else
-  note_ok "the only persistence sites are the device-choice and pending-pairing stores"
+  note_ok "the only persistence sites are the device-choice, pending-pairing and simulated-card stores"
 fi
 # The exceptions are one key each in one file, so assert exactly that: each store exists,
 # names the key its screen reads, stores nothing else, and does not reach for a
@@ -169,6 +174,31 @@ else
     note_fail "the pending-pairing store carries pairing material; the flag must be the whole payload"
   else
     note_ok "pending pairing: a flag and nothing else — no codes, keys or record"
+  fi
+fi
+# The third site is DEBUG-only: it saves the *simulated* card's state so a developer does not
+# have to provision the fake wallet again after every relaunch. It is named here so the
+# exception is stated rather than slipped in, and the assertions make the naming safe: the file
+# must be `#if DEBUG`-guarded, it must live under the Debug directory, and it must reach for no
+# secret-bearing API. Check 1 is what guarantees the card it belongs to is not in a release
+# build at all.
+if [[ ! -f "$SIMULATED_STORE" ]]; then
+  note_fail "the simulated-card store is missing; the check above proved nothing"
+else
+  if ! grep -q 'com\.plexsec\.vault\.simulated-card' "$SIMULATED_STORE"; then
+    note_fail "the simulated-card store does not name the expected key"
+  fi
+  if ! grep -qE '^#if DEBUG' "$SIMULATED_STORE"; then
+    note_fail "the simulated-card store is not DEBUG-gated; a release build would compile it"
+  fi
+  case "$SIMULATED_STORE" in
+    */Debug/*) ;;
+    *) note_fail "the simulated-card store is not in a Debug directory" ;;
+  esac
+  if grep -qE 'SecItem(Add|Copy|Update)|NSKeyedArchiver|\.write\(to:|CeremonyReport|PairingExport' "$SIMULATED_STORE"; then
+    note_fail "the simulated-card store reaches for something other than UserDefaults"
+  else
+    note_ok "simulated card: DEBUG-only, one namespaced key per card, simulated state only"
   fi
 fi
 # The only persisted item permitted is the redacted report, which the operator
@@ -246,6 +276,15 @@ if [[ -z "$camera" ]]; then
   note_fail "NSCameraUsageDescription is missing; the signing flow cannot scan"
 else
   note_ok "NSCameraUsageDescription present"
+fi
+# Saving the record writes one image the operator asked for. Without the add-only usage string iOS
+# terminates the app the moment the write is attempted — the same failure mode as a missing camera
+# string, and just as invisible until it happens.
+photo="$(plist_value NSPhotoLibraryAddUsageDescription)"
+if [[ -z "$photo" ]]; then
+  note_fail "NSPhotoLibraryAddUsageDescription is missing; saving the record to Photos would be killed by iOS"
+else
+  note_ok "NSPhotoLibraryAddUsageDescription present"
 fi
 if [[ "$(plist_value ITSAppUsesNonExemptEncryption)" == "false" ]]; then
   note_ok "ITSAppUsesNonExemptEncryption=false"

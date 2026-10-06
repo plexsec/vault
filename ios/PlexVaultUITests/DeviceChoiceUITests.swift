@@ -167,6 +167,65 @@ final class DeviceChoiceUITests: XCTestCase {
         XCTAssertGreaterThan(device.frame.minX, title.frame.maxX, "the button belongs on the right")
     }
 
+    /// The simulated row carries a reset, and it empties the card **in the reader** rather than
+    /// only forgetting what a later launch would restore.
+    ///
+    /// That distinction is the reason the button is wired to `SimulatedCardTransport.resetCard()`
+    /// and not straight to the saved state: the cards are process-wide, so clearing the store alone
+    /// would leave the provisioned card answering. The proof is behavioural — a card that was
+    /// written, then reset, must refuse a re-pair for want of a manifest, exactly as a card that was
+    /// never provisioned does.
+    func testTheSimulatedRowResetsTheCardInTheReader() throws {
+        let app = launchApp(
+            deviceChoice: "simulated",
+            arguments: ["-deterministic-entropy", Self.zeroEntropyHex]
+        )
+        openProvisioningFlow(app)
+        advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+        try revealAndConfirmMnemonic(app, entropy: [UInt8](repeating: 0, count: 32))
+        completeCeremonyAfterMnemonic(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+        leaveRecordForHome(app)
+
+        // The device screen, reached the only way it can be once a choice is stored.
+        tapWhenVisible(deviceButton(in: app), in: app)
+        let reset = app.buttons["reset-simulated-card"]
+        XCTAssertTrue(
+            reset.waitForExistence(timeout: 15),
+            "the simulated row must offer the reset:\n\(app.debugDescription)"
+        )
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "reset-simulated-card").count, 1,
+            "the reset belongs to the one simulated row"
+        )
+
+        tapWhenVisible(reset, in: app)
+        let alert = app.alerts["Reset the simulated card?"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "the reset must confirm first:\n\(app.debugDescription)")
+        alert.buttons["Reset"].tap()
+        XCTAssertTrue(alert.waitForNonExistence(timeout: 5), "confirming must dismiss the alert")
+        tapPinnedPrimaryAction(app, identifier: "device-done")
+
+        // The written card is gone: a re-pair has no manifest to read, which is the same refusal
+        // an unprovisioned card produces.
+        openProvisioningFlow(app, mode: "Pair a wallet")
+        acknowledgePosture(in: app)
+        tapPinnedPrimaryAction(app)
+        tapStepAction("Read YubiKey", in: app)
+        tapStepAction("Continue", in: app)
+        tapStepAction("Read pairing manifest", in: app)
+        let refusal = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "no pairing manifest")
+        ).firstMatch
+        XCTAssertTrue(
+            refusal.waitForExistence(timeout: 10),
+            "the reset must empty the card in the reader:\n\(app.debugDescription)"
+        )
+    }
+
+    private static let userPIN = "246810"
+    private static let adminPIN = "87654321"
+    private static let zeroEntropyHex = String(repeating: "00", count: 32)
+
     /// What the device screen stores is what the ceremony then uses.
     ///
     /// The connection is not echoed on any screen inside the flow — that is the point of

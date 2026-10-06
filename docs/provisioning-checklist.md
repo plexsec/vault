@@ -92,12 +92,14 @@ app closes itself, and pairing the wallet is the second process that follows.
                   step rather than finishing without it
             - [ ] No step asked for a second touch, and no screen was left between a write and its
                   proof
-- [ ] **Wipe secrets & Exit** — the end of the **first process**: it clears the mnemonic, the seed and
-      both private keys out of the app's memory, produces the provisioning record, and closes the app
-      - [ ] The record is on screen before the app goes: **save it** (Share or Copy) — it says what
-            was written to which card, and it is the only artifact that can say so
-      - [ ] Read the alert: the app is about to close itself. "Stay on the record" keeps it open if
-            you want to look at the record again
+- [ ] **Wipe secrets** — the end of the **first process**: it clears the mnemonic, the seed and
+      both private keys out of the app's memory and produces the provisioning record. The app does
+      not close itself here
+      - [ ] The record is on screen: **save it** (Save to Photos or Copy) — it says what was written to which
+            card, and it is the only artifact that can say so
+      - [ ] **Quit & Reopen App** ends this process — confirm the alert, which says the next launch
+            goes straight to pairing. Nothing else closes the app, and the record is gone once you
+            leave it
       - [ ] Understood: the words cannot be shown again after this. If the notes above record that
             you **declined** the paper backup, the YubiKey(s) just written are the only copy of both
             keys
@@ -115,10 +117,12 @@ app closes itself, and pairing the wallet is the second process that follows.
       - [ ] You have acknowledged that the pairing code carries a chain code
             (required by Keystone/MetaMask) and that only the address shown can
             be signed for
-- [ ] **Finish the pairing process** — the **pairing record** on screen, saved next to the
-      provisioning record. Two records, one per process, each saying which half of the run it is
-      (public data only, both of them)
-- [ ] Restart the app before any further ceremony
+- [ ] **Finish** — the **pairing record** is on this step (public data only): the public keys,
+      paths and chain codes, read back out of the card's manifest. Two records, one per process, each
+      saying which half of the run it is
+      - [ ] Save it (Save to Photos or Copy) before leaving: this step *is* the pairing process's record screen
+      - [ ] **Finish** completes the ceremony and returns to the home screen — no restart is needed
+            before another ceremony
 
 ## Part 3b — Re-pairing later (read-only, no reset)
 

@@ -47,6 +47,13 @@ final class SimulatedCardTransport: YubikeyTransport {
     /// its own slots — and, because `TransportSessionCard` opens a fresh transport per step, they
     /// are handed out through `current` rather than per transport instance.
     private static let simulatedCards: [MockYubikeyTransport] = {
+        // `-reset-simulated-card` clears what a previous launch saved, so a UI test starts on a
+        // factory-fresh reader. Without it the saved cards are restored, which is what makes a
+        // provisioned simulated wallet survive a relaunch.
+        let shouldReset = ProcessInfo.processInfo.arguments
+            .contains(SimulatedCardStore.resetLaunchArgument)
+        if shouldReset { SimulatedCardStore.resetAll() }
+
         var result: [MockYubikeyTransport] = []
         for index in 0..<cardCount {
             let mock = MockYubikeyTransport(
@@ -54,20 +61,46 @@ final class SimulatedCardTransport: YubikeyTransport {
                 serial: 0x00DE_71A5 + UInt32(index),
                 openPGPVersion: "3.4"
             )
-            // DEBUG-only deterministic entropy for the UI tests: GET CHALLENGE
-            // returns these bytes instead of random data, so the ceremony produces a
-            // known mnemonic. Compiled out of Release entirely.
-            let arguments = ProcessInfo.processInfo.arguments
-            if let argumentIndex = arguments.firstIndex(of: "-deterministic-entropy"),
-               argumentIndex + 1 < arguments.count,
-               let bytes = try? Hex.decode(arguments[argumentIndex + 1]),
-               bytes.count == BIP39.entropyByteCount {
-                mock.challengeBytes = bytes
+            SimulatedCardTransport.applyDeterministicEntropy(to: mock)
+            // The card the developer left in the reader. Restored here rather than in the
+            // transport's `open()` because the mock is the shared, process-wide applet: every
+            // fresh `SimulatedCardTransport` talks to this one instance.
+            if !shouldReset, let state = SimulatedCardStore.load(index: index) {
+                mock.persistentState = state
             }
             result.append(mock)
         }
         return result
     }()
+
+    /// DEBUG-only deterministic entropy for the UI tests: `GET CHALLENGE` returns these bytes
+    /// instead of random data, so the ceremony produces a known mnemonic. Compiled out of Release
+    /// entirely.
+    private static func applyDeterministicEntropy(to mock: MockYubikeyTransport) {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let argumentIndex = arguments.firstIndex(of: "-deterministic-entropy"),
+              argumentIndex + 1 < arguments.count,
+              let bytes = try? Hex.decode(arguments[argumentIndex + 1]),
+              bytes.count == BIP39.entropyByteCount
+        else { return }
+        mock.challengeBytes = bytes
+    }
+
+    /// Puts the reader back to a factory-fresh card: forgets what was saved and empties the applet
+    /// in memory, so the next ceremony sees a blank card. The "Reset card" button on the device
+    /// screen calls this; `-reset-simulated-card` does the same thing before the first screen.
+    ///
+    /// The in-memory half is what makes the button take effect now rather than at the next launch:
+    /// the cards are process-wide, so clearing the saved data alone would leave the card in the
+    /// reader exactly as it was.
+    static func resetCard() {
+        SimulatedCardStore.resetAll()
+        cardIndex = 0
+        for mock in simulatedCards {
+            mock.persistentState = MockYubikeyTransport.PersistentState()
+            applyDeterministicEntropy(to: mock)
+        }
+    }
 
     /// Which card the reader is holding, and the point at which the next one is handed over.
     ///
@@ -99,6 +132,69 @@ final class SimulatedCardTransport: YubikeyTransport {
 
     func send(_ command: CommandAPDU) async throws -> ResponseAPDU { try await inner.send(command) }
 
-    func close() async { await inner.close() }
+    /// Saves the applet after the session that just ended. `TransportSessionCard` closes every
+    /// session on both the success and the error path, so one write per session covers every
+    /// mutation the ceremony makes — and not one per APDU, which would put a plist write in the
+    /// middle of the protocol.
+    func close() async {
+        await inner.close()
+        SimulatedCardStore.save(inner.persistentState, index: Self.cardIndex)
+    }
+}
+
+/// The DEBUG simulated card's state, saved between launches.
+///
+/// A real YubiKey keeps its PINs, keys and stored objects when the phone is put down; the
+/// simulated one used to forget everything at process exit, so every relaunch meant provisioning
+/// the fake wallet again. This keeps the durable applet state
+/// (`MockYubikeyTransport.PersistentState`) in `UserDefaults`, under one namespaced key per
+/// simulated card.
+///
+/// DEBUG-only in two senses: this whole file is wrapped in `#if DEBUG`, and the card it belongs to
+/// is excluded from Release by `project.yml` (check 1 of `tools/audit-release.sh` asserts a release
+/// bundle cannot reach a simulated card). Check 3 of that audit names this file and asserts it is
+/// DEBUG-gated, lives in the Debug directory, and reaches for no secret-bearing API. Everything it
+/// stores belongs to the *simulated* applet — test material, and never a real key.
+///
+/// Deliberately not `@AppStorage`: the audit greps for persistence APIs by name, and a property
+/// wrapper would hide this site from the check whose job is to notice it.
+enum SimulatedCardStore {
+    /// Namespaced, because `UserDefaults` is one shared dictionary per app. One key per card
+    /// index, so a two-card run restores both cards in order.
+    static let keyPrefix = "com.plexsec.vault.simulated-card"
+
+    /// Clears the saved cards before the first screen. The UI tests pass it so a walk that
+    /// provisions the simulated card does not change what the next test sees.
+    static let resetLaunchArgument = "-reset-simulated-card"
+
+    private static func key(for index: Int) -> String { "\(keyPrefix).\(index)" }
+
+    static func load(
+        index: Int,
+        defaults: UserDefaults = .standard
+    ) -> MockYubikeyTransport.PersistentState? {
+        guard let data = defaults.data(forKey: key(for: index)) else { return nil }
+        return try? JSONDecoder().decode(MockYubikeyTransport.PersistentState.self, from: data)
+    }
+
+    static func save(
+        _ state: MockYubikeyTransport.PersistentState,
+        index: Int,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        defaults.set(data, forKey: key(for: index))
+        // The wipe closes the process with `exit(0)`, which does not run the app lifecycle, so the
+        // flush that would normally happen at termination cannot be relied on — the same reason
+        // `PendingPairingStore` synchronizes its flag. Saves are per session, not per APDU.
+        _ = defaults.synchronize()
+    }
+
+    static func resetAll(defaults: UserDefaults = .standard) {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(keyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+        _ = defaults.synchronize()
+    }
 }
 #endif

@@ -18,7 +18,30 @@ struct DeviceChoiceView: View {
     let isFirstRun: Bool
     let onDone: () -> Void
 
+    /// Whether the "Reset card" confirmation is up. The button exists only in DEBUG, where the
+    /// simulated card does.
+    @State private var showingSimulatedReset = false
+
+    /// The confirmation is attached inside `#if DEBUG` because its action resets a type that is
+    /// compiled out of a release build; the rest of the screen is the same in both.
+    @ViewBuilder
     var body: some View {
+        #if DEBUG
+        content.alert("Reset the simulated card?", isPresented: $showingSimulatedReset) {
+            Button("Reset", role: .destructive) { SimulatedCardTransport.resetCard() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This erases the simulated card's keys, PINs and stored manifest. A wallet paired "
+                    + "to it will not sign again until the card is provisioned once more."
+            )
+        }
+        #else
+        content
+        #endif
+    }
+
+    private var content: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -62,10 +85,30 @@ struct DeviceChoiceView: View {
                     // Stored on the tap rather than on "Done": the row *is* the choice,
                     // so there is no second step that could disagree with the first.
                     device.choose(choice)
+                } accessory: {
+                    #if DEBUG
+                    if choice == .simulated {
+                        resetSimulatedCard
+                    }
+                    #endif
                 }
             }
         }
     }
+
+    #if DEBUG
+    /// The one DEBUG-only control on this screen: the simulated card is the only card whose keys a
+    /// developer can afford to throw away, so it is the only row that offers to.
+    private var resetSimulatedCard: some View {
+        Button("Reset card") { showingSimulatedReset = true }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityIdentifier("reset-simulated-card")
+            .padding(.trailing, 12)
+            .padding(.top, 12)
+    }
+    #endif
 
     private var storageNote: some View {
         Text(
@@ -110,39 +153,49 @@ struct DeviceChoiceView: View {
 /// A selectable row: a radio-style row that is a real button for VoiceOver and for UI
 /// tests, addressed by an identifier the caller supplies (which selection it belongs to
 /// matters to the tests, so it is not derived from the title).
-struct ChoiceRow: View {
+///
+/// The optional trailing `accessory` sits *beside* the button, not inside it: a button nested in
+/// another button never receives the tap, and the one accessory in the app — "Reset card" on the
+/// simulated row — has to be a control separate from choosing the connection.
+struct ChoiceRow<Accessory: View>: View {
     let title: String
     let detail: String?
     let isSelected: Bool
     let identifier: String
     let select: () -> Void
+    @ViewBuilder let accessory: () -> Accessory
 
     var body: some View {
-        Button(action: select) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.callout.weight(.medium))
-                    if let detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 0) {
+            Button(action: select) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).font(.callout.weight(.medium))
+                        if let detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            // Label override + selected trait, applied directly to the button. Wrapping the
+            // button in `.accessibilityElement(children: .ignore)` instead replaces the
+            // element entirely, so it stops being a button and can no longer be addressed as
+            // one.
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            .accessibilityIdentifier(identifier)
+
+            accessory()
         }
-        .buttonStyle(.plain)
-        // Label override + selected trait, applied directly to the button. Wrapping the
-        // button in `.accessibilityElement(children: .ignore)` instead replaces the
-        // element entirely, so it stops being a button and can no longer be addressed as
-        // one.
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .accessibilityIdentifier(identifier)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }

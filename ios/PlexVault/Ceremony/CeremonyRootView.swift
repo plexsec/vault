@@ -133,7 +133,7 @@ struct CeremonyRootView: View {
         case .pairingExport:
             PairingStepView(viewModel: viewModel)
         case .teardown:
-            TeardownStepView(viewModel: viewModel)
+            TeardownStepView(viewModel: viewModel, onFinish: onExit)
         }
     }
 }

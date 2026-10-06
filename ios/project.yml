@@ -74,6 +74,12 @@ targets:
         NSCameraUsageDescription: >-
           PlexVault uses the camera to read the unsigned transaction your wallet
           shows as a QR code. Nothing is recorded and nothing leaves this device.
+        # Saving the record to Photos is an explicit, add-only write the operator asks
+        # for. The app never reads the library, and what it writes is the public
+        # record they are already told to keep.
+        NSPhotoLibraryAddUsageDescription: >-
+          PlexVault saves the provisioning record to your photo library as an image.
+          It never reads your photos.
     entitlements:
       path: PlexVault/PlexVault.entitlements
       properties:

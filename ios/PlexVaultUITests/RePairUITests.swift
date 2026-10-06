@@ -101,7 +101,7 @@ final class RePairUITests: XCTestCase {
 
         // Back to setup for the read-only pass. The card is a process-wide mock, so
         // it is still provisioned — which is exactly the state this mode is for.
-        tapStepAction("Provision another wallet", in: app)
+        leaveRecordForHome(app)
         // That button returns to the home screen, so the flow is re-entered.
         openProvisioningFlow(app, mode: "Pair a wallet")
         acknowledgePosture(in: app)
@@ -135,6 +135,108 @@ final class RePairUITests: XCTestCase {
             app.images.matching(identifier: "QR code").count, 2,
             "both keys need a code:\n\(app.debugDescription)"
         )
+
+        // The pairing process ends on its own Finish step, which carries the pairing record; Finish
+        // returns to the home screen rather than leaving a separate record screen behind
+        // (amendment 46).
+        let confirmed = app.switches["I confirmed my desktop wallet shows these exact values"]
+        XCTAssertTrue(
+            confirmed.waitForExistence(timeout: 10),
+            "the address-confirmation toggle is missing:\n\(app.debugDescription)"
+        )
+        tapWhenVisible(confirmed, in: app)
+        tapStepAction("Continue", in: app)
+
+        XCTAssertTrue(
+            app.staticTexts["Pairing complete"].waitForExistence(timeout: 15),
+            "the Finish step must carry the pairing record:\n\(app.debugDescription)"
+        )
+        XCTAssertTrue(
+            app.buttons["Save to Photos"].exists,
+            "the record must offer saving to Photos:\n\(app.debugDescription)"
+        )
+
+        // And it works: the record is rendered to an image and written to the library. The system's
+        // add-only permission sheet is answered if it appears; the app's own outcome alert is the
+        // assertion either way.
+        tapStepAction("Save to Photos", in: app)
+        answerPhotosPermissionIfAsked()
+        let saved = app.alerts["Save to Photos"]
+        XCTAssertTrue(
+            saved.waitForExistence(timeout: 15),
+            "saving to Photos must report its outcome:\n\(app.debugDescription)"
+        )
+        XCTAssertTrue(
+            saved.staticTexts["The record was saved to Photos."].exists,
+            "the record must actually reach the library, got:\n\(app.debugDescription)"
+        )
+        saved.buttons["OK"].tap()
+
+        tapStepAction("Finish", in: app)
+        XCTAssertTrue(
+            app.buttons["route-signing"].waitForExistence(timeout: 15),
+            "Finish must return to the home screen:\n\(app.debugDescription)"
+        )
+    }
+
+    /// The saved simulated card survives a relaunch — the whole point of the DEBUG store.
+    ///
+    /// A developer should not have to provision the fake wallet again every time the app is
+    /// restarted. This provisions the card, ends the process, reopens it *without* the reset flag,
+    /// and re-pairs from the card alone: had the keys and the manifest not been saved, the read-back
+    /// would find an empty card and be refused, the way the first test in this file asserts an empty
+    /// one is.
+    func testTheProvisionedCardSurvivesARelaunch() throws {
+        let app = launchApp(
+            deviceChoice: "simulated",
+            arguments: ["-deterministic-entropy", Self.zeroEntropyHex]
+        )
+        openProvisioningFlow(app)
+
+        let entropy = [UInt8](repeating: 0, count: 32)
+        advanceToMnemonicStep(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+        try revealAndConfirmMnemonic(app, entropy: entropy)
+        completeCeremonyAfterMnemonic(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
+
+        // The card is written and the process is put down the way a relaunch does. The second launch
+        // drops `-reset-simulated-card` so the saved state is what comes back; everything else about
+        // the launch (the connection, the entropy) stays as it was.
+        app.terminate()
+        app.launchArguments.removeAll { $0 == "-reset-simulated-card" }
+        app.launch()
+
+        // The read-only re-pair needs no mnemonic and writes nothing: if the card had come back
+        // empty, there would be no manifest to match against the keys.
+        openProvisioningFlow(app, mode: "Pair a wallet")
+        acknowledgePosture(in: app)
+        tapPinnedPrimaryAction(app)
+        tapStepAction("Read YubiKey", in: app)
+        tapStepAction("Continue", in: app)
+        tapStepAction("Read pairing manifest", in: app)
+        XCTAssertTrue(
+            app.staticTexts["The stored manifest matches the keys in this YubiKey."].waitForExistence(timeout: 10),
+            "the relaunched app must find the saved card's keys and manifest:\n\(app.debugDescription)"
+        )
+        tapStepAction("Continue", in: app)
+        XCTAssertTrue(
+            app.switches["I understand that only the address shown here can be signed for"]
+                .waitForExistence(timeout: 10),
+            "the restored card must reach the pairing step:\n\(app.debugDescription)"
+        )
+    }
+
+    /// Answers the system's add-only Photos permission sheet, whichever process presents it. Best
+    /// effort: when the permission was already granted there is no sheet, and the caller's assertion
+    /// on the app's own outcome alert is the real check.
+    private func answerPhotosPermissionIfAsked() {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for label in ["Allow", "OK"] {
+            let button = springboard.buttons[label]
+            if button.waitForExistence(timeout: 3) {
+                button.tap()
+                return
+            }
+        }
     }
 
     private static let userPIN = "246810"

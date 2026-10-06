@@ -611,11 +611,12 @@ applet are now measured rather than assumed, and both had silently broken provis
       read the card back and confirm: `0xD6`/`0xD8` = `02 20`, `0xC4[0]` = `0x00`, both keys
       readable, manifest present, and both pairing codes reproduce the addresses the wallet
       shows.
-      - [ ] **Wipe secrets & Exit** clears the secrets, produces the provisioning record and **closes
-            the app**; reopening it lands straight in the pairing process (no home screen, no setup
-            screen, no reset step), which reads the codes back out of the card's manifest and still
-            shows both addresses. A wipe that took the public material with it would fail here, at the
-            reopen, rather than at the end of the run (amendments 42, 43)
+      - [ ] **Wipe secrets** clears the secrets and produces the provisioning record; **Quit & Reopen
+            App** on the record screen (behind a confirmation) is what closes the app. Reopening it
+            lands straight in the pairing process (no home screen, no setup screen, no reset step),
+            which reads the codes back out of the card's manifest and still shows both addresses. A
+            wipe that took the public material with it would fail here, at the reopen, rather than at
+            the end of the run (amendments 42, 43, 45)
 - [ ] Confirm a signature attempt on the provisioned card actually waits for a touch, and that
       refusing to touch produces no signature.
 

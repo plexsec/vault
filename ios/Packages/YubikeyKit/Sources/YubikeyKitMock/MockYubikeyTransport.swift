@@ -38,6 +38,81 @@ public final class MockYubikeyTransport: YubikeyTransport {
         var isOccupied: Bool { privateKey != nil }
     }
 
+    /// The whole applet's durable state, as a value that can be saved and restored.
+    ///
+    /// The simulated card is a real applet held in memory, so without this every app launch
+    /// handed the ceremony a factory-fresh card and a developer had to provision the fake wallet
+    /// again to get any keys back. The snapshot holds what a real card keeps across a session —
+    /// the PINs, the retry configuration and counters, both key slots, the stored data objects and
+    /// the terminated flag. It deliberately does **not** hold the state a real card loses at a
+    /// session boundary (`isSelected`, `pw1Verified`, `pw2Verified`, `pw3Verified`), nor
+    /// `challengeBytes`, which is per-run entropy rather than card configuration.
+    ///
+    /// The app's DEBUG-only `SimulatedCardTransport` is the only writer. The package tests never
+    /// persist it, so a mock that is not explicitly restored stays factory-fresh.
+    public struct PersistentState: Codable, Equatable, Sendable {
+        /// One key slot's durable contents.
+        public struct Slot: Codable, Equatable, Sendable {
+            public var privateKey: [UInt8]?
+            public var algorithm: KeyAlgorithm?
+            public var algorithmAttributes: [UInt8]?
+            public var fingerprint: [UInt8]
+            public var uif: [UInt8]
+
+            public init(
+                privateKey: [UInt8]? = nil,
+                algorithm: KeyAlgorithm? = nil,
+                algorithmAttributes: [UInt8]? = nil,
+                fingerprint: [UInt8] = [UInt8](repeating: 0, count: 20),
+                uif: [UInt8] = [0x00, 0x20]
+            ) {
+                self.privateKey = privateKey
+                self.algorithm = algorithm
+                self.algorithmAttributes = algorithmAttributes
+                self.fingerprint = fingerprint
+                self.uif = uif
+            }
+        }
+
+        public var userPIN: [UInt8]
+        public var adminPIN: [UInt8]
+        public var userRetryLimit: Int
+        public var adminRetryLimit: Int
+        public var userRetriesRemaining: Int
+        public var adminRetriesRemaining: Int
+        public var pw1Status: [UInt8]
+        public var isAppletTerminated: Bool
+        public var signature: Slot
+        public var authentication: Slot
+        public var privateUseDataObjects: [UInt16: [UInt8]]
+
+        public init(
+            userPIN: [UInt8] = OpenPGPPinDefaults.user,
+            adminPIN: [UInt8] = OpenPGPPinDefaults.admin,
+            userRetryLimit: Int = 3,
+            adminRetryLimit: Int = 3,
+            userRetriesRemaining: Int = 3,
+            adminRetriesRemaining: Int = 3,
+            pw1Status: [UInt8] = [0x01],
+            isAppletTerminated: Bool = false,
+            signature: Slot = Slot(),
+            authentication: Slot = Slot(),
+            privateUseDataObjects: [UInt16: [UInt8]] = [:]
+        ) {
+            self.userPIN = userPIN
+            self.adminPIN = adminPIN
+            self.userRetryLimit = userRetryLimit
+            self.adminRetryLimit = adminRetryLimit
+            self.userRetriesRemaining = userRetriesRemaining
+            self.adminRetriesRemaining = adminRetriesRemaining
+            self.pw1Status = pw1Status
+            self.isAppletTerminated = isAppletTerminated
+            self.signature = signature
+            self.authentication = authentication
+            self.privateUseDataObjects = privateUseDataObjects
+        }
+    }
+
     public let transportName: String
     private let accessoryDelay: Duration
 
@@ -686,6 +761,69 @@ public final class MockYubikeyTransport: YubikeyTransport {
     public func currentFingerprint(_ slot: KeySlot) -> [UInt8] { slots[slot]?.fingerprint ?? [] }
     public func hasKey(in slot: KeySlot) -> Bool { slots[slot]?.isOccupied ?? false }
     public func storedPrivateKey(_ slot: KeySlot) -> [UInt8]? { slots[slot]?.privateKey }
+
+    /// The applet's durable state, for the DEBUG app to save between launches.
+    ///
+    /// Setting it models a card that was removed and put back in: the durable state is replaced
+    /// and the state a real card loses at a session boundary — selection and the PIN
+    /// verifications — is cleared, so a restored card cannot inherit "already verified" from
+    /// whoever wrote the snapshot.
+    public var persistentState: PersistentState {
+        get {
+            PersistentState(
+                userPIN: userPIN,
+                adminPIN: adminPIN,
+                userRetryLimit: userRetryLimit,
+                adminRetryLimit: adminRetryLimit,
+                userRetriesRemaining: userRetriesRemaining,
+                adminRetriesRemaining: adminRetriesRemaining,
+                pw1Status: pw1Status,
+                isAppletTerminated: isAppletTerminated,
+                signature: Self.persistentSlot(slots[.signature]),
+                authentication: Self.persistentSlot(slots[.authentication]),
+                privateUseDataObjects: privateUseDataObjects
+            )
+        }
+        set {
+            userPIN = newValue.userPIN
+            adminPIN = newValue.adminPIN
+            userRetryLimit = newValue.userRetryLimit
+            adminRetryLimit = newValue.adminRetryLimit
+            userRetriesRemaining = newValue.userRetriesRemaining
+            adminRetriesRemaining = newValue.adminRetriesRemaining
+            pw1Status = newValue.pw1Status
+            isAppletTerminated = newValue.isAppletTerminated
+            slots = [
+                .signature: Self.slotState(newValue.signature),
+                .authentication: Self.slotState(newValue.authentication),
+            ]
+            privateUseDataObjects = newValue.privateUseDataObjects
+            isSelected = false
+            pw1Verified = false
+            pw2Verified = false
+            pw3Verified = false
+        }
+    }
+
+    private static func persistentSlot(_ state: SlotState?) -> PersistentState.Slot {
+        PersistentState.Slot(
+            privateKey: state?.privateKey,
+            algorithm: state?.algorithm,
+            algorithmAttributes: state?.algorithmAttributes,
+            fingerprint: state?.fingerprint ?? [UInt8](repeating: 0, count: 20),
+            uif: state?.uif ?? [0x00, 0x20]
+        )
+    }
+
+    private static func slotState(_ slot: PersistentState.Slot) -> SlotState {
+        SlotState(
+            privateKey: slot.privateKey,
+            algorithm: slot.algorithm,
+            algorithmAttributes: slot.algorithmAttributes,
+            fingerprint: slot.fingerprint,
+            uif: slot.uif
+        )
+    }
 
     private func status(_ sw1: UInt8, _ sw2: UInt8) -> ResponseAPDU {
         ResponseAPDU(data: [], status: StatusWord(sw1: sw1, sw2: sw2))

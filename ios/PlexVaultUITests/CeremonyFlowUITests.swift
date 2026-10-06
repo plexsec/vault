@@ -96,7 +96,8 @@ final class CeremonyFlowUITests: XCTestCase {
         tapStepAction("Continue", in: app)   // one YubiKey
         provisionTheCard(app, userPIN: Self.userPIN, adminPIN: Self.adminPIN)
 
-        // The wipe: the alert explains, and the app closes itself.
+        // The wipe produces the record; the record screen's own "Quit & Reopen App", behind its
+        // confirmation, is what actually ends this process.
         wipeSecrets(app, exit: true)
 
         // Reopening it lands in the pairing process, not on the home screen and not on the setup
@@ -116,7 +117,7 @@ final class CeremonyFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Read pairing manifest"].waitForExistence(timeout: 10),
                       "the pairing process reads the manifest:\n\(app.debugDescription)")
         XCTAssertFalse(app.buttons["Reset applet"].exists, "pairing must never offer the reset")
-        XCTAssertFalse(app.buttons["Wipe secrets & Exit"].exists, "there is nothing to wipe in this process")
+        XCTAssertFalse(app.buttons["Wipe secrets"].exists, "there is nothing to wipe in this process")
     }
 
     /// The address the deterministic (all-zero entropy) mnemonic derives, computed by the same

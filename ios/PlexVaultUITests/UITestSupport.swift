@@ -223,11 +223,17 @@ extension XCTestCase {
     ///   - firstRun: start with no stored choice, which is what puts the device screen in
     ///     front of the app.
     ///   - arguments: further launch arguments, e.g. `-deterministic-entropy`.
+    ///   - resetPendingPairing: clears the pending-pairing flag, so a walk that reached the wipe
+    ///     does not route the next launch into the pairing process.
+    ///   - resetSimulatedCard: clears the saved simulated card, so a walk that provisioned it does
+    ///     not hand the next test a written card. The one test that is about that persistence opts
+    ///     out and relaunches without the flag.
     func launchApp(
         deviceChoice: String = "nfc",
         firstRun: Bool = false,
         arguments: [String] = [],
-        resetPendingPairing: Bool = true
+        resetPendingPairing: Bool = true,
+        resetSimulatedCard: Bool = true
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = arguments
@@ -239,6 +245,11 @@ extension XCTestCase {
         // pairing process instead of the home screen. The test that is *about* that value opts out
         // and relaunches (amendment 43).
         if resetPendingPairing { app.launchArguments += ["-reset-pending-pairing"] }
+        // The simulated card is saved between launches (`SimulatedCardStore`), so a test that
+        // provisions it would otherwise start the next test on a card that already holds keys.
+        // The test that is *about* that persistence opts out, provisions, then relaunches with the
+        // flag removed.
+        if resetSimulatedCard { app.launchArguments += ["-reset-simulated-card"] }
         app.launch()
         return app
     }
@@ -524,48 +535,85 @@ extension XCTestCase {
         wipeSecrets(app, exit: false, file: file, line: line)
     }
 
-    /// The wipe that ends the provisioning process: the alert that says the app is closing, and —
-    /// when `exit` is true — the app actually closing itself.
+    /// The wipe that ends the provisioning process: the wipe itself, the record it produces, and —
+    /// when `exit` is true — the record screen's "Quit & Reopen App" behind its confirmation.
     ///
     /// `exit: false` is the tests' path: it keeps the process alive (the simulated card is
     /// process-wide state, so ending the process would take the freshly written card with it) and
-    /// leaves the record on screen, which is what the provisioning assertions are about.
+    /// leaves the record on screen, which is what the provisioning assertions are about. The app no
+    /// longer closes itself at the wipe — the action is "Wipe secrets", not "Wipe secrets & Exit"
+    /// — so the record screen owns the exit (amendment 45).
     func wipeSecrets(
         _ app: XCUIApplication,
         exit: Bool,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        tapStepAction("Wipe secrets & Exit", in: app, file: file, line: line)
+        tapStepAction("Wipe secrets", in: app, file: file, line: line)
 
-        let alert = app.alerts["Secrets wiped"]
+        let quit = app.buttons["Quit & Reopen App"]
         XCTAssertTrue(
-            alert.waitForExistence(timeout: 15),
-            "the exit alert must appear after the wipe:\n\(app.debugDescription)",
+            quit.waitForExistence(timeout: 15),
+            "the wipe must produce the record and its way out:\n\(app.debugDescription)",
+            file: file, line: line
+        )
+
+        guard exit else { return }
+
+        // The confirmation gates the exit: cancelling must leave the app running on the record.
+        tapStepAction("Quit & Reopen App", in: app, file: file, line: line)
+        let alert = app.alerts["Quit and reopen the app?"]
+        XCTAssertTrue(
+            alert.waitForExistence(timeout: 5),
+            "quitting must be confirmed first:\n\(app.debugDescription)",
             file: file, line: line
         )
         XCTAssertTrue(
             alert.staticTexts.containing(
-                NSPredicate(format: "label CONTAINS %@", "Reopen the app to continue")
+                NSPredicate(format: "label CONTAINS %@", "Reopen it to pair the wallet")
             ).firstMatch.exists,
             "the alert must tell the operator to reopen the app to pair",
             file: file, line: line
         )
+        alert.buttons["Cancel"].tap()
+        XCTAssertTrue(
+            quit.waitForExistence(timeout: 5),
+            "cancelling must leave the record on screen:\n\(app.debugDescription)",
+            file: file, line: line
+        )
+        XCTAssertNotEqual(app.state, .notRunning, "cancelling must not close the app")
 
-        if exit {
-            alert.buttons["Close the app"].tap()
-            XCTAssertTrue(
-                app.wait(for: .notRunning, timeout: 20),
-                "the app must close itself rather than stay running",
-                file: file, line: line
-            )
-        } else {
-            alert.buttons["Stay on the record"].tap()
-            XCTAssertTrue(
-                app.buttons["Provision another wallet"].waitForExistence(timeout: 15),
-                "the provisioning record must be on screen:\n\(app.debugDescription)",
-                file: file, line: line
-            )
-        }
+        // And confirming it ends the process.
+        tapStepAction("Quit & Reopen App", in: app, file: file, line: line)
+        app.alerts["Quit and reopen the app?"].buttons["Quit & Reopen"].tap()
+        XCTAssertTrue(
+            app.wait(for: .notRunning, timeout: 20),
+            "the app must close itself after the confirmation",
+            file: file, line: line
+        )
+    }
+
+    /// Leaves a finished provisioning record for the home screen.
+    ///
+    /// The record no longer offers "Provision another wallet" — a run ends by quitting — so the
+    /// toolbar's Abort is the test's way back, as it is the only in-app way for an operator to
+    /// return without ending the process.
+    func leaveRecordForHome(
+        _ app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let abort = app.buttons["Abort"]
+        XCTAssertTrue(
+            abort.waitForExistence(timeout: 10),
+            "the record must still offer Abort:\n\(app.debugDescription)",
+            file: file, line: line
+        )
+        abort.tap()
+        XCTAssertTrue(
+            app.buttons["route-signing"].waitForExistence(timeout: 15),
+            "Abort must return to the home screen:\n\(app.debugDescription)",
+            file: file, line: line
+        )
     }
 }
