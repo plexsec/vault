@@ -54,6 +54,10 @@ final class SimulatedCardTransport: YubikeyTransport {
             .contains(SimulatedCardStore.resetLaunchArgument)
         if shouldReset { SimulatedCardStore.resetAll() }
 
+        // DEBUG-only: a wait on `PSO:CDS`, so the signing screen's "touch the YubiKey" prompt is on
+        // screen long enough for a test to see it. Zero unless `-simulated-touch-delay-ms` is set.
+        let touchDelay = SimulatedCardTransport.simulatedTouchDelay()
+
         var result: [MockYubikeyTransport] = []
         for index in 0..<cardCount {
             let mock = MockYubikeyTransport(
@@ -62,6 +66,7 @@ final class SimulatedCardTransport: YubikeyTransport {
                 openPGPVersion: "3.4"
             )
             SimulatedCardTransport.applyDeterministicEntropy(to: mock)
+            if let touchDelay { mock.touchDelay = touchDelay }
             // The card the developer left in the reader. Restored here rather than in the
             // transport's `open()` because the mock is the shared, process-wide applet: every
             // fresh `SimulatedCardTransport` talks to this one instance.
@@ -84,6 +89,18 @@ final class SimulatedCardTransport: YubikeyTransport {
               bytes.count == BIP39.entropyByteCount
         else { return }
         mock.challengeBytes = bytes
+    }
+
+    /// DEBUG-only: the wait `-simulated-touch-delay-ms <n>` puts on `PSO:CDS`, modelling the wait
+    /// for a touch. `nil` when the argument is absent or not a positive number.
+    private static func simulatedTouchDelay() -> Duration? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-simulated-touch-delay-ms"),
+              index + 1 < arguments.count,
+              let milliseconds = Int(arguments[index + 1]),
+              milliseconds > 0
+        else { return nil }
+        return .milliseconds(milliseconds)
     }
 
     /// Puts the reader back to a factory-fresh card: forgets what was saved and empties the applet

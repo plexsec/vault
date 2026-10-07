@@ -186,6 +186,13 @@ public final class MockYubikeyTransport: YubikeyTransport {
     /// card overrides it via `-deterministic-entropy`, and a real card always
     /// answers from its hardware RNG.
     public var challengeBytes: [UInt8] = [UInt8](repeating: 0, count: 32)
+
+    /// When set, `PSO:CDS` waits this long before answering — the wait for a touch, which is what
+    /// a real card imposes on a signature slot with a touch policy set. Zero by default, so every
+    /// existing test and the DEBUG card are unchanged; the DEBUG bridge sets it from
+    /// `-simulated-touch-delay-ms` so the signing screen's "touch the YubiKey" prompt can be on
+    /// screen long enough to be driven by a test.
+    public var touchDelay: Duration = .zero
     /// When set, the next `PSO:CDS` answers `6985` as an unfinished touch does.
     public var touchNotCompleted = false
     /// When set, `PSO:CDS` answers `6983`: PW1 blocked by too many failures.
@@ -230,6 +237,10 @@ public final class MockYubikeyTransport: YubikeyTransport {
     public func send(_ command: CommandAPDU) async throws -> ResponseAPDU {
         receivedAPDUs.append(command.hex)
         if accessoryDelay != .zero { try? await Task.sleep(for: accessoryDelay) }
+        // `PSO:CDS` waits for a touch on a card whose signature slot has a touch policy; that wait
+        // is an operator action, not a card computation, so it is modelled separately from the
+        // per-APDU accessory delay.
+        if command.ins == 0x2A, touchDelay != .zero { try? await Task.sleep(for: touchDelay) }
 
         switch injectedFailure {
         case .transportError(let detail):

@@ -277,6 +277,52 @@ struct SigningRootView: View {
 
     @ViewBuilder
     private var pinView: some View {
+        if viewModel.screen == .signing {
+            signingWaitView
+        } else {
+            pinEntryView
+        }
+    }
+
+    /// The wait for the card's signature.
+    ///
+    /// It used to be a spinner inside the button and nothing more, which on a real YubiKey is a
+    /// screen that cannot move on its own: with a touch policy set, the card computes nothing until
+    /// the gold contact is touched, and that touch is the whole of the wait. The wait is therefore
+    /// stated as an instruction, in the connection's own words, with the one-touch rule beside it.
+    private var signingWaitView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Waiting for the YubiKey…")
+                    .font(.headline)
+                    .accessibilityIdentifier("signing-wait")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label(viewModel.transportChoice.signingTouchPrompt, systemImage: "hand.tap.fill")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityIdentifier("touch-yubikey-prompt")
+                Text(viewModel.transportChoice.signingPrompt)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.15))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            Text("One transaction, one touch. If the signature does not come through, do not tap "
+                + "again: stop, and start over from the wallet with a new request.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The form the operator fills in before the card is asked to sign: the one-touch rule, the
+    /// PIN, and the action.
+    private var pinEntryView: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("One transaction, one touch").font(.headline)
             Text(

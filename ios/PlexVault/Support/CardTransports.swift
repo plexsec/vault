@@ -58,6 +58,22 @@ public enum CardTransportChoice: String, CaseIterable, Identifiable {
         #endif
         }
     }
+
+    /// The headline for the wait while the card produces the signature.
+    ///
+    /// The wait is almost entirely the touch: with a touch policy on the signature slot the card
+    /// computes nothing until the gold contact is touched, so a screen that only shows a spinner is
+    /// asking the operator to guess. It is therefore an instruction, in the connection's own words.
+    /// The simulated card is the one connection with nothing to touch, and it says so rather than
+    /// asking for a touch that would never come.
+    public var signingTouchPrompt: String {
+        switch self {
+        case .nfc, .usbC: return "Touch the YubiKey now"
+        #if DEBUG
+        case .simulated: return "Waiting for the simulated card"
+        #endif
+        }
+    }
 }
 
 enum CardTransports {

@@ -69,7 +69,12 @@ final class SigningFlowUITests: XCTestCase {
         // choice is made once on the device screen rather than per flow.
         let app = launchApp(
             deviceChoice: "simulated",
-            arguments: ["-deterministic-entropy", String(repeating: "00", count: 32)]
+            arguments: [
+                "-deterministic-entropy", String(repeating: "00", count: 32),
+                // Hold `PSO:CDS` for three seconds, so the screen shown while the card is asked to
+                // sign — the one that has to say "touch the YubiKey" — is observable here.
+                "-simulated-touch-delay-ms", "3000",
+            ]
         )
 
         // 1. Provision the simulated card through the real ceremony, so the card
@@ -141,6 +146,18 @@ final class SigningFlowUITests: XCTestCase {
         tapScrolling(acknowledge, named: "one-touch acknowledgement", in: app)
         typeSecret(Self.userPIN, into: "User PIN", in: app)
         tapScrolling(app.buttons["sign-transaction"], named: "sign action", in: app)
+
+        // The wait for a signature is the wait for a touch, and it must be stated rather than left
+        // as a spinner that cannot move on its own. The simulated card holds `PSO:CDS` for three
+        // seconds, which is what makes this state observable off-hardware.
+        XCTAssertTrue(
+            app.staticTexts["signing-wait"].waitForExistence(timeout: 5),
+            "the signing wait must be a named wait, not a bare spinner:\n\(app.debugDescription)"
+        )
+        XCTAssertTrue(
+            app.staticTexts["Waiting for the simulated card"].exists,
+            "the wait must name what it waits for, in the connection's own words:\n\(app.debugDescription)"
+        )
 
         // 7. The signature QR, and a record that says what happened.
         let qr = app.images["QR code"]

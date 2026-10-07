@@ -2209,3 +2209,34 @@ secrets and networking, neither of which this touches (check 2 still passes with
 **Tests.** `RePairUITests.testRePairingAProvisionedCardShowsTheCodesAndTheAddress` asserts the
 "Save to Photos" button is on the pairing record. The write itself needs the system permission sheet,
 which the suite does not drive.
+
+## 48. v0.2: the signing wait says "touch the YubiKey"
+
+**Sections:** `CardTransportChoice.signingTouchPrompt`, `SigningRootView`'s signing-wait screen,
+`MockYubikeyTransport.touchDelay` and `-simulated-touch-delay-ms`; `ios/PlexVaultUITests`
+(`SigningFlowUITests`).
+
+**What changed.** The screen shown while the card is asked to sign was the PIN form with a spinner in
+the button and nothing else. It is a wait screen now: "Waiting for the YubiKey…", then a prominent
+instruction — **"Touch the YubiKey now"** on NFC and USB-C, carrying the connection's own how-to —
+with the one-touch rule beside it. The simulated card, which has nothing to touch, says "Waiting for
+the simulated card" rather than asking for a touch that would never come.
+
+**Why.** With a touch policy on the signature slot (§4.2 step 3), the card computes nothing until the
+gold contact is touched, and that touch is the whole of the wait. A spinner therefore showed progress
+that could not progress without an action nothing on screen had asked for: the operator's next move
+was a guess. §5.2 rule 2 states the one-touch rule; this states the one touch.
+
+**A test hook, and its scope.** The simulator's card answers `PSO:CDS` instantly, so this state did
+not exist off-hardware and no test could see it. `MockYubikeyTransport` grew a `touchDelay`, and the
+DEBUG bridge reads `-simulated-touch-delay-ms`; the delay applies to `PSO:CDS` (INS `0x2A`) and to
+nothing else, because the per-APDU delay the mock already had would have slowed a whole provisioning
+walk and this wait belongs to one command.
+
+**design.md needs no change.** §5.1's sequence already shows `PSO:CDS` awaiting a touch (§5.1 step
+13), and §5.2 rule 2 already requires the one-touch rule to be stated; neither says what the screen
+in between shows. The change is presentational.
+
+**Tests.** `SigningFlowUITests.testSigningAProvisionedCardProducesAScannableSignature` launches with
+`-simulated-touch-delay-ms 3000` and, between the sign tap and the QR, asserts the wait screen is up
+(`signing-wait`) and that it names what it waits for in the connection's words.
