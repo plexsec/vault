@@ -2240,3 +2240,63 @@ in between shows. The change is presentational.
 **Tests.** `SigningFlowUITests.testSigningAProvisionedCardProducesAScannableSignature` launches with
 `-simulated-touch-delay-ms 3000` and, between the sign tap and the QR, asserts the wait screen is up
 (`signing-wait`) and that it names what it waits for in the connection's words.
+
+## 49. v0.2: an in-app explanation and manual ("How it works")
+
+**Sections:** `HomeView` (the entry), `ios/PlexVault/Guide/` (`GuideView`, `HowItWorksView`,
+`ManualView`, `GuideComponents`), `PlexVaultUITests/GuideUITests`. No ceremony, gate or rule changes.
+
+**What changed.** The home screen gained an entry, **How it works**, at the foot of the screen under a
+divider and lighter than the two flow cards above it — it is the one entry that acts on nothing —
+opening a **table with two rows**:
+
+* **How it works** — pushes the explanation, as one page. It is meant to be read through, so it is not
+  broken up: where the key lives (the card, non-exportable, Fixed touch policy on both signing-capable
+  slots), what the app keeps (nothing, after the wipe; no networking code), what the wallet does
+  (builds the transaction, verifies the signature), the QR channel and why the codes are
+  fountain-coded, what pairing shares (two public codes, the account-level secp256k1 export with
+  `children` pinned), the two keys and their paths, what the app checks before it touches the card,
+  what it refuses to do, and why provisioning is two processes;
+* **Manual** — a row that opens to list the procedures, each pushing its own page: before you start,
+  create a wallet, restore one from a mnemonic, pair with MetaMask, sign with MetaMask, and the
+  messages that mean stop. It is **closed by default**: the table is a menu of two things, and the row
+  that leads straight to a page should not have to compete with six rows that each lead somewhere else;
+* the way out of the table is a **back button** in the navigation bar, not a "Done" bar pinned to the
+  foot, and each pushed page gets the system's own.
+
+The two rows are the whole shape, and the asymmetry is the point: the explanation is one thing to
+read, while a procedure is looked up on its own — a card is replaced, a card is reset, a wallet is
+paired — so only the manual has entries. Two earlier attempts are worth recording because they are
+the obvious ones: a segmented control at the top of a single document showed two labels and then made
+the reader scroll to find out what was under them, and a flat table of fourteen topics turned every
+paragraph into a destination — reading the explanation end to end meant fourteen taps and thirteen
+backs.
+
+**Why.** Every fact on these pages is already in design.md, `provisioning-checklist.md` and
+`signing-checklist.md` — but those are not on the phone, and the operator provisioning a card is
+holding one. Without it, the design's most counter-intuitive decisions (the address MetaMask shows
+for *every* account index, a screen that asks to be quit and reopened, a flow that refuses a retry
+after a failed touch) have to be inferred from the UI. §5.2 rule 2 already requires the one-touch
+rule to be **repeated**; this is the repeat the operator will actually see, beside the three other
+decisions that look like faults when they are not.
+
+**What it is not.** The guide decides nothing: it reads and writes no ceremony state, and it is the
+only home-screen entry that touches nothing. design.md stays the specification and `docs/` stays the
+procedure; where the two disagree, those win and the guide is the bug. MetaMask's steps are the one
+place the copy describes something outside this repository — its QR-based hardware wallet flow,
+whose menu labels move between versions — so they are written by what the flow *is* (account selector
+→ add hardware wallet → QR-based → scan the code the app shows) rather than by pixel positions, and
+the copy says the labels move.
+
+**Tests.** `GuideUITests` covers the wiring that can rot — the manual starts closed and opens when its
+row is tapped, both the explanation's row and an entry reach their own page, each level's back button
+comes back, and the table's back button returns to the home screen — plus the home-screen suites
+(`DeviceChoiceUITests`, `SetupFlowUITests`) for the entry's effect on the screen it was added to. The
+copy is checked by review rather than by assertion: asserting prose would only pin it.
+
+**The mark is still not shown anywhere.** `Logo.imageset` was left unreferenced when the app was
+given an icon (commit 30b3614), and it stays that way: it was placed on this screen — centred in the
+space between the flows and the guide entry — and taken out again, because a large near-black tile
+in the middle of a working screen competes with the two things the screen is for. The asset remains
+for the app icon, and for wherever the mark does belong (the launch screen is the obvious
+candidate); the home screen, which is a menu, is not it.

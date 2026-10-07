@@ -6,6 +6,9 @@ look for a way around it — the ordering gates are the security property.
 
 **Print this and tick it off. Record the blanks on your steel-plate paperwork.**
 
+The same procedure is in the app, under **How it works → Manual** (amendment 49); this file is
+the full one, and is what the in-app copy is checked against.
+
 ---
 
 ## Part 1 — Prepare

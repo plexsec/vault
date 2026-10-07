@@ -6,6 +6,9 @@ Design.md §5 is the specification; this is what to do, and what to look at whil
 Provisioning is a separate procedure (`provisioning-checklist.md`). Signing never writes to
 the card and never needs the mnemonic — if a screen asks for one, stop.
 
+The same procedure is in the app, under **How it works → Manual** (amendment 49); this file
+is the full one, and is what the in-app copy is checked against.
+
 ## What you need
 
 - The iPhone with this app, **offline**.

@@ -13,7 +13,9 @@ import VaultKit
 /// Provisioning is reached through the three entries in "Wallet & Key
 /// Management", which stay collapsed until tapped so the home screen does not
 /// stack three near-identical cards under the title. Each entry picks the
-/// ceremony's mode before the provisioning flow opens.
+/// ceremony's mode before the provisioning flow opens. A fourth card opens the
+/// guide — how the three parts of the scheme fit together, and the manual — which is
+/// reading material rather than a flow, and is the only entry that touches nothing.
 ///
 /// The device choice is above both routes: on first launch this screen is not shown at
 /// all until the operator has said how the YubiKey is connected, because the connection is
@@ -43,6 +45,7 @@ struct HomeView: View {
         case provisioning
         case signing
         case device
+        case guide
     }
 
     /// The first screen is decided here rather than in `onAppear`, so a first run never
@@ -111,55 +114,106 @@ struct HomeView: View {
                 deviceIsFirstRun = false
                 route = .home
             }
+        case .guide:
+            GuideView { route = .home }
         }
     }
 
+    /// The home screen: the two things the app can do at the top, the guide at the foot.
+    ///
+    /// Two bands rather than one list, because the guide is not a third flow: it is reading
+    /// material, and stacking it as another card under "Wallet & Key Management" made it look like
+    /// something that acts on the card. So the flows stay together at the top, and the guide is a
+    /// quieter row below a divider, at the bottom edge. The `minHeight` is what puts that row at the
+    /// foot of a short page: with `minHeight` and not a fixed height, a tall page (the expanded
+    /// wallet section, large text) still grows and scrolls rather than being cut off at the viewport.
     private var home: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 6) {
-                    // The button sits on the title line rather than in a navigation bar.
-                    // The bar was an empty strip *above* the title, so the icon floated
-                    // higher than anything it belongs to; here it is centred on the title's
-                    // own line box.
-                    HStack(alignment: .center) {
-                        Text("PlexVault").font(.largeTitle.bold())
-                        VStack(alignment: .leading) {
-                            Text(BuildInfo.version)
-                                .font(.caption)
-                                .foregroundStyle(.blue)
-                            Text(BuildInfo.binarySHA256?.prefix(8) ?? "").font(.caption).foregroundStyle(.secondary)
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 20) {
+                        header
+
+                        RouteCard(
+                            title: "Sign a transaction",
+                            detail: "Scan a transaction QR code, check what it does, and sign it with YubiKey.",
+                            systemImage: "signature",
+                            identifier: "route-signing"
+                        ) {
+                            signingViewModel.abort()
+                            route = .signing
                         }
-                        Spacer(minLength: 12)
-                        deviceButton
+
+                        WalletKeyManagementSection { mode in
+                            // An explicit choice, so the launch route (if there was one) is not this run's.
+                            resumePendingPairingOnOpen = false
+                            ceremonyViewModel.abort()
+                            ceremonyViewModel.mode = mode
+                            route = .provisioning
+                        }
                     }
-                }
 
-                RouteCard(
-                    title: "Sign a transaction",
-                    detail: "Scan a transaction QR code, check what it does, and sign it with YubiKey.",
-                    systemImage: "signature",
-                    identifier: "route-signing"
-                ) {
-                    signingViewModel.abort()
-                    route = .signing
-                }
+                    Spacer(minLength: 24)
 
-                WalletKeyManagementSection { mode in
-                    // An explicit choice, so the launch route (if there was one) is not this run's.
-                    resumePendingPairingOnOpen = false
-                    ceremonyViewModel.abort()
-                    ceremonyViewModel.mode = mode
-                    route = .provisioning
+                    guideEntry
                 }
+                .padding()
+                .frame(minHeight: proxy.size.height, alignment: .top)
             }
-            .padding()
+            // Polls the USB-C slot while that is the chosen connection, and stops the moment the
+            // choice changes or this screen goes away — the card's presence is only interesting
+            // here.
+            .task(id: deviceChoice.choice) {
+                await presence.watch(deviceChoice.choice)
+            }
         }
-        // Polls the USB-C slot while that is the chosen connection, and stops the moment the
-        // choice changes or this screen goes away — the card's presence is only interesting
-        // here.
-        .task(id: deviceChoice.choice) {
-            await presence.watch(deviceChoice.choice)
+    }
+
+    private var header: some View {
+        // The button sits on the title line rather than in a navigation bar.
+        // The bar was an empty strip *above* the title, so the icon floated
+        // higher than anything it belongs to; here it is centred on the title's
+        // own line box.
+        HStack(alignment: .center) {
+            Text("PlexVault").font(.largeTitle.bold())
+            VStack(alignment: .leading) {
+                Text(BuildInfo.version)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                Text(BuildInfo.binarySHA256?.prefix(8) ?? "").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            deviceButton
+        }
+    }
+
+    /// The way into the guide: at the foot of the screen, under a divider, and lighter than the
+    /// cards above it, because it is the one entry that acts on nothing. One line, no second line:
+    /// what it opens explains itself.
+    private var guideEntry: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .padding(.bottom, 12)
+
+            Button {
+                route = .guide
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "book")
+                        .font(.title3)
+                    Text("How it works").font(.headline)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 12)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(Color.secondary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .accessibilityIdentifier("route-how-it-works")
         }
     }
 

@@ -39,7 +39,7 @@ phone's reader rather than of a ceremony, so it is asked once and not re-litigat
 design.md                     the design specification (amended; see docs/design-amendments.md)
 ios/
   project.yml                 XcodeGen source of truth; PlexVault.xcodeproj is generated and committed
-  PlexVault/                  the SwiftUI app
+  PlexVault/                  the SwiftUI app (Guide/ is the in-app explanation and manual)
   Packages/VaultKit/          pure logic: crypto (secp256k1 + Ed25519), BIP39, BIP32, SLIP-0010, addresses, BC-UR, RLP,
                               EVM transactions, ECDSA signature handling, the provisioning ceremony, the pairing
                               manifest, the signing ceremony
