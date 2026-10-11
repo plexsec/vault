@@ -60,7 +60,7 @@ extension CardTransportChoice {
         switch self {
         case .nfc: return "dot.radiowaves.left.and.right"
         case .usbC: return "cable.connector"
-        #if DEBUG
+        #if DEBUG || REVIEW_DEMO
         case .simulated: return "ladybug"
         #endif
         }

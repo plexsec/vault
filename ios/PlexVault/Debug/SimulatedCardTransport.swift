@@ -1,23 +1,34 @@
-#if DEBUG
+#if DEBUG || REVIEW_DEMO
 import Foundation
 import VaultKit
 import YubikeyKit
 
-/// DEBUG-only bridge to the package's simulated YubiKey.
+/// Bridge to the package's simulated YubiKey. Compiled into DEBUG builds **and into the App
+/// Store build**, deliberately (amendment 51).
 ///
-/// Both this file and `MockYubikeyTransport.swift` are excluded from Release:
-/// this one by `#if DEBUG`, the mock by `EXCLUDED_SOURCE_FILE_NAMES` in
-/// project.yml. The mock is compiled into the app target rather than linked as a
-/// package product, because linking the product left its symbols in the shipped
-/// binary. `tools/audit-release.sh` asserts the marker strings are absent.
+/// App Review has no YubiKey 5 NFC, and an app whose only real card is hardware they do not
+/// have is an app they cannot review. The released binary therefore carries a card that needs
+/// no hardware, offered on the card-connection screen and labelled as a demo there and on every
+/// screen that names the connection afterwards.
 ///
-/// The simulation is a real APDU responder rather than a stub that answers
-/// "success": it enforces PIN verification, refuses a second key import into an
-/// occupied slot, and returns 6A88 when no key is present, so the DEBUG flow
-/// exercises the same code paths the real card does.
+/// What still does not ship is the *test apparatus* around it. The launch arguments
+/// (`-deterministic-entropy`, `-simulated-cards`, `-simulated-touch-delay-ms`,
+/// `-reset-simulated-card`) are DEBUG-only, so a released build cannot be seeded with a known
+/// mnemonic, given more cards than a reader could hold, or made to wait on a pretend touch.
+/// Check 1 of `tools/audit-release.sh` asserts both halves: the card is present, the hooks are
+/// not.
+///
+/// The simulation is a real APDU responder rather than a stub that answers "success": it
+/// enforces PIN verification, refuses a second key import into an occupied slot, and returns
+/// 6A88 when no key is present, so the flow exercises the same code paths the real card does.
+/// What it cannot do is produce a valid signature — `MockYubikeyTransport.computeDigitalSignature`
+/// returns one only for the single digest a DEBUG-only vector table holds, and a fabricated DER
+/// otherwise, which the signing ceremony's own verification refuses. That is the fact that makes
+/// the demo card unfit for a real wallet rather than merely discouraged, and it is recorded in
+/// amendment 51 rather than papered over.
 @available(iOS 26.0, *)
 final class SimulatedCardTransport: YubikeyTransport {
-    let transportName = "Simulated YubiKey (debug)"
+    let transportName = "Simulated YubiKey (demo)"
 
     /// A real YubiKey keeps its PINs and keys on the card between NFC taps, but
     /// `TransportSessionCard` opens a *fresh* transport for every step. Sharing
@@ -27,19 +38,22 @@ final class SimulatedCardTransport: YubikeyTransport {
     /// `applyPolicy` verifies it.
     private static let shared: MockYubikeyTransport = simulatedCards[0]
 
-    /// DEBUG-only: the number of simulated cards in the reader, from `-simulated-cards <n>`.
-    /// One by default.
+    /// The number of simulated cards in the reader, from `-simulated-cards <n>` — a DEBUG-only
+    /// *test* affordance, one card otherwise.
     ///
-    /// A real reader holds one card at a time and the operator swaps it, so this is a *test*
-    /// affordance rather than a simulation of the hardware: it exists so the UI test can run a
-    /// two-YubiKey ceremony, which is the path a hardware run found broken (amendment 41).
+    /// A real reader holds one card at a time and the operator swaps it, so the argument is
+    /// not a simulation of hardware: it exists so the UI test can run a two-YubiKey ceremony,
+    /// which is the path a hardware run found broken (amendment 41). A released build always
+    /// holds one, which is also all a reviewer could swap.
     private static let cardCount: Int = {
+        #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
         if let index = arguments.firstIndex(of: "-simulated-cards"),
            index + 1 < arguments.count,
            let count = Int(arguments[index + 1]) {
             return max(1, count)
         }
+        #endif
         return 1
     }()
 
@@ -49,28 +63,37 @@ final class SimulatedCardTransport: YubikeyTransport {
     private static let simulatedCards: [MockYubikeyTransport] = {
         // `-reset-simulated-card` clears what a previous launch saved, so a UI test starts on a
         // factory-fresh reader. Without it the saved cards are restored, which is what makes a
-        // provisioned simulated wallet survive a relaunch.
+        // provisioned simulated wallet survive a relaunch — and that restoration is the part a
+        // released build keeps: a reviewer who provisions the demo card and comes back later
+        // finds it still there, exactly as a YubiKey would be.
+        let restoreSavedCards: Bool
+        #if DEBUG
         let shouldReset = ProcessInfo.processInfo.arguments
             .contains(SimulatedCardStore.resetLaunchArgument)
         if shouldReset { SimulatedCardStore.resetAll() }
-
+        restoreSavedCards = !shouldReset
         // DEBUG-only: a wait on `PSO:CDS`, so the signing screen's "touch the YubiKey" prompt is on
         // screen long enough for a test to see it. Zero unless `-simulated-touch-delay-ms` is set.
         let touchDelay = SimulatedCardTransport.simulatedTouchDelay()
+        #else
+        restoreSavedCards = true
+        #endif
 
         var result: [MockYubikeyTransport] = []
         for index in 0..<cardCount {
             let mock = MockYubikeyTransport(
-                transportName: "Simulated YubiKey (debug)",
+                transportName: "Simulated YubiKey (demo)",
                 serial: 0x00DE_71A5 + UInt32(index),
                 openPGPVersion: "3.4"
             )
+            #if DEBUG
             SimulatedCardTransport.applyDeterministicEntropy(to: mock)
             if let touchDelay { mock.touchDelay = touchDelay }
+            #endif
             // The card the developer left in the reader. Restored here rather than in the
             // transport's `open()` because the mock is the shared, process-wide applet: every
             // fresh `SimulatedCardTransport` talks to this one instance.
-            if !shouldReset, let state = SimulatedCardStore.load(index: index) {
+            if restoreSavedCards, let state = SimulatedCardStore.load(index: index) {
                 mock.persistentState = state
             }
             result.append(mock)
@@ -78,9 +101,11 @@ final class SimulatedCardTransport: YubikeyTransport {
         return result
     }()
 
+    #if DEBUG
     /// DEBUG-only deterministic entropy for the UI tests: `GET CHALLENGE` returns these bytes
-    /// instead of random data, so the ceremony produces a known mnemonic. Compiled out of Release
-    /// entirely.
+    /// instead of random data, so the ceremony produces a known mnemonic. A released build has no
+    /// such path — its demo card's entropy is the mock's default challenge, XORed with the iOS
+    /// CSPRNG by the ceremony, and no launch argument can reach in and fix it.
     private static func applyDeterministicEntropy(to mock: MockYubikeyTransport) {
         let arguments = ProcessInfo.processInfo.arguments
         guard let argumentIndex = arguments.firstIndex(of: "-deterministic-entropy"),
@@ -102,6 +127,7 @@ final class SimulatedCardTransport: YubikeyTransport {
         else { return nil }
         return .milliseconds(milliseconds)
     }
+    #endif
 
     /// Puts the reader back to a factory-fresh card: forgets what was saved and empties the applet
     /// in memory, so the next ceremony sees a blank card. The "Reset card" button on the device
@@ -115,7 +141,9 @@ final class SimulatedCardTransport: YubikeyTransport {
         cardIndex = 0
         for mock in simulatedCards {
             mock.persistentState = MockYubikeyTransport.PersistentState()
+            #if DEBUG
             applyDeterministicEntropy(to: mock)
+            #endif
         }
     }
 
@@ -159,19 +187,20 @@ final class SimulatedCardTransport: YubikeyTransport {
     }
 }
 
-/// The DEBUG simulated card's state, saved between launches.
+/// The simulated card's state, saved between launches.
 ///
 /// A real YubiKey keeps its PINs, keys and stored objects when the phone is put down; the
-/// simulated one used to forget everything at process exit, so every relaunch meant provisioning
-/// the fake wallet again. This keeps the durable applet state
+/// simulated one would otherwise forget everything at process exit, so every relaunch meant
+/// provisioning the fake wallet again. This keeps the durable applet state
 /// (`MockYubikeyTransport.PersistentState`) in `UserDefaults`, under one namespaced key per
 /// simulated card.
 ///
-/// DEBUG-only in two senses: this whole file is wrapped in `#if DEBUG`, and the card it belongs to
-/// is excluded from Release by `project.yml` (check 1 of `tools/audit-release.sh` asserts a release
-/// bundle cannot reach a simulated card). Check 3 of that audit names this file and asserts it is
-/// DEBUG-gated, lives in the Debug directory, and reaches for no secret-bearing API. Everything it
-/// stores belongs to the *simulated* applet — test material, and never a real key.
+/// It is a persistence site in the *released* build too, now that the demo card ships
+/// (amendment 51), and that is worth stating plainly: what it stores is the simulated applet's
+/// own state — the demo wallet's keys among it — and nothing else. Those keys are not a real
+/// wallet's and cannot sign anything a wallet would accept (see `SimulatedCardTransport`), which
+/// is why this is not the secret-at-rest that check 3 of `tools/audit-release.sh` exists to
+/// catch. Everything it stores belongs to the fake applet; a real key never reaches this file.
 ///
 /// Deliberately not `@AppStorage`: the audit greps for persistence APIs by name, and a property
 /// wrapper would hide this site from the check whose job is to notice it.
@@ -182,7 +211,14 @@ enum SimulatedCardStore {
 
     /// Clears the saved cards before the first screen. The UI tests pass it so a walk that
     /// provisions the simulated card does not change what the next test sees.
+    ///
+    /// DEBUG-only, and it has to be: a released build that could be told to wipe its own demo
+    /// card by a launch argument would be carrying a test hook, which is the half of check 1 of
+    /// `tools/audit-release.sh` that still has to fail. The *button* that resets the card is not
+    /// gated this way — a reviewer can reset the demo card from the screen, which is the point.
+    #if DEBUG
     static let resetLaunchArgument = "-reset-simulated-card"
+    #endif
 
     private static func key(for index: Int) -> String { "\(keyPrefix).\(index)" }
 

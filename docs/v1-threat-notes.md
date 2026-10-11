@@ -120,14 +120,19 @@ address, and MetaMask Mobile's `createAccounts()` rejects a second index with
 five distinct addresses of which only index 0 is signable — the capability
 over-advertisement this design forbids. The pinned path is kept deliberately.
 
-### 5. Distribution: free personal team
+### 5. Distribution: the App Store (superseding free-personal-team sideloading)
 
-**Change.** §4.2 step 1, §10 item 12.
+**Change.** §4.2 step 1, §10 items 5 and 12; amendment 50.
 
-**Why.** It is what is available. The honest consequences: profiles expire after
-7 days, so the device must be re-tethered weekly, and `App Store` installs cannot
-be hash-verified. The app persists no secrets, so the worst case of an expired or
-deleted install is re-doing the pairing.
+**Why.** v0.1 was sideloaded from a free personal team because that is what was available, and
+the consequences were recorded then: profiles expire after 7 days, so the device must be
+re-tethered weekly, and an `App Store` install cannot be hash-verified. v1.0 is published on the
+App Store instead, under the paid organisation membership this app is actually released with, so
+the 7-day expiry is gone from the reference path. What has *not* gone is the property that note
+was really about: **a store install cannot be hash-verified against published source**. That is
+now the reason the sideloaded route stays documented rather than the reason it was recommended.
+The app persists no secrets, so the worst case of an expired or deleted install is still only
+re-doing the pairing.
 
 ### 6. One key per algorithm; the counter covers secp256k1 only
 

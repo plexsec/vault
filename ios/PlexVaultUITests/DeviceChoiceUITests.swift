@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// The device choice: how the iPhone reaches the YubiKey, asked once and remembered.
 ///
@@ -238,10 +239,10 @@ final class DeviceChoiceUITests: XCTestCase {
     func testTheChoiceMadeOnTheDeviceScreenReachesTheCeremony() throws {
         let app = launchApp(firstRun: true)
 
-        tapWhenVisible(app.buttons["device-choice-Simulated (debug)"], in: app)
+        tapWhenVisible(app.buttons["device-choice-Simulated card (demo)"], in: app)
         tapPinnedPrimaryAction(app, identifier: "device-done")
         XCTAssertEqual(
-            deviceButton(in: app).label, "Card connection: Simulated (debug)",
+            deviceButton(in: app).label, "Card connection: Simulated card (demo)",
             "the home screen must show the choice just made:\n\(app.debugDescription)"
         )
 
@@ -255,6 +256,32 @@ final class DeviceChoiceUITests: XCTestCase {
         XCTAssertTrue(
             app.staticTexts["Entropy commitment (first 8 hex of SHA-256)"].waitForExistence(timeout: 15),
             "the simulated card must be the one the ceremony read:\n\(app.debugDescription)"
+        )
+    }
+
+    /// The list is what the *device* offers, not what the enum happens to contain.
+    ///
+    /// NFC is the iPhone's reader and no iPad has one, so the row is absent on an iPad rather
+    /// than present and failing when it is tapped — while USB-C smart-card access works on both,
+    /// and the demo card is simulated wherever it runs. The expectation is written against the
+    /// idiom rather than hard-coded, so the same test holds on either destination: the iPhone
+    /// run is the one the suite does routinely, and the iPad run is how the row's absence was
+    /// checked (amendment 51).
+    func testTheConnectionListMatchesTheDevice() throws {
+        let app = launchApp(firstRun: true)
+
+        let expectsNFC = UIDevice.current.userInterfaceIdiom != .pad
+        XCTAssertEqual(
+            app.buttons["device-choice-NFC"].waitForExistence(timeout: 15), expectsNFC,
+            "the NFC row must exist on a phone and not on a device with no reader:\n\(app.debugDescription)"
+        )
+        XCTAssertTrue(
+            app.buttons["device-choice-USB-C"].waitForExistence(timeout: 15),
+            "the wired connection is offered on both:\n\(app.debugDescription)"
+        )
+        XCTAssertTrue(
+            app.buttons["device-choice-Simulated card (demo)"].exists,
+            "the demo card is offered wherever the card is simulated:\n\(app.debugDescription)"
         )
     }
 }

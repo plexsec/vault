@@ -2300,3 +2300,113 @@ space between the flows and the guide entry — and taken out again, because a l
 in the middle of a working screen competes with the two things the screen is for. The asset remains
 for the app icon, and for wherever the mark does belong (the launch screen is the obvious
 candidate); the home screen, which is a menu, is not it.
+
+## 50. v1.0: distribution is the App Store, and the version is 1.0
+
+**Sections:** §4.2 step 1, §10 items 5 and 12; `ios/project.yml`, `README.md`.
+
+*Before:* the reference build was **free-personal-team sideloading** (amendment 5). §4.2 step 1
+offered the App Store as option (a) and sideloading as option (b), and recommended (b), because a
+build the operator compiles from published source can be hash-verified and a store install cannot.
+
+*After:* the app is **published on the App Store as 1.0 (build 1)**, and sideloading remains
+available as the hash-verified route for the operator who wants it. The free-personal-team
+paragraph is replaced by what is actually true of the reference account: it is a paid
+organisation membership (PLEXSEC LIMITED, team `WSL242UF2M`), so a profile signed against it
+lasts a year rather than seven days, and the "weekly re-tethering" consequence of amendment 5
+does not apply to it.
+
+*Why:* the operator decided to publish. §4.2 step 1 already treated a store install as a
+legitimate way to get the app onto the phone — the second option was *recommended*, not
+required — so this re-takes a trade the specification had already named, and the cost it named
+is still the cost.
+
+**Consequence, stated plainly: the installed app can no longer be hash-verified against the
+published source.** That is the whole of what option (b) bought, and it is not recoverable from
+inside a store install: the binary the phone runs is the one Apple signed, and its provenance is
+Apple's review rather than the operator's own comparison against `tools/hash-app.sh` output. The
+reproducible-build story is unchanged for the sideloaded path and does not extend to the App
+Store path. An operator who needs that property should install from source; the app itself is
+the same code either way, and this document's argument never rested on the phone being
+trustworthy — §9 rests it on the wallet verifying what it asked for.
+
+**Consequence: the version number is not a capability level.** The design's `v0.1`/`v0.2`/`v0.3`
+are milestones of what the app *can do* (§11), and the README says so. The App Store version is
+`1.0` — the first public release, whose capability is what this document calls v0.2
+(provisioning, plus EVM signing). The two numbering schemes are deliberately not merged: the
+milestone names are used throughout this document and the code, and renaming them to match a
+store version would break every reference to them for no gain. Anyone reading "1.0" as "the
+design's §11 item v1.0" has been misled by the collision, so it is written down here.
+
+**Consequence: a third party is in the release path.** Apple reviews the artifact, and only the
+reviewed build is distributed. `ITSAppUsesNonExemptEncryption=false` is declared in the
+`Info.plist` (no encryption is used; signing is not encryption), `PrivacyInfo.xcprivacy` declares
+the one required-reason API the app calls and nothing else, and `tools/audit-release.sh` checks
+both against the built bundle rather than against a promise. What review adds to the trust story
+is a second, independent inspection of the *artifact*; what it does not add is any statement
+about the *design*, and nothing in §9 leans on it.
+
+**Not decided here.** Two things the App Store path forces that this amendment deliberately leaves
+to their own record, because both change what ships rather than how it is distributed: whether the
+reviewed build must be usable by an App Review reviewer who has no YubiKey 5 NFC (the release
+build's simulated card is compiled out by design — check [1] of the audit asserts it — and the
+fake card's signatures are deliberately not real ones), and what the store listing says. Neither
+is a distribution fact; both are amendments in their own right once decided.
+
+## 51. v1.0: the released build carries the simulated card, as a demo
+
+**Sections:** `ios/PlexVault/Support/CardTransports.swift`, `ios/PlexVault/Debug/SimulatedCardTransport.swift`,
+`ios/PlexVault/DeviceChoiceView.swift`, `ios/project.yml`; check 1 of `tools/audit-release.sh`; README.
+
+*Before:* the simulated card existed **only** in DEBUG builds. §5.2 rule 7 and amendment 44 said so,
+`project.yml` excluded the mock from Release (`EXCLUDED_SOURCE_FILE_NAMES`), and check 1 of the audit
+asserted that no simulated-card string appeared in the shipped bundle at all. The rule behind it was
+stated as a property: *a release binary has no code path that can reach a simulated card.*
+
+*After:* the App Store build compiles the demo card in — behind `REVIEW_DEMO`, alongside `DEBUG` —
+and offers it on the card-connection screen as **"Simulated card (demo)"**, with the reset control that
+DEBUG builds have. The released build is signed by the paid organisation team
+(PLEXSEC LIMITED, `WSL242UF2M`), the App Store build is version 1.0 (build 1), and amendment 50 covers
+the distribution decision itself.
+
+*Why:* App Review cannot be expected to own a YubiKey 5 NFC, and an app whose only real card is
+hardware the reviewer does not have is an app they cannot complete a single flow in — which is a
+rejection under App Review Guideline 2.1 (App Completeness), not a documentation problem. The
+alternatives were a demo video with the app unusable (rejection risk unchanged, and nothing for the
+reviewer to interact with) or shipping a real software signer (which §3.2 forbids and check [3b]
+enforces). Shipping the *existing* mock is the only option that needs no new cryptographic code.
+
+**What still does not ship, and this is the half of check 1 that still has to fail.** The launch
+arguments are DEBUG-only: `-deterministic-entropy` (which fixes the entropy the mnemonic comes from),
+`-simulated-cards` (more cards than a reader holds), `-simulated-touch-delay-ms`, `-reset-simulated-card`,
+and the `-open-scanner` / `-device-choice` / `-pending-pairing` test hooks. Check 1 was rewritten rather
+than deleted: it now asserts *both* that the demo card is present and labelled, and that no test hook is
+compiled into the bundle — and a DEBUG bundle still fails it, which is the negative test that keeps the
+check honest.
+
+**Consequence, stated plainly: the demo card cannot produce a valid signature, and that is
+deliberate.** `MockYubikeyTransport.computeDigitalSignature` returns a real ECDSA signature only for the
+one digest in `SimulatedSigningVectors` — a `#if DEBUG` table holding a single fixture generated by
+`tools/derive` — and a fabricated DER pair derived from the digest otherwise. The signing ceremony
+verifies what the card returns against the card's own key (`SigningCeremony.verifySignature`) and
+refuses anything else, so **a signature taken through the demo path fails the app's own verification**,
+and a reviewer will see that at the last step of the signing flow. This is recorded rather than fixed:
+making the demo card sign would require a real software secp256k1 signer in the shipped binary, which is
+the non-goal §3.2 states and check [3b] tests for. The demo card is therefore not merely discouraged for
+real use — it cannot complete the operation a real wallet depends on, and the keys it holds exist only
+in the fake applet's `UserDefaults`. The two consequences worth stating: a demo-provisioned wallet's
+"key" is at rest, unencrypted, on the phone (it is not a YubiKey key and never was), and the demo path
+walks provisioning end to end but stops at verification in signing.
+
+**Consequence: the third persistence site is in the released build.** `SimulatedCardStore` saves the
+fake applet's state — the demo wallet's keys among it — so the app now writes to `UserDefaults` at three
+sites rather than two. Check 3 of the audit names all three and asserts what each one holds; the demo
+card's store is asserted to belong to the fake applet rather than to be a place a real key could land,
+which is the property that matters, and the two real stores are unchanged.
+
+**Consequence: NFC is gone from the iPad, and only there.** The app supports both idioms, so the
+connection list is now what the *device* offers: `CardTransportChoice.available` drops the NFC row on
+an iPad, which has no reader, rather than leaving a row that fails when tapped. USB-C and the demo card
+are offered on both. A stored choice the device cannot use (an `"nfc"` value read on an iPad, or a value
+a build does not know) is treated as no choice, so the screen asks again instead of sending the operator
+to a reader that is not there.

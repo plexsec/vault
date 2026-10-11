@@ -18,15 +18,15 @@ struct DeviceChoiceView: View {
     let isFirstRun: Bool
     let onDone: () -> Void
 
-    /// Whether the "Reset card" confirmation is up. The button exists only in DEBUG, where the
-    /// simulated card does.
+    /// Whether the "Reset card" confirmation is up. The button exists only where the
+    /// simulated card does — DEBUG and the App Store build alike.
     @State private var showingSimulatedReset = false
 
-    /// The confirmation is attached inside `#if DEBUG` because its action resets a type that is
-    /// compiled out of a release build; the rest of the screen is the same in both.
+    /// The confirmation is inside the same condition as the button, because its action resets a
+    /// type that only those builds compile; the rest of the screen is the same in all of them.
     @ViewBuilder
     var body: some View {
-        #if DEBUG
+        #if DEBUG || REVIEW_DEMO
         content.alert("Reset the simulated card?", isPresented: $showingSimulatedReset) {
             Button("Reset", role: .destructive) { SimulatedCardTransport.resetCard() }
             Button("Cancel", role: .cancel) {}
@@ -75,7 +75,7 @@ struct DeviceChoiceView: View {
 
     private var choices: some View {
         VStack(spacing: 10) {
-            ForEach(CardTransportChoice.allCases) { choice in
+            ForEach(CardTransportChoice.available) { choice in
                 ChoiceRow(
                     title: choice.title,
                     detail: choice.detail,
@@ -86,7 +86,7 @@ struct DeviceChoiceView: View {
                     // so there is no second step that could disagree with the first.
                     device.choose(choice)
                 } accessory: {
-                    #if DEBUG
+                    #if DEBUG || REVIEW_DEMO
                     if choice == .simulated {
                         resetSimulatedCard
                     }
@@ -96,9 +96,9 @@ struct DeviceChoiceView: View {
         }
     }
 
-    #if DEBUG
-    /// The one DEBUG-only control on this screen: the simulated card is the only card whose keys a
-    /// developer can afford to throw away, so it is the only row that offers to.
+    #if DEBUG || REVIEW_DEMO
+    /// The reset control: the simulated card is the only card whose keys can be thrown away for
+    /// free, so it is the only row that offers to.
     private var resetSimulatedCard: some View {
         Button("Reset card") { showingSimulatedReset = true }
             .font(.caption.weight(.semibold))

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import VaultKit
 import YubikeyKit
 #if canImport(CoreNFC)
@@ -11,24 +12,43 @@ import YubikeyKitCCID
 /// Where the card can be reached from.
 ///
 /// Shared by both flows — provisioning and signing reach the same card the same
-/// way — and the `simulated` case exists **only** in DEBUG builds: a release
-/// binary has no code path that can reach a simulated card, which
-/// `tools/audit-release.sh` verifies against the built product.
+/// way — and the `simulated` case is compiled into **two** kinds of build: DEBUG
+/// builds, where it is what the tests and a developer drive a ceremony with, and the
+/// App Store build, where it is the only way App Review can use an app whose real card
+/// is a YubiKey they do not have (amendment 51). What a Release build still does not
+/// carry is the *test hooks* that surround it — `-deterministic-entropy`,
+/// `-simulated-cards`, `-simulated-touch-delay-ms`, `-reset-simulated-card` — and check 1
+/// of `tools/audit-release.sh` asserts their absence from the shipped bundle.
 public enum CardTransportChoice: String, CaseIterable, Identifiable {
     case nfc
     case usbC
-    #if DEBUG
+    #if DEBUG || REVIEW_DEMO
     case simulated
     #endif
 
     public var id: String { rawValue }
 
+    /// The connections **this device** can offer, in the order the screen lists them.
+    ///
+    /// NFC is the iPhone's reader; no iPad has one, so the row is removed there rather than
+    /// left in place to fail when it is tapped. USB-C smart-card access works on both, and the
+    /// simulated card is simulated wherever it runs. The check is the idiom and not
+    /// `NFCTagReaderSession.readingAvailable`: that would also hide NFC on a simulator, where
+    /// the UI tests choose it.
+    @MainActor
+    public static var available: [CardTransportChoice] {
+        allCases.filter { choice in
+            if choice == .nfc { return UIDevice.current.userInterfaceIdiom != .pad }
+            return true
+        }
+    }
+
     public var title: String {
         switch self {
         case .nfc: return "NFC"
         case .usbC: return "USB-C"
-        #if DEBUG
-        case .simulated: return "Simulated (debug)"
+        #if DEBUG || REVIEW_DEMO
+        case .simulated: return "Simulated card (demo)"
         #endif
         }
     }
@@ -39,9 +59,11 @@ public enum CardTransportChoice: String, CaseIterable, Identifiable {
             return "Hold the iPhone against the YubiKey when prompted. Every step asks for a fresh tap."
         case .usbC:
             return "Plug the YubiKey into the USB-C port and leave it in. Requires iPhone 15 or later. Disable the YubiKey's OTP interface first (ykman config usb --disable OTP) or the keyboard will not appear."
-        #if DEBUG
+        #if DEBUG || REVIEW_DEMO
         case .simulated:
-            return "No YubiKey required. Runs against a simulated card; never use this for a real key."
+            return "No YubiKey needed: this card is simulated inside the app, so the whole flow can "
+                + "be walked without hardware. Never use it for a wallet that matters — the keys are "
+                + "not on a YubiKey, and what comes out of it is not a real signature."
         #endif
         }
     }
@@ -53,7 +75,7 @@ public enum CardTransportChoice: String, CaseIterable, Identifiable {
         switch self {
         case .nfc: return "Hold the iPhone against the YubiKey, then touch the gold contact."
         case .usbC: return "Touch the gold contact on the YubiKey."
-        #if DEBUG
+        #if DEBUG || REVIEW_DEMO
         case .simulated: return "The simulated card needs no touch."
         #endif
         }
@@ -69,7 +91,7 @@ public enum CardTransportChoice: String, CaseIterable, Identifiable {
     public var signingTouchPrompt: String {
         switch self {
         case .nfc, .usbC: return "Touch the YubiKey now"
-        #if DEBUG
+        #if DEBUG || REVIEW_DEMO
         case .simulated: return "Waiting for the simulated card"
         #endif
         }
@@ -91,7 +113,7 @@ enum CardTransports {
             #else
             return UnavailableTransport(reason: "USB-C smart-card access is unavailable in this build.")
             #endif
-        #if DEBUG
+        #if DEBUG || REVIEW_DEMO
         case .simulated:
             return SimulatedCardTransport()
         #endif

@@ -17,11 +17,13 @@ import SwiftUI
 /// notice it.
 ///
 /// A tampered value cannot weaken anything, which is what makes the exception
-/// acceptable at all. The choice selects a *channel*, not a policy: check 1 of the
-/// audit asserts that a release build contains no simulated transport to be redirected
-/// to, and both real values reach the same card through the same gates. The worst a
-/// wrong value does is send the operator to the wrong reader, which shows up as a card
-/// that cannot be found — visible at once, and fixed on the screen it came from.
+/// acceptable at all. The choice selects a *channel*, not a policy: every value it can
+/// hold reaches the same ceremony through the same gates, and the one that is not a real
+/// card — the simulated demo the released build carries so App Review can use an app
+/// whose real card they do not own (amendment 51) — is a card with no key on it rather
+/// than a way around a check. The worst a wrong value does is send the operator to the
+/// wrong reader, which shows up as a card that cannot be found — visible at once, and
+/// fixed on the screen it came from.
 @MainActor
 @Observable
 final class DeviceChoiceStore {
@@ -35,9 +37,11 @@ final class DeviceChoiceStore {
     ///
     /// `nil` is a real state — a fresh install — and is not the same as "NFC". The
     /// connection is the one thing the app cannot detect for itself, so it asks rather
-    /// than assuming. A stored value this build does not know (a release build reading
-    /// `"simulated"`, say) is treated as no choice as well, so the operator is asked
-    /// again instead of being handed a default silently.
+    /// than assuming. A stored value that is not a choice *this device* can offer is
+    /// treated as no choice as well, so the operator is asked again instead of being
+    /// handed a default silently: that covers a value this build does not know, and it
+    /// covers `"nfc"` read on an iPad, which has no reader to hold a YubiKey against
+    /// (`CardTransportChoice.available`).
     private(set) var storedChoice: CardTransportChoice?
 
     init(defaults: UserDefaults = .standard) {
@@ -45,6 +49,7 @@ final class DeviceChoiceStore {
         self.storedChoice = defaults
             .string(forKey: Self.defaultsKey)
             .flatMap(CardTransportChoice.init(rawValue:))
+            .flatMap { CardTransportChoice.available.contains($0) ? $0 : nil }
         #if DEBUG
         applyLaunchArguments()
         #endif
@@ -54,10 +59,12 @@ final class DeviceChoiceStore {
     /// launch, and what stops the flows being opened with nothing but the fallback.
     var hasChosen: Bool { storedChoice != nil }
 
-    /// What the flows use. Falls back to NFC so that a transport always exists; the
-    /// device screen is what stands between that fallback and a ceremony, because
-    /// nothing opens a flow until `hasChosen`.
-    var choice: CardTransportChoice { storedChoice ?? .nfc }
+    /// What the flows use. Falls back to the first connection this device offers, so a
+    /// transport always exists; the device screen is what stands between that fallback and
+    /// a ceremony, because nothing opens a flow until `hasChosen`.
+    var choice: CardTransportChoice {
+        storedChoice ?? CardTransportChoice.available.first ?? .nfc
+    }
 
     /// Records the choice. Called by the device screen as soon as a row is picked, so
     /// there is no separate save step to forget.

@@ -20,3 +20,4 @@ tools/derive/.venv/
 # Xcode/XcodeGen build output
 ios/build/
 *.xcresult
+AuthKey_SC46YQSAF8.p8

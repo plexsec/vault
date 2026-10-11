@@ -6,8 +6,10 @@
 # Each one is a *mechanical* check on the built product, not a promise in a
 # document:
 #
-#   1. No simulated YubiKey anywhere in the release bundle. A release build must
-#      not be able to talk to a fake card.
+#   1. The simulated card is *present* and named as a demo, and every DEBUG-only test
+#      hook is absent. The card ships on purpose, because App Review has no YubiKey 5
+#      NFC (amendment 51); the hooks do not, because an argument that seeds the entropy
+#      would let whoever holds the phone decide its mnemonic.
 #   2. No network API is linked or referenced. The app must be offline by
 #      construction, not by policy.
 #   3. No secret material is persisted: no writes of mnemonic/PIN/key data and no
@@ -19,6 +21,9 @@
 #      ignoring persistence in general, and asserts the simulated store cannot ship.
 #   4. The camera, photo-library-add and NFC keys are present, and NFC declares the
 #      OpenPGP AID (without it iOS never surfaces the card).
+#   5. A privacy manifest is in the bundle and declares the one required-reason API
+#      the app calls. Without it App Store Connect rejects the upload (ITMS-91053),
+#      and a manifest that overstates what the app does is its own kind of untruth.
 #
 # Usage: tools/audit-release.sh [path/to/PlexVault.app]
 set -euo pipefail
@@ -53,21 +58,45 @@ note_ok()   { echo "  ok  : $1"; }
 matches() { grep -qE "$2" <<<"$1"; }
 
 # ---------------------------------------------------------------------------
-# 1. No simulated card in the release bundle.
+# 1. The demo card ships; the test hooks do not.
 # ---------------------------------------------------------------------------
 echo
-echo "[1] Simulated YubiKey and test hooks must be absent"
-simulated_hits=0
+echo "[1] Demo card present, DEBUG-only test hooks absent"
+# This check used to read "no simulated card in the release bundle", and it changed meaning with
+# amendment 51 rather than disappearing: the App Store build carries the card on purpose, because
+# an app that cannot be used without hardware is an app App Review cannot review. What still must
+# not ship is the apparatus around it — an argument that fixes the entropy the mnemonic comes
+# from, puts more cards in the reader than a reader holds, waits on a pretend touch, or plants a
+# sample transaction, would let whoever holds the phone decide what gets generated and signed.
+# Those are DEBUG-only, and this is what asserts it. A DEBUG bundle fails here, which is the
+# negative test that keeps the check honest (it was silently disabled by `strings | grep -q` under
+# `pipefail` until one caught it).
+bundle_strings=""
+hook_hits=0
 while IFS= read -r -d '' file; do
   case "$file" in *.dylib|*.app/*|*/PlexVault|*/PlexVault.debug.dylib) ;; *) continue ;; esac
   file_strings="$(strings "$file" 2>/dev/null || true)"
-  if matches "$file_strings" 'MockYubikey|Simulated YubiKey|simulated card|deterministic-entropy'; then
-    note_fail "debug-only string found in $(basename "$file")"
-    simulated_hits=$((simulated_hits + 1))
+  bundle_strings+="$file_strings"$'\n'
+  if matches "$file_strings" 'deterministic-entropy|-simulated-cards|-simulated-touch-delay-ms|-reset-simulated-card|-open-scanner|-device-choice|-reset-device-choice|-pending-pairing|-reset-pending-pairing|use-sample-request'; then
+    note_fail "a DEBUG-only test hook is compiled into $(basename "$file")"
+    hook_hits=$((hook_hits + 1))
   fi
 done < <(find "$APP" -type f -print0)
-if [[ "$simulated_hits" == "0" ]]; then
-  note_ok "no simulated-card strings in any file of the bundle"
+if [[ "$hook_hits" == "0" ]]; then
+  note_ok "no DEBUG-only test hook is compiled into the bundle"
+fi
+# The other half of the assertion: the card has to be there, and it has to be labelled as what it
+# is. A demo that a user could mistake for a YubiKey-backed wallet would be worse than no demo, so
+# the label and the warning are requirements of the check rather than of the copy review.
+if matches "$bundle_strings" 'Simulated card \(demo\)'; then
+  note_ok "the demo card is offered, and labelled a demo"
+else
+  note_fail "the demo card is missing or unlabelled; a reviewer with no YubiKey could not use the app"
+fi
+if matches "$bundle_strings" 'be walked without hardware'; then
+  note_ok "the demo connection carries its warning"
+else
+  note_fail "the demo connection's warning copy is missing from the bundle"
 fi
 
 # ---------------------------------------------------------------------------
@@ -118,12 +147,16 @@ echo "[3] No secret persistence"
 DEVICE_STORE="$REPO_ROOT/ios/PlexVault/Support/DeviceChoiceStore.swift"
 PENDING_STORE="$REPO_ROOT/ios/PlexVault/Support/PendingPairingStore.swift"
 SIMULATED_STORE="$REPO_ROOT/ios/PlexVault/Debug/SimulatedCardTransport.swift"
+# The privacy manifest is not a fourth store: it *names* `UserDefaults` in order to declare the
+# reason for using it (check [5] reads it). It is excluded from this grep by path, not by
+# pattern, so that naming the API in a declaration is never mistaken for calling it.
+PRIVACY_MANIFEST="$REPO_ROOT/ios/PlexVault/PrivacyInfo.xcprivacy"
 persist_hits="$(grep -rnE 'UserDefaults|NSUbiquitousKeyValueStore|FileManager\.default\.createFile|SecItemAdd|\.write\(to:' \
       "$REPO_ROOT/ios/PlexVault" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Ceremony" \
       "$REPO_ROOT/ios/Packages/VaultKit/Sources/VaultKit/Signing" 2>/dev/null \
       | grep -v "^${DEVICE_STORE}:" | grep -v "^${PENDING_STORE}:" \
-      | grep -v "^${SIMULATED_STORE}:" || true)"
+      | grep -v "^${SIMULATED_STORE}:" | grep -v "^${PRIVACY_MANIFEST}:" || true)"
 persist_hits="$(grep -v '^\s*//' <<<"$persist_hits" || true)"
 if [[ -n "$persist_hits" ]]; then
   note_fail "persistence API referenced outside the three named stores:"
@@ -176,20 +209,19 @@ else
     note_ok "pending pairing: a flag and nothing else — no codes, keys or record"
   fi
 fi
-# The third site is DEBUG-only: it saves the *simulated* card's state so a developer does not
-# have to provision the fake wallet again after every relaunch. It is named here so the
-# exception is stated rather than slipped in, and the assertions make the naming safe: the file
-# must be `#if DEBUG`-guarded, it must live under the Debug directory, and it must reach for no
-# secret-bearing API. Check 1 is what guarantees the card it belongs to is not in a release
-# build at all.
+# The third site belongs to the simulated card, which now ships (amendment 51) — so what this
+# asserts is not that the card is absent but that the store belongs to the *fake* applet and to
+# nothing else: guarded by one of the two conditions that compile the demo in, living under the
+# Debug directory, and reaching for no secret-bearing API. The keys it saves are the demo
+# wallet's, which cannot sign anything the signing ceremony would accept.
 if [[ ! -f "$SIMULATED_STORE" ]]; then
   note_fail "the simulated-card store is missing; the check above proved nothing"
 else
   if ! grep -q 'com\.plexsec\.vault\.simulated-card' "$SIMULATED_STORE"; then
     note_fail "the simulated-card store does not name the expected key"
   fi
-  if ! grep -qE '^#if DEBUG' "$SIMULATED_STORE"; then
-    note_fail "the simulated-card store is not DEBUG-gated; a release build would compile it"
+  if ! grep -qE '^#if DEBUG( \|\| REVIEW_DEMO)?$' "$SIMULATED_STORE"; then
+    note_fail "the simulated-card store is not gated on DEBUG or REVIEW_DEMO"
   fi
   case "$SIMULATED_STORE" in
     */Debug/*) ;;
@@ -290,6 +322,55 @@ if [[ "$(plist_value ITSAppUsesNonExemptEncryption)" == "false" ]]; then
   note_ok "ITSAppUsesNonExemptEncryption=false"
 else
   note_fail "ITSAppUsesNonExemptEncryption is not false"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Privacy manifest.
+# ---------------------------------------------------------------------------
+echo
+echo "[5] Privacy manifest"
+# App Store Connect requires a manifest in the bundle, and requires a declared reason for
+# every "required reason" API the binary calls. This app calls exactly one — `UserDefaults`,
+# in the two stores check [3] names — so the manifest declares exactly that, and the
+# assertion below is two-sided: the reason must be there (or the upload is rejected), and
+# the app must not be claiming to track or collect anything it does not (or the manifest is a
+# false statement about an app whose whole argument is that it talks to nothing).
+MANIFEST="$APP/PrivacyInfo.xcprivacy"
+# Read the manifest as XML rather than through PlistBuddy: an empty array and a populated one
+# both print as `Array {...}` under PlistBuddy, which is exactly the distinction this check
+# depends on (it is the difference between "declares no tracking domains" and "declares some").
+manifest_value() { plutil -extract "$1" xml1 -o - "$MANIFEST" 2>/dev/null || true; }
+if [[ ! -f "$MANIFEST" ]]; then
+  note_fail "PrivacyInfo.xcprivacy is missing; App Store Connect would reject the upload"
+else
+  accessed="$(manifest_value NSPrivacyAccessedAPITypes)"
+  if matches "$accessed" 'NSPrivacyAccessedAPICategoryUserDefaults' \
+     && matches "$accessed" 'CA92\.1'; then
+    note_ok "privacy manifest declares the UserDefaults required reason (CA92.1)"
+  else
+    note_fail "the privacy manifest does not declare UserDefaults / CA92.1"
+  fi
+  # The other half of the assertion: the manifest must not overstate the app either. Each of
+  # these three is a claim that something leaves the phone, and nothing does.
+  tracking="$(plutil -extract NSPrivacyTracking raw -o - "$MANIFEST" 2>/dev/null || true)"
+  domains="$(manifest_value NSPrivacyTrackingDomains)"
+  collected="$(manifest_value NSPrivacyCollectedDataTypes)"
+  overstatement=0
+  if [[ "$tracking" == "true" ]]; then
+    note_fail "the privacy manifest declares tracking; the app links no networking at all"
+    overstatement=1
+  fi
+  if matches "$domains" '<string>'; then
+    note_fail "the privacy manifest names tracking domains; the app links no networking at all"
+    overstatement=1
+  fi
+  if matches "$collected" 'NSPrivacyCollectedDataType'; then
+    note_fail "the privacy manifest collects data; nothing leaves the phone"
+    overstatement=1
+  fi
+  if [[ "$overstatement" == "0" ]]; then
+    note_ok "privacy manifest: no tracking, no tracking domains, no collected data"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

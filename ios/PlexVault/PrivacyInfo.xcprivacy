@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The app's privacy manifest.
+
+  It is short because the app does almost nothing that needs declaring, and every line
+  of it is a claim the audit can check against the built bundle (check [5] of
+  tools/audit-release.sh).
+
+  * No tracking, and no tracking domains: the app links no networking at all, which
+    check [2] of the audit asserts from the linked libraries and the source.
+  * No collected data types: nothing leaves the phone, so there is nothing to declare —
+    and the camera frames, the transaction and the card's answers are all processed in
+    memory and never stored.
+  * One "required reason" API: UserDefaults, in the two stores the audit names
+    (`DeviceChoiceStore` — which reader the YubiKey is on — and `PendingPairingStore` —
+    one flag saying a run stopped at the wipe). CA92.1 is the reason for accessing user
+    defaults only within the app, and it is the honest one: neither value ever leaves
+    this device's own container.
+
+  Without this file the upload is rejected (ITMS-91053), which is why it is checked
+  mechanically rather than remembered.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

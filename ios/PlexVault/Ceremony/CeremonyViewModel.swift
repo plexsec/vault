@@ -467,7 +467,7 @@ public final class CeremonyViewModel {
             // hand (amendment 41).
             inventory = nil
             acknowledgeDestructiveReset = false
-            #if DEBUG
+            #if DEBUG || REVIEW_DEMO
             // The simulated reader holds one card per `-simulated-cards` argument, so it has to
             // be told that the operator swapped the card. This branch *is* that moment: a card's
             // pass has just ended and the next YubiKey is being asked for.

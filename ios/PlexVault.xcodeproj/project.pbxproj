@@ -24,6 +24,7 @@
 		72B096DB81251451D28EA89A /* SigningRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9F610DEAF451233A86A1007 /* SigningRootView.swift */; };
 		76A9922172A9452E09512B36 /* YubikeyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4FFA45CC3FEACDAFA238223C /* YubikeyKit */; };
 		78505B38B68DBE9995403A3F /* SimulatedSigningVectors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 319444E8E2BFAEEFB4C2F390 /* SimulatedSigningVectors.swift */; };
+		791A79E0013B26D58C981095 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 826ED1B1F07CCAE22CB0F878 /* PrivacyInfo.xcprivacy */; };
 		7C51E72B2FB24B55FCE108C1 /* VaultKit in Frameworks */ = {isa = PBXBuildFile; productRef = 96FB3B402292C2FB1A645A38 /* VaultKit */; };
 		7EF6CA9F2329A2F1F0F4B779 /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56C3AD3CE58AE21CA21E813 /* ReportView.swift */; };
 		8B5D86C3F45244809462FF44 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42A82FC3A8ECF99D53C02C8F /* SetupView.swift */; };
@@ -80,6 +81,7 @@
 		6F601AF84AB2EA4E7F7563DE /* PendingPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingPairingStore.swift; sourceTree = "<group>"; };
 		7029409A50A278443DA04717 /* SetupFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupFlowUITests.swift; sourceTree = "<group>"; };
 		8208006FA19D2CD40A37C2E1 /* SigningViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningViewModel.swift; sourceTree = "<group>"; };
+		826ED1B1F07CCAE22CB0F878 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		888F7A53121E20A2227E1F51 /* ManualTopics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualTopics.swift; sourceTree = "<group>"; };
 		88C79A02C45351291BF93ED0 /* VaultKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VaultKit; path = Packages/VaultKit; sourceTree = SOURCE_ROOT; };
 		8A04BF02912F01923ADD40F2 /* CardTransports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardTransports.swift; sourceTree = "<group>"; };
@@ -268,6 +270,7 @@
 				E9FBCA011DBFBE29906CDC5D /* Info.plist */,
 				0309A73C9494EC5D851C7CA2 /* PlexVault.entitlements */,
 				637BE1D34715CFBB06B79BE0 /* PlexVaultApp.swift */,
+				826ED1B1F07CCAE22CB0F878 /* PrivacyInfo.xcprivacy */,
 			);
 			path = PlexVault;
 			sourceTree = "<group>";
@@ -376,6 +379,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FCD7FE0B8ABF6E45E95357C4 /* Assets.xcassets in Resources */,
+				791A79E0013B26D58C981095 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -550,18 +554,17 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = WSL242UF2M;
-				EXCLUDED_SOURCE_FILE_NAMES = "MockYubikeyTransport.swift SimulatedSigningVectors.swift";
 				INFOPLIST_FILE = PlexVault/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.plexsec.vault;
 				PRODUCT_NAME = PlexVault;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = REVIEW_DEMO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -582,7 +585,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.plexsec.vault;
 				PRODUCT_NAME = PlexVault;
 				SDKROOT = iphoneos;
